@@ -1,9 +1,9 @@
 <p align="center">
-  <h1 align="center">AI, MAX - Local Agent Viewer</h1>
+  <h1 align="center">Local Agent Viewer</h1>
   <p align="center">
-    Analytics dashboard for AI coding agents across machines, users, and projects.
+    <strong>Your local long-term memory for AI agent interactions.</strong>
     <br />
-    Track token usage, tool calls, file operations, and interaction history — all in one place.
+    Every interaction you have with Claude Code, Codex CLI, Claude Desktop, and ChatGPT — parsed, classified, searchable, and visualized. Across all your machines.
   </p>
 </p>
 
@@ -16,21 +16,31 @@
 
 ---
 
-## Why?
+## The problem
 
-AI coding agents generate a wealth of data — tokens consumed, files modified, tools invoked, interactions held — but it's scattered across JSONL files, buried in `~/.claude/` and `~/.codex/`, with no way to query or visualize it.
+You talk to AI agents every day. You solve bugs, design systems, refactor codebases, debug deployments. But those interactions vanish into scattered JSONL files buried in `~/.claude/`, `~/.codex/`, and platform-specific directories. No search. No analytics. No memory.
 
-**LocalAgentViewer** parses all of it into a single SQLite database and serves a web dashboard. No cloud. No accounts. No dependencies. Just `lav-server`.
+**What if you could remember everything?**
 
-It supports **distributed setups** too: run an agent on each machine, and a central collector aggregates everything into one canonical view.
+## What LAV does
+
+**LocalAgentViewer** turns your AI agent logs into a persistent, searchable knowledge base — entirely on your machine.
+
+- **Parse** raw JSONL/JSON logs from multiple agents into a single SQLite database
+- **Classify** interactions with AI (topics, sensitivity, people, clients, tags)
+- **Search** by keyword (FTS5) or by meaning (Qdrant vector search)
+- **Visualize** tokens, costs, tools, files, and activity patterns in a real-time dashboard
+- **Distribute** across machines — each device parses locally, a central collector unifies everything
+
+No cloud. No accounts. No external dependencies. Just `pip install` and go.
 
 ## Supported Agents
 
-| Agent | Source Format | Auto-detected Location |
-|-------|--------------|----------------------|
+| Agent | Source Format | Auto-detected |
+|-------|--------------|---------------|
 | **Claude Code** | JSONL | `~/.claude/projects/` |
 | **Codex CLI** | JSONL | `~/.codex/sessions/` |
-| **Claude Desktop** | JSONL | `~/Library/Application Support/Claude/local-agent-mode-sessions/` |
+| **Claude Desktop (Cowork)** | JSONL | `~/Library/Application Support/Claude/local-agent-mode-sessions/` |
 | **ChatGPT** | JSON export | Manual (`conversations.json` from data export) |
 
 ## Screenshots
