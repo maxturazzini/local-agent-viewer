@@ -2093,20 +2093,11 @@
         }
     }
 
-    // Nav sync button (quick trigger)
-    document.getElementById('navSyncBtn').addEventListener('click', async function() {
-        const btn = this;
-        btn.classList.add('syncing');
-        btn.textContent = 'Syncing...';
-        try {
-            await fetch(`${API_BASE}/api/sync`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({scope:'all'}) });
-            pollSyncStatus();
-            btn.textContent = 'Done!';
-            setTimeout(() => { btn.textContent = 'Sync'; btn.classList.remove('syncing'); }, 2000);
-        } catch(e) {
-            btn.textContent = 'Failed';
-            setTimeout(() => { btn.textContent = 'Sync'; btn.classList.remove('syncing'); }, 2000);
-        }
+    // Nav sync button opens the sync popover
+    document.getElementById('navSyncBtn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        syncPopover.classList.toggle('active');
+        datePickerDropdown.classList.remove('active');
     });
 
     // ===== TAB SWITCHING =====
