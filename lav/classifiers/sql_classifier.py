@@ -25,21 +25,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-# ── Bootstrap path & env ────────────────────────────────────────────────────
-
-_PROJECT_DIR = Path(__file__).parent
-sys.path.insert(0, str(_PROJECT_DIR))
-
-_env_file = _PROJECT_DIR / ".env"
-if _env_file.exists():
-    with open(_env_file) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, value = line.split("=", 1)
-                os.environ.setdefault(key.strip(), value.strip())
-
-from config import UNIFIED_DB_PATH
+import lav  # noqa: F401 — triggers .env loading
+from lav.config import UNIFIED_DB_PATH
 
 
 # ── DB helpers ───────────────────────────────────────────────────────────────
@@ -58,7 +45,7 @@ def _get_db(readonly: bool = True) -> sqlite3.Connection:
 
 
 def _get_write_db() -> sqlite3.Connection:
-    from parser import init_db
+    from lav.parsers.jsonl import init_db
     return init_db(UNIFIED_DB_PATH)
 
 
@@ -259,7 +246,7 @@ def run(
         import openai
         openai_client = openai.OpenAI(api_key=api_key)
 
-    from classifiers.openai_classifier import classify_conversation
+    from lav.classifiers.openai_classifier import classify_conversation
 
     # Write connection for storing results
     write_conn = None

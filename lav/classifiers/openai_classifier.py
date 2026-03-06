@@ -12,45 +12,45 @@ CLASSIFICATION_SCHEMA = {
     "properties": {
         "summary": {
             "type": "string",
-            "description": "Riassunto in 1 frase della conversazione"
+            "description": "1-sentence summary of the conversation"
         },
         "abstract": {
             "type": "string",
-            "description": "Contesto, problema affrontato e decisioni prese (2-3 frasi)"
+            "description": "Context, problem addressed, and decisions made (2-3 sentences)"
         },
         "process": {
             "type": "string",
-            "description": "Flusso di lavoro o processo eseguito dall'utente, inferito dalle domande e azioni. Descrivilo come attivita concreta (es. 'debug deploy pipeline', 'preparazione workshop cliente'). Stringa vuota se non inferibile."
+            "description": "Workflow or process the user is executing, inferred from questions and actions. Describe as a concrete activity (e.g. 'debug deploy pipeline', 'client workshop preparation'). Empty string if not inferable."
         },
         "classification": {
             "type": "string",
             "enum": ["development", "meeting", "analysis", "brainstorm", "support", "learning"],
-            "description": "Classificazione principale della conversazione"
+            "description": "Primary classification of the conversation"
         },
         "data_sensitivity": {
             "type": "string",
             "enum": ["public", "internal", "confidential", "restricted"],
-            "description": "Livello di sensibilita dei dati. Se sono menzionate persone terze, almeno internal."
+            "description": "Data sensitivity level. If third parties are mentioned, at least internal."
         },
         "sensitive_data_types": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "Tipi di dati sensibili presenti (vuota se public)"
+            "description": "Types of sensitive data present (empty if public)"
         },
         "topics": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "Fino a 5 keyword specifiche"
+            "description": "Up to 5 specific keywords"
         },
         "people": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "Persone terze menzionate (non l'utente o l'assistente)"
+            "description": "Third parties mentioned (not the user or the assistant)"
         },
         "clients": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "Aziende/clienti menzionati"
+            "description": "Companies/clients mentioned"
         },
     },
     "required": [
@@ -60,37 +60,37 @@ CLASSIFICATION_SCHEMA = {
     "additionalProperties": False,
 }
 
-SYSTEM_PROMPT = """Sei un classificatore di conversazioni tra utenti e assistenti AI.
-Analizza i messaggi e produci metadati strutturati.
+SYSTEM_PROMPT = """You are a conversation classifier for conversations between users and AI assistants.
+Analyze the messages and produce structured metadata.
 
-Campi:
-- summary: riassunto in 1 frase
-- abstract: contesto, problema affrontato e decisioni prese (2-3 frasi)
-- process: il flusso di lavoro che l'utente sta eseguendo, inferito dalle domande e azioni. Descrivilo come attivita concreta (es. "debug deploy pipeline", "preparazione workshop cliente", "ricerca competitor per proposta commerciale", "refactoring architettura DB"). Stringa vuota se non inferibile.
+Fields:
+- summary: 1-sentence summary
+- abstract: context, problem addressed, and decisions made (2-3 sentences)
+- process: the workflow the user is executing, inferred from questions and actions. Describe as a concrete activity (e.g. "debug deploy pipeline", "client workshop preparation", "competitor research for commercial proposal", "DB architecture refactoring"). Empty string if not inferable.
 - classification: development | meeting | analysis | brainstorm | support | learning
 - data_sensitivity: public | internal | confidential | restricted
-- sensitive_data_types: lista tipi sensibili (vuota se public)
-- topics: max 5 keyword specifiche (no generiche come "AI" o "coding")
-- people: persone terze menzionate (non l'utente o l'assistente)
-- clients: aziende/clienti menzionati
+- sensitive_data_types: list of sensitive types (empty if public)
+- topics: max 5 specific keywords (not generic like "AI" or "coding")
+- people: third parties mentioned (not the user or the assistant)
+- clients: companies/clients mentioned
 
-Definizioni classification:
-  development = coding, architettura, configurazione sistemi
-  meeting = riunioni, call, discussioni organizzative
-  analysis = analisi dati, ricerca, valutazioni
-  brainstorm = ideazione, esplorazione idee, strategia
-  support = troubleshooting, fix, assistenza tecnica
-  learning = studio, formazione, apprendimento
+Classification definitions:
+  development = coding, architecture, system configuration
+  meeting = meetings, calls, organizational discussions
+  analysis = data analysis, research, evaluations
+  brainstorm = ideation, idea exploration, strategy
+  support = troubleshooting, fixes, technical assistance
+  learning = study, training, education
 
-Definizioni data_sensitivity:
-  public = discussioni generiche senza dati sensibili e senza nomi di persone
-  internal = dettagli interni di lavoro, architettura, tool
-  confidential = dati clienti, strategie commerciali, offerte, prezzi
-  restricted = credenziali, token, API key, dati finanziari personali
+Data sensitivity definitions:
+  public = generic discussions without sensitive data and without people names
+  internal = internal work details, architecture, tools
+  confidential = client data, commercial strategies, offers, pricing
+  restricted = credentials, tokens, API keys, personal financial data
 
-REGOLA CRITICA: se nel testo compaiono nomi di persone terze (campo people non vuoto), data_sensitivity e ALMENO internal, mai public.
+CRITICAL RULE: if third-party names appear in the text (people field not empty), data_sensitivity must be AT LEAST internal, never public.
 
-sensitive_data_types (se non public): credentials, api_keys, financial, personal_data, client_strategy, pricing, contracts, internal_architecture, employee_data"""
+sensitive_data_types (if not public): credentials, api_keys, financial, personal_data, client_strategy, pricing, contracts, internal_architecture, employee_data"""
 
 
 def prepare_messages_for_classification(messages: List[Dict]) -> str:
@@ -155,7 +155,7 @@ def classify_conversation(
         model=model,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"Classifica questa conversazione:\n\n{text}"},
+            {"role": "user", "content": f"Classify this conversation:\n\n{text}"},
         ],
         response_format={
             "type": "json_schema",

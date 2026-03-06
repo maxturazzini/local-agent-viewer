@@ -1,107 +1,222 @@
-# LocalAgentViewer
+<p align="center">
+  <h1 align="center">AI, MAX - Local Agent Viewer</h1>
+  <p align="center">
+    Analytics dashboard for AI coding agents across machines, users, and projects.
+    <br />
+    Track token usage, tool calls, file operations, and conversation history — all in one place.
+  </p>
+</p>
 
-Analytics tool for monitoring AI coding agents (Claude Code, Codex CLI, Claude Desktop, ChatGPT) across multiple users, hosts, and projects.
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
+  <img src="https://img.shields.io/badge/python-3.9+-3776AB.svg?logo=python&logoColor=white" alt="Python 3.9+" />
+  <img src="https://img.shields.io/badge/dependencies-zero_(stdlib_only)-brightgreen.svg" alt="Zero dependencies" />
+  <img src="https://img.shields.io/badge/database-SQLite-003B57.svg?logo=sqlite&logoColor=white" alt="SQLite" />
+</p>
 
-Parses conversation JSONL files into a unified SQLite database, serves a web dashboard, and supports distributed multi-machine setups via an agent/collector architecture.
+---
 
-## Features
+## Why?
 
-- **Unified database** with 4 independent dimensions: project, user, host, source
-- **Web dashboard** with interactive charts (Chart.js), filters, and drill-down
-- **Multi-machine** agent/collector pull architecture
-- **Full-text search** across all conversations (SQLite FTS5)
-- **Semantic search** via Qdrant vector knowledge base (optional)
-- **MCP server** for integration with Claude Code and other AI tools
-- **Incremental parsing** — only processes new data on each run
+AI coding agents generate a wealth of data — tokens consumed, files modified, tools invoked, conversations held — but it's scattered across JSONL files, buried in `~/.claude/` and `~/.codex/`, with no way to query or visualize it.
 
-## Requirements
+**LocalAgentViewer** parses all of it into a single SQLite database and serves a web dashboard. No cloud. No accounts. No dependencies. Just `lav-server`.
 
-- Python 3.9+
-- No pip dependencies for core functionality (stdlib only)
-- Optional: `openai` + `qdrant-client` for semantic KB features
-- Optional: `fastmcp` for MCP server
+It supports **distributed setups** too: run an agent on each machine, and a central collector aggregates everything into one canonical view.
+
+## Supported Agents
+
+| Agent | Source Format | Auto-detected Location |
+|-------|--------------|----------------------|
+| **Claude Code** | JSONL | `~/.claude/projects/` |
+| **Codex CLI** | JSONL | `~/.codex/sessions/` |
+| **Claude Desktop** | JSONL | `~/Library/Application Support/Claude/local-agent-mode-sessions/` |
+| **ChatGPT** | JSON export | Manual (`conversations.json` from data export) |
+
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/lav1_redacted.png" width="80%" alt="Dashboard — overview with sessions, tokens, messages, and activity by project and model" />
+</p>
+
+<details>
+<summary><strong>More screenshots</strong></summary>
+
+<p align="center">
+  <img src="docs/screenshots/lav4_redacted.png" width="80%" alt="Dashboard — files tab with sync panel and source filtering" />
+</p>
+<p align="center">
+  <img src="docs/screenshots/lav2_redacted.png" width="80%" alt="Dashboard — subagent usage, MCP tool distribution" />
+</p>
+<p align="center">
+  <img src="docs/screenshots/lav3_redacted.png" width="80%" alt="Interactions — conversation list with classification badges, cost, and duration" />
+</p>
+
+</details>
+
+## Installation
+
+### 1. Clone and install
+
+```bash
+git clone https://github.com/maxturazzini/local-agent-viewer.git
+cd local-agent-viewer
+pip install -e .
+```
+
+This installs the core package (zero external dependencies — stdlib only). All CLI commands become available immediately.
+
+### 2. (Optional) Install extras
+
+```bash
+pip install -e ".[classifiers]"   # AI classification (openai)
+pip install -e ".[qdrant]"        # Semantic search (qdrant-client, openai, anthropic)
+pip install -e ".[mcp]"           # MCP server (fastmcp)
+pip install -e ".[all]"           # Everything
+```
+
+### 3. (Optional) Configure environment
+
+Copy the example and fill in what you need:
+
+```bash
+cp .env.example .env
+```
+
+```env
+# Only needed for optional features — core works without any of these
+OPENAI_API_KEY=sk-...            # AI classification (lav-classify)
+ANTHROPIC_API_KEY=sk-ant-...     # Qdrant KB embedding (lav-index)
+QDRANT_URL=http://localhost:6333 # Qdrant server URL
+CHATGPT_EXPORT_PATH=             # Path to ChatGPT conversations.json
+```
 
 ## Quick Start
 
-### Single machine (standalone)
-
 ```bash
-# Clone / copy the project
-cd local-agent-viewer
-
-# Parse conversations from this host
-python3 parser.py
+# Parse conversations from this machine
+lav-parse
 
 # Start the server
-python3 server.py
+lav-server
 ```
 
-Open http://localhost:8764 for the dashboard.
+Open **http://localhost:8764** — that's it.
 
-The database is created automatically at `~/.local/share/local-agent-viewer/local_agent_viewer.db`.
+The database is created automatically at `~/.local/share/local-agent-viewer/local_agent_viewer.db`. No configuration required for core functionality.
 
-### What gets parsed
+### CLI Commands
 
-| Source | Location | Format |
-|--------|----------|--------|
-| Claude Code | `~/.claude/projects/` | JSONL |
-| Codex CLI | `~/.codex/sessions/` | JSONL |
-| Claude Desktop | `~/Library/Application Support/Claude/local-agent-mode-sessions/` | JSONL |
-| ChatGPT | Exported `conversations.json` | JSON |
+| Command | Description | Requires |
+|---------|-------------|----------|
+| `lav-parse` | Parse JSONL conversations (Claude Code, Codex, Desktop) | — |
+| `lav-parse-chatgpt` | Parse ChatGPT export | `CHATGPT_EXPORT_PATH` |
+| `lav-server` | Start the web server | — |
+| `lav-classify` | Classify conversations via gpt-4.1-mini | `OPENAI_API_KEY` |
+| `lav-index` | Index conversations into Qdrant | `QDRANT_URL` |
+| `lav-mcp` | Start MCP server | `fastmcp` |
+
+### Parser options
 
 ```bash
-# Parse specific source
-python3 parser.py --project myProject
-python3 parser.py --full  # force full reparse
+lav-parse                        # incremental (default, fast)
+lav-parse --project myProject    # parse one project only
+lav-parse --full                 # force full reparse
 
-# Parse ChatGPT export
-python3 parser_chatgpt.py
+lav-parse-chatgpt               # parse ChatGPT export
+lav-parse-chatgpt --full        # full reparse
+```
+
+## Features
+
+### Analytics Dashboard
+- **Overview** — sessions, messages, tokens, costs across time
+- **Tokens** — input/output/cache breakdown by model and day
+- **Files** — most-modified files, operations heatmap
+- **Tools** — tool call frequency and distribution
+- **Timeline** — activity patterns and session duration
+- **Users** — per-user drill-down with 7 views
+- **Knowledge Base** — semantic search across conversations
+
+### 4D Filtering
+Every query supports four independent dimensions:
+
+| Dimension | What it filters |
+|-----------|----------------|
+| **Project** | Which codebase |
+| **User** | Which person |
+| **Host** | Which machine |
+| **Source** | Which agent (claude_code, codex_cli, cowork_desktop, chatgpt) |
+
+### Search
+- **Full-text search** via SQLite FTS5 — fast, no external dependencies
+- **Semantic search** via Qdrant vector DB (optional)
+- **Classification filters** — search by topic, sensitivity, process type
+
+### AI Classification (optional)
+Automatic conversation classification via **gpt-4.1-mini** (OpenAI Structured Outputs):
+- Summary, abstract, process type
+- Data sensitivity level
+- Topics, people, clients, tags
+
+```bash
+# Requires OPENAI_API_KEY in .env
+lav-classify              # classify unclassified conversations
+lav-classify --full       # reclassify everything
+lav-classify --dry-run    # preview
+```
+
+Also runs automatically after each sync when `OPENAI_API_KEY` is set.
+
+### MCP Server
+Expose your analytics to AI tools (Claude Code, etc.) via the [Model Context Protocol](https://modelcontextprotocol.io):
+
+```bash
+# Requires: pip install fastmcp
+lav-mcp
 ```
 
 ## Multi-Machine Setup
 
-LocalAgentViewer supports a distributed agent/collector architecture for aggregating data from multiple machines into a single dashboard.
-
-### Concepts
-
-| Role | Bind address | Function |
-|------|-------------|----------|
-| **agent** | `0.0.0.0:8764` | Thin server: parses local conversations, exposes `/api/export` for pull |
-| **both** (default) | `0.0.0.0:8764` | Full server: local parse + pull from agents + dashboard + API |
-
-The **collector** (role `both`) periodically pulls data from **agents** via HTTP. Each machine has its own local SQLite database. The collector merges everything into its own DB.
+<details>
+<summary><strong>Expand for distributed architecture details</strong></summary>
 
 ### Architecture
 
+LocalAgentViewer supports a distributed agent/collector model. Each machine parses its own conversations locally. A central collector pulls from all agents into one unified database.
+
 ```
-┌─────────────┐         GET /api/export          ┌─────────────┐
-│  Machine A  │◄─────────────────────────────────│  Machine B  │
-│  role: both │         (pull sessions)           │ role: agent │
-│             │                                   │             │
-│  Dashboard  │                                   │  Parse only │
-│  Unified DB │                                   │  Local DB   │
-│  Parse local│                                   │  Thin API   │
-└─────────────┘                                   └─────────────┘
+                  GET /api/export
+┌──────────────┐◄──────────────────┌──────────────┐
+│  Collector    │   (pull sessions) │  Agent       │
+│  role: both   │                   │  role: agent │
+│               │                   │              │
+│  Dashboard    │                   │  Parse local │
+│  Unified DB   │                   │  Local DB    │
+│  All APIs     │                   │  Thin API    │
+└──────────────┘                   └──────────────┘
 ```
+
+### Roles
+
+| Role | Bind | Function |
+|------|------|----------|
+| **agent** | `0.0.0.0:8764` | Parses local conversations, exposes `/api/export` |
+| **both** (default) | `0.0.0.0:8764` | Full server: local parse + pull from agents + dashboard |
 
 ### Configuration
 
-Each machine has a **local config file** (not synced):
+Each machine has a **local** config at `~/.local/share/local-agent-viewer/config.json` (not synced via git):
 
-```
-~/.local/share/local-agent-viewer/config.json
-```
-
-#### Collector machine (role: both)
-
+**Collector** (the machine with the dashboard):
 ```json
 {
   "role": "both",
   "port": 8764,
   "agents": [
     {
-      "name": "workstation",
-      "url": "http://workstation.local:8764",
+      "name": "laptop",
+      "url": "http://laptop.local:8764",
       "fallback_url": "http://10.0.0.5:8764",
       "timeout_seconds": 10
     }
@@ -109,128 +224,82 @@ Each machine has a **local config file** (not synced):
 }
 ```
 
-#### Agent machine
-
+**Agent** (each remote machine):
 ```json
 {
   "role": "agent",
-  "port": 8764
+  "port": 8764,
+  "collector_url": "http://collector.local:8764"
 }
 ```
 
-### Setup steps
+### Data flow
 
-**On the agent machine:**
-
-```bash
-# 1. Create local config
-mkdir -p ~/.local/share/local-agent-viewer
-echo '{"role": "agent", "port": 8764}' > ~/.local/share/local-agent-viewer/config.json
-
-# 2. Parse local conversations to seed the DB
-python3 parser.py
-
-# 3a. Quick test (foreground, dies when you close the terminal)
-python3 server.py
-
-# 3b. Persistent service via LaunchAgent (recommended)
-bash utils/services/install.sh
-launchctl load ~/Library/LaunchAgents/com.aimax.lav-server.plist
-
-# 4. Verify
-curl http://localhost:8764/api/health
-# {"status":"ok","hostname":"...","role":"agent","uptime":...,"version":1}
+```
+Agent machine (every 15 min via LaunchAgent)
+  → lav-parse parses local ~/.claude/projects
+  → notify_collector() → POST http://collector:8764/api/sync
+  → Collector pulls from agent via GET /api/export
+  → Canonical DB updated
 ```
 
-**On the collector machine:**
+Pull is **on-demand** (triggered by the agent after each parse), not periodic polling.
 
+### Setup
+
+**On the agent:**
 ```bash
-# 1. Create local config with agent reference
+mkdir -p ~/.local/share/local-agent-viewer
+echo '{"role": "agent", "port": 8764, "collector_url": "http://collector.local:8764"}' \
+  > ~/.local/share/local-agent-viewer/config.json
+
+lav-parse
+lav-server  # or install as a service (see below)
+curl http://localhost:8764/api/health
+```
+
+**On the collector:**
+```bash
 mkdir -p ~/.local/share/local-agent-viewer
 cat > ~/.local/share/local-agent-viewer/config.json << 'EOF'
 {
   "role": "both",
   "port": 8764,
   "agents": [
-    {"name": "workstation", "url": "http://workstation.local:8764", "timeout_seconds": 10}
+    {"name": "laptop", "url": "http://laptop.local:8764", "timeout_seconds": 10}
   ]
 }
 EOF
 
-# 2. Parse local conversations
-python3 parser.py
-
-# 3a. Quick test (foreground)
-python3 server.py
-
-# 3b. Persistent service via LaunchAgent (recommended)
-bash utils/services/install.sh
-launchctl load ~/Library/LaunchAgents/com.aimax.lav-server.plist
-
-# 4. Trigger a sync (pulls from agents + parses local)
+lav-parse
+lav-server
 curl -X POST http://localhost:8764/api/sync -H "Content-Type: application/json" -d '{"scope":"all"}'
-
-# 5. Verify cross-machine data
-sqlite3 ~/.local/share/local-agent-viewer/local_agent_viewer.db \
-  "SELECT h.hostname, COUNT(*) FROM conversations c JOIN hosts h ON h.id=c.host_id GROUP BY h.hostname"
 ```
 
 ### What lives where
 
-| What | Path | Shared? |
+| What | Path | Synced? |
 |------|------|---------|
-| Code (server.py, parser.py, etc.) | `local-agent-viewer/` | Yes (git/sync) |
-| Runtime config | `~/.local/share/local-agent-viewer/config.json` | **No** (per-machine) |
-| Database | `~/.local/share/local-agent-viewer/local_agent_viewer.db` | **No** (per-machine) |
+| Code | `local-agent-viewer/` | Yes (git) |
+| Runtime config | `~/.local/share/local-agent-viewer/config.json` | No (per-machine) |
+| Database | `~/.local/share/local-agent-viewer/local_agent_viewer.db` | No (per-machine) |
+| Qdrant data | `~/.local/share/local-agent-viewer/qdrant_data/` | No (per-machine) |
 
-## API Reference
+</details>
 
-### Agent endpoints (available in all roles)
+## Running as a Service (macOS)
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/health` | GET | Status, hostname, role, uptime, version |
-| `/api/info` | GET | Sources, session count, last parse, DB size |
-| `/api/export?since=T&limit=N` | GET | Telemetry package for pull (sessions + all child data) |
+<details>
+<summary><strong>Expand for LaunchAgent setup</strong></summary>
 
-### Collector endpoints (role: both only)
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/data` | GET | Full analytics with 4D filters |
-| `/api/projects` | GET | Project list with stats |
-| `/api/users` | GET | User list with stats |
-| `/api/user/{username}` | GET | User detail |
-| `/api/hosts` | GET | Host list with stats |
-| `/api/conversations` | GET | Conversation list (paginated) |
-| `/api/conversation/{id}` | GET | Full conversation transcript |
-| `/api/search?q=term` | GET | Full-text search |
-| `/api/sync` | POST | Trigger sync (pull + local parse) |
-| `/api/sync/status` | GET | Sync progress |
-| `/api/kb/*` | GET/POST | Qdrant knowledge base |
-
-### Filters
-
-All collector endpoints support query string filters:
-
-```
-?project=myProject&user=john&host=workstation&client=claude_code&start=2026-01-01&end=2026-03-01
-```
-
-## macOS LaunchAgent (recommended)
-
-Run the server automatically on login with auto-restart (`KeepAlive`).
-
-`install.sh` copies all necessary files (Python, HTML, qdrant/) from OneDrive to `~/.local/lav/` (local, outside OneDrive — required by macOS privacy restrictions on CloudStorage), and installs the LaunchAgent plists.
+Run the server and parser automatically on login with auto-restart:
 
 ```bash
-# Install all services (copies code to ~/.local/lav/, scripts to ~/.local/bin/, plists to LaunchAgents)
+# Install services
 bash utils/services/install.sh
 
-# Activate LAV server
+# Activate
 launchctl load ~/Library/LaunchAgents/com.aimax.lav-server.plist
-
-# Activate LAV parser (incremental parse every 15 min)
 launchctl load ~/Library/LaunchAgents/com.aimax.lav-parser.plist
 
 # Verify
@@ -238,46 +307,137 @@ launchctl list | grep com.aimax.lav
 curl http://localhost:8764/api/health
 ```
 
-**After code changes**: re-run `bash utils/services/install.sh` to update `~/.local/lav/`, then reload:
+The parser LaunchAgent runs incremental parsing every 15 minutes.
+
+**After code changes:**
 ```bash
+bash utils/services/install.sh
 launchctl unload ~/Library/LaunchAgents/com.aimax.lav-server.plist
 launchctl load ~/Library/LaunchAgents/com.aimax.lav-server.plist
 ```
 
-**Logs**: `~/.local/logs/lav-server.log` and `lav-server-err.log`
+**Logs:** `~/.local/logs/lav-server.log` and `lav-server-err.log`
+
+</details>
+
+## API Reference
+
+<details>
+<summary><strong>Expand for full API documentation</strong></summary>
+
+### Universal endpoints (all roles)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/health` | GET | Status, hostname, role, uptime |
+| `/api/info` | GET | Sources, session count, DB size |
+| `/api/export?since=T&limit=N` | GET | Telemetry package for collector pull |
+
+### Dashboard endpoints (role: both)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/data` | GET | Full analytics with 4D filters |
+| `/api/projects` | GET | Project list with stats |
+| `/api/users` | GET | User list with stats |
+| `/api/user/{username}` | GET | User detail |
+| `/api/hosts` | GET | Host list |
+| `/api/conversations` | GET | Conversation list (paginated) |
+| `/api/conversation/{id}` | GET | Full conversation transcript |
+| `/api/search?q=term` | GET | Full-text search |
+| `/api/sync` | POST | Trigger sync |
+| `/api/sync/status` | GET | Sync progress |
+| `/api/classifications/stats` | GET | Classification aggregations |
+| `/api/classifications/tagcloud` | GET | Topic/people/client frequencies |
+| `/api/conversation/{id}/metadata` | GET | Classification metadata |
+| `/api/kb/*` | GET/POST | Qdrant knowledge base |
+
+### Query filters
+
+All dashboard endpoints accept:
+
+```
+?project=myProject&user=john&host=laptop&client=claude_code&start=2026-01-01&end=2026-03-01
+```
+
+</details>
+
+## Database Schema
+
+<details>
+<summary><strong>Expand for schema details</strong></summary>
+
+Single SQLite database with composite primary keys and 4 independent filter dimensions:
+
+| Table | Key | Contents |
+|-------|-----|----------|
+| `conversations` | `(session_id, project_id)` | Sessions with timestamps, cost, model |
+| `messages` | `(session_id, project_id, uuid)` | Individual messages |
+| `token_usage` | `(timestamp, session_id, project_id)` | Per-request token counts |
+| `file_operations` | `(timestamp, session_id, project_id, tool, file_path)` | File reads/writes |
+| `bash_commands` | | Shell commands executed |
+| `search_operations` | | Grep/glob operations |
+| `skill_invocations` | | Skill usage |
+| `subagent_invocations` | | Sub-agent calls |
+| `mcp_tool_calls` | | MCP tool invocations |
+| `conversation_metadata` | | AI classification results |
+| `parse_state` | `(key, project_id, source, host_id)` | Incremental parse cursors |
+
+Reference tables: `projects`, `users`, `hosts`, `session_sources`.
+
+Anti-duplicate on pull: `INSERT OR IGNORE` on composite PKs ensures idempotent ingestion across machines.
+
+</details>
 
 ## Project Structure
 
 ```
 local-agent-viewer/
-├── server.py          # HTTP server with role-based gating
-├── parser.py          # JSONL parser (Claude Code, Codex, Desktop)
-├── parser_chatgpt.py  # ChatGPT conversations.json parser
-├── config.py          # Configuration (paths, ports, runtime config)
-├── queries.py         # SQL queries with 4D filters + export
-├── mcp_server.py      # FastMCP server for AI tool integration
-├── dashboard.html     # Analytics dashboard (vanilla JS + Chart.js)
-├── interactions.html  # Conversation browser
-├── qdrant/            # Optional vector knowledge base
-│   ├── store.py
-│   └── indexer.py
-├── utils/services/    # LaunchAgent plists and wrapper scripts
-└── docs/              # Architecture plans
+├── lav/                           # Main package
+│   ├── __init__.py
+│   ├── config.py                  # Paths, ports, runtime config
+│   ├── queries.py                 # SQL queries with 4D filters
+│   ├── server.py                  # HTTP server with role-based gating
+│   ├── mcp_server.py              # FastMCP server for AI tool integration
+│   ├── parsers/
+│   │   ├── jsonl.py               # JSONL parser (Claude Code, Codex, Desktop)
+│   │   └── chatgpt.py             # ChatGPT export parser
+│   ├── classifiers/
+│   │   ├── openai_classifier.py   # OpenAI Structured Outputs classifier
+│   │   └── sql_classifier.py      # Batch CLI classifier (gpt-4.1-mini)
+│   └── qdrant/
+│       ├── store.py               # Qdrant vector store client
+│       ├── indexer.py              # Conversation indexer
+│       └── kb_indexer.py           # CLI indexer (reuses SQL metadata)
+├── static/                        # Frontend
+│   ├── dashboard.html             # Analytics dashboard (Chart.js)
+│   ├── interactions.html          # Conversation browser
+│   └── tags.html                  # Tag cloud + stats
+├── scripts/
+│   └── migrate.py                 # Migration from claude-parser
+├── pyproject.toml                 # Package config + CLI entry points
+├── utils/services/                # LaunchAgent plists + install script
+└── docs/
+    └── CHANGELOG.md
 ```
 
-## Database Schema
+## Requirements
 
-The unified SQLite database uses composite primary keys and 4 independent dimensions:
+- **Python 3.9+** — core functionality uses stdlib only
+- **Optional:** `openai` for AI classification
+- **Optional:** `qdrant-client` for semantic search
+- **Optional:** `fastmcp` for MCP server
 
-- **conversations** — PK: `(session_id, project_id)`
-- **messages** — UNIQUE: `(session_id, project_id, uuid)`
-- **token_usage** — UNIQUE: `(timestamp, session_id, project_id)`
-- **file_operations** — UNIQUE: `(timestamp, session_id, project_id, tool, file_path)`
-- **bash_commands**, **search_operations**, **skill_invocations**, **subagent_invocations**, **mcp_tool_calls**
-- **parse_state** — PK: `(key, project_id, source, host_id)` — tracks incremental cursors
+## Contributing
 
-Anti-duplicate on pull: `INSERT OR IGNORE` on composite PKs ensures idempotent ingestion.
+Contributions are welcome! Please open an issue first to discuss what you'd like to change.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/my-feature`)
+3. Commit your changes (`git commit -am 'Add my feature'`)
+4. Push to the branch (`git push origin feature/my-feature`)
+5. Open a Pull Request
 
 ## License
 
-MIT
+[MIT](LICENSE) — Max Turazzini

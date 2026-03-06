@@ -5,28 +5,38 @@ Analytics tool for monitoring AI coding agents (Claude Code, Codex CLI, Claude D
 ## Quick Start
 
 ```bash
-cd projects/local-agent-viewer
+cd local-agent-viewer
+pip install -e .
 
 # Parse conversations from this host (incremental)
-python3 parser.py
+lav-parse
+# or: python3 -m lav.parsers.jsonl
 
 # Parse only one project
-python3 parser.py --project myProject
+lav-parse --project myProject
 
 # Force full reparse
-python3 parser.py --full
+lav-parse --full
 
 # Parse ChatGPT export (conversations.json)
-python3 parser_chatgpt.py
-
-# ChatGPT full reparse
-python3 parser_chatgpt.py --full
+lav-parse-chatgpt
+# or: python3 -m lav.parsers.chatgpt
 
 # Start server
-python3 server.py
+lav-server
+# or: python3 -m lav.server
+
+# Classify conversations (requires OPENAI_API_KEY in .env)
+lav-classify
+
+# Index into Qdrant KB
+lav-index
+
+# MCP server (requires fastmcp)
+lav-mcp
 
 # Migrate from claude-parser (one-time)
-python3 migrate.py
+python3 scripts/migrate.py
 ```
 
 **Server**: http://localhost:8764
@@ -38,24 +48,32 @@ python3 migrate.py
 
 ```
 local-agent-viewer/
-├── parser.py              # JSONL parser → unified DB (Claude Code, Codex, Cowork)
-├── parser_chatgpt.py      # ChatGPT export parser (conversations.json) → DB
-├── server.py              # ThreadingHTTPServer + REST API + auto-classification
-├── config.py              # Configuration (paths, ports, Qdrant)
-├── queries.py             # SQL queries with 4D filters + metadata
-├── sql_classifier.py      # Batch CLI for conversation classification (gpt-4.1-mini)
-├── kb_indexer.py           # Qdrant indexer (reuses SQL metadata if available)
-├── migrate.py             # Migration from claude-parser (~40 DBs → 1)
-├── classifiers/           # Classification modules
-│   └── openai_classifier.py  # OpenAI Structured Outputs classifier
-├── dashboard.html         # Analytics dashboard (Chart.js)
-├── interactions.html      # Conversation list with classification badges
-├── tags.html              # Tag cloud + classification stats
-├── qdrant/                # Vector knowledge base
-│   ├── store.py
-│   └── indexer.py
-├── data/                  # (legacy, DB moved outside project)
-└── docs/
+├── lav/                       # Main package
+│   ├── __init__.py            # PROJECT_ROOT + .env loading
+│   ├── config.py              # Configuration (paths, ports, Qdrant)
+│   ├── queries.py             # SQL queries with 4D filters + metadata
+│   ├── server.py              # ThreadingHTTPServer + REST API + auto-classification
+│   ├── mcp_server.py          # FastMCP server for AI tool integration
+│   ├── parsers/
+│   │   ├── jsonl.py           # JSONL parser → unified DB (Claude Code, Codex, Cowork)
+│   │   └── chatgpt.py         # ChatGPT export parser (conversations.json) → DB
+│   ├── classifiers/
+│   │   ├── openai_classifier.py  # OpenAI Structured Outputs classifier
+│   │   └── sql_classifier.py    # Batch CLI for classification (gpt-4.1-mini)
+│   └── qdrant/
+│       ├── store.py           # Qdrant vector store client
+│       ├── indexer.py         # Conversation indexer with auto-tagging
+│       └── kb_indexer.py      # CLI indexer (reuses SQL metadata if available)
+├── static/                    # Frontend
+│   ├── dashboard.html         # Analytics dashboard (Chart.js)
+│   ├── interactions.html      # Conversation list with classification badges
+│   └── tags.html              # Tag cloud + classification stats
+├── scripts/
+│   └── migrate.py             # Migration from claude-parser (~40 DBs → 1)
+├── pyproject.toml             # Package config + entry points
+├── docs/
+│   └── CHANGELOG.md
+└── data/                      # (legacy, DB moved outside project)
 ```
 
 ## Architecture
@@ -78,7 +96,7 @@ Composite PK parse_state: `(key, project_id, source)`
 
 ### Agent/Collector Architecture
 
-Distributed architecture for cross-machine analytics. Code (`server.py`, `config.py`, etc.) is shared. **Runtime configurations** are per-machine.
+Distributed architecture for cross-machine analytics. Code is shared (git). **Runtime configurations** are per-machine.
 
 #### Roles
 
@@ -88,28 +106,20 @@ Distributed architecture for cross-machine analytics. Code (`server.py`, `config
 | **collector** | `localhost:8764` | Pulls from remote agents, no local parse |
 | **both** (default) | `localhost:8764` | Agent + collector: pull + local parse + dashboard + MCP |
 
-#### Example setup
-
-| Machine | Role | Why |
-|---------|------|-----|
-| **server** | `both` | Always-on, canonical DB, serves dashboard and MCP. Bind `0.0.0.0`. |
-| **laptop** | `agent` | Generates sessions, exposes `/api/export`. Bind `0.0.0.0`. |
-
 #### Data flow (push-triggered pull)
 
 ```
 laptop lav-parser (every 15 min)
   → parse ~/.claude/projects (local JSONL)
   → local DB (~/.local/share/local-agent-viewer/)
-  → notify_collector() in parser.py
+  → notify_collector() in lav/parsers/jsonl.py
       → POST http://server.local:8764/api/sync (scope=agent)
           → server pulls from laptop via /api/export
           → canonical DB updated
 ```
 
 **IMPORTANT**: Pull happens ON DEMAND via HTTP trigger from the agent.
-NOT periodic polling. The LaunchAgent `lav-parser` on the agent
-triggers pull automatically after each successful incremental parse.
+NOT periodic polling.
 
 #### Per-machine config
 
@@ -133,15 +143,11 @@ Each machine has its own `~/.local/share/local-agent-viewer/config.json` (local,
 }
 ```
 
-**`collector_url`** (optional, agents only): URL of the collector to notify after each parse. Must be reachable (LAN or VPN).
-
-If the file doesn't exist, default = `{"role": "both", "port": 8764, "agents": []}`.
-
 #### What's local vs shared
 
 | What | Path | Sync |
 |------|------|------|
-| Code (server.py, config.py, etc.) | `local-agent-viewer/` | Shared (git) |
+| Code | `local-agent-viewer/` | Shared (git) |
 | Runtime config | `~/.local/share/local-agent-viewer/config.json` | **Local** per machine |
 | SQLite database | `~/.local/share/local-agent-viewer/local_agent_viewer.db` | **Local** per machine |
 | Qdrant data | `~/.local/share/local-agent-viewer/qdrant_data/` | **Local** per machine |
@@ -194,9 +200,9 @@ Query filters: `?project=myProject&user=john&host=laptop&client=claude_code&star
 
 **Indexer** (indexes conversations from canonical DB):
 ```bash
-python3 kb_indexer.py --dry-run   # preview
-python3 kb_indexer.py --limit 50  # test with 50
-python3 kb_indexer.py             # all
+lav-index --dry-run   # preview
+lav-index --limit 50  # test with 50
+lav-index             # all
 ```
 
 **Fallback file mode**: if `QDRANT_URL` is not set, uses local file in `~/.local/share/local-agent-viewer/qdrant_data/`.
@@ -212,20 +218,20 @@ Structured classification via **gpt-4.1-mini** (OpenAI Structured Outputs). Inde
 **Schema**: summary, abstract, process, classification, data_sensitivity, sensitive_data_types, topics, people, clients, tags.
 
 **When it runs**:
-1. **Automatic on sync** — After each pull/parse in `server.py`, newly imported conversations are classified automatically (requires `OPENAI_API_KEY` in `.env`).
+1. **Automatic on sync** — After each pull/parse in `lav/server.py`, newly imported conversations are classified automatically (requires `OPENAI_API_KEY` in `.env`).
 2. **Manual batch** — Via CLI for backlog or reclassification:
 ```bash
-python3 sql_classifier.py                       # incremental (unclassified only)
-python3 sql_classifier.py --full --since 2026-01-01  # reclassify from date
-python3 sql_classifier.py --limit 50            # test on 50
-python3 sql_classifier.py --dry-run             # preview without writing
+lav-classify                                  # incremental (unclassified only)
+lav-classify --full --since 2026-01-01        # reclassify from date
+lav-classify --limit 50                       # test on 50
+lav-classify --dry-run                        # preview without writing
 ```
 
 ### Qdrant KB (semantic search)
 
 Vector indexing for meaning-based search. Generates embeddings + payload.
 
-**SQL integration**: `kb_indexer.py` checks if a conversation already has SQL metadata in `conversation_metadata`. If so, uses it as `pre_metadata` (skips Haiku call → cost savings). Otherwise, generates with Haiku.
+**SQL integration**: `lav/qdrant/kb_indexer.py` checks if a conversation already has SQL metadata in `conversation_metadata`. If so, uses it as `pre_metadata` (skips Haiku call → cost savings). Otherwise, generates with Haiku.
 
 ### Classification API endpoints
 

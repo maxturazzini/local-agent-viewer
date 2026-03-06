@@ -20,7 +20,7 @@ Usage:
 
 Payload stored in Qdrant per conversation:
     session_id      str         Identifier (UUID)
-    project         str         Workspace name (es. miniMe)
+    project         str         Workspace name (e.g. miniMe)
     user            str         Username
     host            str         Hostname where conversation happened
     source          str         Tool: claude_code | chatgpt | codex_cli | cowork_desktop
@@ -48,27 +48,14 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-# ── Bootstrap path & env ────────────────────────────────────────────────────
-
-_PROJECT_DIR = Path(__file__).parent
-sys.path.insert(0, str(_PROJECT_DIR))
-
-_env_file = _PROJECT_DIR / ".env"
-if _env_file.exists():
-    with open(_env_file) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, value = line.split("=", 1)
-                os.environ.setdefault(key.strip(), value.strip())
-
-from config import UNIFIED_DB_PATH, QDRANT_DATA_DIR, QDRANT_COLLECTION, QDRANT_URL
+import lav  # noqa: F401 — triggers .env loading
+from lav.config import UNIFIED_DB_PATH, QDRANT_DATA_DIR, QDRANT_COLLECTION, QDRANT_URL
 
 
 # ── Store factory ────────────────────────────────────────────────────────────
 
 def _get_store():
-    from qdrant.store import ConversationVectorStore
+    from lav.qdrant.store import ConversationVectorStore
     if QDRANT_URL:
         store = ConversationVectorStore(url=QDRANT_URL, collection=QDRANT_COLLECTION)
     else:
@@ -256,7 +243,7 @@ def run(
             print("  Nothing to do.")
             return
 
-        from qdrant.indexer import ConversationIndexer
+        from lav.qdrant.indexer import ConversationIndexer
         indexer = ConversationIndexer(store)
 
         indexed = 0

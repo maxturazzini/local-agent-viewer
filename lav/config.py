@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from lav import PROJECT_ROOT
+
 # ===========================================================================
 # DATABASE
 # ===========================================================================
@@ -14,7 +16,7 @@ from typing import Any, Dict, List, Optional
 # Each machine has its own DB in ~/.local/share/local-agent-viewer/
 # The collector pulls data from agents via /api/export
 _LOCAL_DB_PATH = Path.home() / ".local" / "share" / "local-agent-viewer" / "local_agent_viewer.db"
-_LEGACY_DB_PATH = Path(__file__).parent / "data" / "local_agent_viewer.db"
+_LEGACY_DB_PATH = PROJECT_ROOT / "data" / "local_agent_viewer.db"
 UNIFIED_DB_PATH = _LOCAL_DB_PATH if _LOCAL_DB_PATH.exists() else _LEGACY_DB_PATH
 
 # ===========================================================================
@@ -148,7 +150,7 @@ CHATGPT_EXPORT_PATH = Path(_chatgpt_env) if _chatgpt_env else None
 # LOCAL SETTINGS (optional manifest)
 # ===========================================================================
 
-LOCAL_SETTINGS_PATH = Path(__file__).parent / ".claude" / "settings.local.json"
+LOCAL_SETTINGS_PATH = PROJECT_ROOT / ".claude" / "settings.local.json"
 
 
 def _expand_path(value: str) -> Path:

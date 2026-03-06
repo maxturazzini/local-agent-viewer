@@ -7,17 +7,7 @@ write connection for sync operations. Serves JSON data from
 the unified SQLite database.
 """
 
-# Load .env file if present (for API keys)
-from pathlib import Path as _Path
-_env_file = _Path(__file__).parent / ".env"
-if _env_file.exists():
-    import os
-    with open(_env_file) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith('#') and '=' in line:
-                key, value = line.split('=', 1)
-                os.environ[key.strip()] = value.strip()
+import lav  # noqa: F401 — triggers .env loading
 
 import getpass
 import io
@@ -33,7 +23,8 @@ from socketserver import ThreadingMixIn
 from typing import Optional
 from urllib.parse import urlparse, parse_qs, unquote
 
-from config import (
+from lav import PROJECT_ROOT
+from lav.config import (
     UNIFIED_DB_PATH,
     QDRANT_DATA_DIR,
     QDRANT_COLLECTION,
@@ -47,7 +38,7 @@ from config import (
     get_chatgpt_export_path,
     load_runtime_config,
 )
-from parser import (
+from lav.parsers.jsonl import (
     init_db,
     parse_project,
     parse_codex_sessions,
@@ -65,8 +56,8 @@ from parser import (
     set_parse_state,
     ingest_remote_sessions,
 )
-from parser_chatgpt import parse_chatgpt_export
-from queries import (
+from lav.parsers.chatgpt import parse_chatgpt_export
+from lav.queries import (
     run_query,
     build_filters,
     get_token_stats,
@@ -118,7 +109,7 @@ def get_kb_store(require_openai: bool = True):
         import os
         if not require_openai and not os.getenv("OPENAI_API_KEY"):
             return None
-        from qdrant.store import ConversationVectorStore
+        from lav.qdrant.store import ConversationVectorStore
         if QDRANT_URL:
             _kb_store = ConversationVectorStore(url=QDRANT_URL, collection=QDRANT_COLLECTION)
         else:
@@ -132,7 +123,7 @@ def get_kb_indexer():
     """Get or create the KB indexer (lazy initialization)."""
     global _kb_indexer
     if _kb_indexer is None:
-        from qdrant.indexer import ConversationIndexer
+        from lav.qdrant.indexer import ConversationIndexer
         _kb_indexer = ConversationIndexer(get_kb_store())
     return _kb_indexer
 
@@ -320,7 +311,7 @@ def _auto_classify_new(conv_ids: set = None) -> int:
         _sync_status["progress"] = f"Classifying {len(candidates)} conversations..."
 
         import openai
-        from classifiers.openai_classifier import classify_conversation
+        from lav.classifiers.openai_classifier import classify_conversation
 
         client = openai.OpenAI(api_key=api_key)
         write_conn = init_db(UNIFIED_DB_PATH)
@@ -538,6 +529,10 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
 class APIHandler(SimpleHTTPRequestHandler):
     """HTTP handler for API endpoints and static files."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("directory", str(PROJECT_ROOT / "static"))
+        super().__init__(*args, **kwargs)
 
     # Endpoints allowed in agent-only mode
     _AGENT_PATHS = {"/api/health", "/api/info", "/api/export"}
@@ -1222,9 +1217,6 @@ class APIHandler(SimpleHTTPRequestHandler):
 
 
 def main():
-    import os
-    os.chdir(Path(__file__).parent)
-
     role = _runtime_config["role"]
     port = _runtime_config.get("port", PORT)
     # Agent and both: bind 0.0.0.0 for remote access; collector-only: localhost

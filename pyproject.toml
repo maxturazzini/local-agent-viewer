@@ -1,0 +1,21 @@
+[project]
+name = "local-agent-viewer"
+version = "0.1.0"
+description = "Analytics tool for monitoring AI coding agents across multiple users, hosts, and projects"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+
+[project.optional-dependencies]
+qdrant = ["qdrant-client", "openai", "anthropic"]
+mcp = ["fastmcp"]
+classifiers = ["openai"]
+all = ["qdrant-client", "openai", "anthropic", "fastmcp"]
+
+[project.scripts]
+lav-server = "lav.server:main"
+lav-parse = "lav.parsers.jsonl:main"
+lav-parse-chatgpt = "lav.parsers.chatgpt:main"
+lav-classify = "lav.classifiers.sql_classifier:main"
+lav-index = "lav.qdrant.kb_indexer:main"
+lav-mcp = "lav.mcp_server:main"

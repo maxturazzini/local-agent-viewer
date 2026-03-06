@@ -17,8 +17,9 @@ import argparse
 import sqlite3
 from pathlib import Path
 
-from config import UNIFIED_DB_PATH
-from parser import (
+from lav import PROJECT_ROOT
+from lav.config import UNIFIED_DB_PATH
+from lav.parsers.jsonl import (
     init_db,
     get_or_create_project,
     get_or_create_user,
@@ -28,7 +29,7 @@ from parser import (
 )
 
 # Path to existing claude-parser data
-CLAUDE_PARSER_DATA = Path(__file__).parent.parent / "claude-parser" / "data"
+CLAUDE_PARSER_DATA = PROJECT_ROOT.parent / "claude-parser" / "data"
 
 
 def migrate_single_db(unified_conn: sqlite3.Connection, old_db_path: Path, dry_run: bool = False) -> dict:

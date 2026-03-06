@@ -25,7 +25,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Generator, Optional
 
-from config import (
+from lav.config import (
     UNIFIED_DB_PATH,
     FILE_OPERATION_TOOLS,
     SEARCH_TOOLS,
@@ -1889,12 +1889,8 @@ def notify_collector(runtime_config: dict) -> None:
     import threading
     import urllib.request
 
-    api_key = ""
-    env_file = Path(__file__).parent / ".env"
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            if line.startswith("LAV_API_KEY="):
-                api_key = line.split("=", 1)[1].strip()
+    import os
+    api_key = os.environ.get("LAV_API_KEY", "")
 
     def _post():
         try:

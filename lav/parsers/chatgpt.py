@@ -22,12 +22,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from config import (
+from lav.config import (
     SOURCE_CHATGPT,
     CHATGPT_EXPORT_PATH,
     get_chatgpt_export_path,
 )
-from parser import (
+from lav.parsers.jsonl import (
     init_db,
     get_or_create_project,
     get_or_create_user,

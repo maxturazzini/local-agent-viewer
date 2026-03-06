@@ -19,27 +19,13 @@ Tools (write, require LAV_API_KEY):
 """
 
 import os
-import sys
 import sqlite3
 from pathlib import Path
 from typing import Optional
 
-# Add project dir to path for imports
-_PROJECT_DIR = Path(__file__).parent
-sys.path.insert(0, str(_PROJECT_DIR))
-
-# Load .env (same pattern as server.py)
-_env_file = _PROJECT_DIR / ".env"
-if _env_file.exists():
-    with open(_env_file) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, value = line.split("=", 1)
-                os.environ.setdefault(key.strip(), value.strip())
-
+import lav  # noqa: F401 — triggers .env loading
 from fastmcp import FastMCP
-from config import UNIFIED_DB_PATH, QDRANT_DATA_DIR, QDRANT_COLLECTION, QDRANT_URL
+from lav.config import UNIFIED_DB_PATH, QDRANT_DATA_DIR, QDRANT_COLLECTION, QDRANT_URL
 
 # Lazy imports to avoid loading heavy deps at startup
 _kb_store = None
@@ -60,7 +46,7 @@ def _get_kb_store():
     """Lazy-init Qdrant vector store (HTTP or file mode)."""
     global _kb_store
     if _kb_store is None:
-        from qdrant.store import ConversationVectorStore
+        from lav.qdrant.store import ConversationVectorStore
         if QDRANT_URL:
             _kb_store = ConversationVectorStore(url=QDRANT_URL, collection=QDRANT_COLLECTION)
         else:
@@ -109,7 +95,7 @@ def get_conversations(
         end: End date (YYYY-MM-DD)
         limit: Max results (default 20)
     """
-    from queries import get_conversations_list, run_query
+    from lav.queries import get_conversations_list, run_query
 
     conn = _get_read_connection()
     if not conn:
@@ -149,7 +135,7 @@ def get_conversation_details(session_id: str) -> dict:
     Args:
         session_id: The conversation session UUID
     """
-    from queries import get_conversation_detail
+    from lav.queries import get_conversation_detail
 
     conn = _get_read_connection()
     if not conn:
@@ -226,7 +212,7 @@ def sync(
         return {"error": "Invalid or missing api_key"}
 
     # Import sync_data from server module
-    from server import sync_data
+    from lav.server import sync_data
 
     result = sync_data(
         scope=scope,
@@ -266,7 +252,7 @@ def kb_index(
         return {"error": f"KB not available: {e}"}
 
     # Get conversation from SQLite
-    from queries import get_conversation_detail
+    from lav.queries import get_conversation_detail
     conn = _get_read_connection()
     if not conn:
         return {"error": "No database. Run sync first."}
@@ -288,7 +274,7 @@ def kb_index(
     metadata = json.loads(pre_metadata) if pre_metadata else None
 
     # Index via ConversationIndexer
-    from qdrant.indexer import ConversationIndexer
+    from lav.qdrant.indexer import ConversationIndexer
     indexer = ConversationIndexer(store)
 
     try:

@@ -15,30 +15,30 @@ import anthropic
 from .store import ConversationVectorStore
 
 
-TAGGING_PROMPT = """Analizza questa conversazione tra un utente (Max) e un assistente AI e estrai metadati strutturati.
+TAGGING_PROMPT = """Analyze this conversation between a user and an AI assistant and extract structured metadata.
 
-CONVERSAZIONE:
+CONVERSATION:
 {conversation}
 
-Rispondi SOLO con JSON valido (nessun testo prima o dopo):
+Respond ONLY with valid JSON (no text before or after):
 {{
-  "summary": "riassunto in 1-2 frasi della conversazione",
-  "abstract": "descrizione più dettagliata in 2-3 frasi del contesto, problema affrontato e decisioni prese",
-  "classification": "UNA tra: development | meeting | analysis | brainstorm | support | learning",
+  "summary": "1-2 sentence summary of the conversation",
+  "abstract": "more detailed 2-3 sentence description of the context, problem addressed, and decisions made",
+  "classification": "ONE of: development | meeting | analysis | brainstorm | support | learning",
   "topics": ["topic1", "topic2", "topic3"],
-  "people": ["nome persona se menzionata nella conversazione, escludi Max e l'assistente"],
-  "clients": ["nome cliente/azienda se menzionato"],
-  "data_sensitivity": "UNA tra: public | internal | confidential | restricted",
-  "sensitive_data_types": ["tipo1", "tipo2"]
+  "people": ["person name if mentioned in the conversation, exclude the user and the assistant"],
+  "clients": ["client/company name if mentioned"],
+  "data_sensitivity": "ONE of: public | internal | confidential | restricted",
+  "sensitive_data_types": ["type1", "type2"]
 }}
 
-NOTE:
-- classification: development=coding/architettura, meeting=riunioni/call, analysis=analisi dati/ricerca, brainstorm=ideazione, support=troubleshooting, learning=studio/formazione
-- topics: max 5, parole chiave specifiche (es. "qdrant", "vector-database", non generiche come "AI")
-- people: solo persone terze menzionate, NON Max o l'assistente
-- clients: aziende/clienti menzionati (es. "Coop", "HESTRO")
-- data_sensitivity: public=discussioni generiche senza dati sensibili, internal=dettagli interni di lavoro/architettura/tool, confidential=dati clienti/strategie commerciali/offerte/prezzi, restricted=credenziali/token/API key/dati finanziari personali
-- sensitive_data_types: lista vuota se public, altrimenti scegli tra: credentials, api_keys, financial, personal_data, client_strategy, pricing, contracts, internal_architecture, employee_data
+NOTES:
+- classification: development=coding/architecture, meeting=meetings/calls, analysis=data analysis/research, brainstorm=ideation, support=troubleshooting, learning=study/training
+- topics: max 5, specific keywords (e.g. "qdrant", "vector-database", not generic like "AI")
+- people: only third parties mentioned, NOT the user or the assistant
+- clients: companies/clients mentioned
+- data_sensitivity: public=generic discussions without sensitive data, internal=internal work details/architecture/tools, confidential=client data/commercial strategies/offers/pricing, restricted=credentials/tokens/API keys/personal financial data
+- sensitive_data_types: empty list if public, otherwise choose from: credentials, api_keys, financial, personal_data, client_strategy, pricing, contracts, internal_architecture, employee_data
 """
 
 
@@ -70,7 +70,7 @@ def generate_tags(text: str, api_key: Optional[str] = None) -> Dict[str, Any]:
         result = json.loads(response_text)
     except json.JSONDecodeError:
         result = {
-            "summary": "Conversazione non analizzabile",
+            "summary": "Conversation could not be analyzed",
             "abstract": "",
             "classification": "development",
             "topics": [],
