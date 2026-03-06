@@ -104,6 +104,13 @@
             background: var(--ai-gradient);
             color: var(--white);
         }
+        .nav-sync-btn {
+            color: var(--dim-gray); font-weight: 600; font-size: 0.9rem;
+            padding: 8px 16px; border-radius: 8px; border: 1px solid var(--light-gray);
+            background: var(--white); cursor: pointer; transition: all 0.2s;
+        }
+        .nav-sync-btn:hover { background: var(--light-gray); color: var(--black); }
+        .nav-sync-btn.syncing { opacity: 0.6; pointer-events: none; }
 
         .main-nav-link.settings-link {
             display: flex;
@@ -1176,6 +1183,7 @@
             <a class="main-nav-link active" data-page="dashboard">Dashboard</a>
             <a class="main-nav-link" href="interactions.html" data-page="interactions">Interactions</a>
             <a class="main-nav-link" href="tags.html" data-page="tags">Tags</a>
+            <button class="nav-sync-btn" id="navSyncBtn" title="Sync All">Sync</button>
             <a class="main-nav-link settings-link" id="settingsBtn" title="Settings">
                 <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="12" cy="12" r="3"></circle>
@@ -2084,6 +2092,22 @@
             syncBtn.classList.remove('syncing');
         }
     }
+
+    // Nav sync button (quick trigger)
+    document.getElementById('navSyncBtn').addEventListener('click', async function() {
+        const btn = this;
+        btn.classList.add('syncing');
+        btn.textContent = 'Syncing...';
+        try {
+            await fetch(`${API_BASE}/api/sync`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({scope:'all'}) });
+            pollSyncStatus();
+            btn.textContent = 'Done!';
+            setTimeout(() => { btn.textContent = 'Sync'; btn.classList.remove('syncing'); }, 2000);
+        } catch(e) {
+            btn.textContent = 'Failed';
+            setTimeout(() => { btn.textContent = 'Sync'; btn.classList.remove('syncing'); }, 2000);
+        }
+    });
 
     // ===== TAB SWITCHING =====
     document.querySelectorAll('#dashboardTabs .tab').forEach(tab => {

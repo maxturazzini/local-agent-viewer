@@ -102,6 +102,13 @@
             background: var(--ai-gradient);
             color: var(--white);
         }
+        .nav-sync-btn {
+            color: var(--dim-gray); font-weight: 600; font-size: 0.9rem;
+            padding: 8px 16px; border-radius: 8px; border: 1px solid var(--light-gray);
+            background: var(--white); cursor: pointer; transition: all 0.2s;
+        }
+        .nav-sync-btn:hover { background: var(--light-gray); color: var(--black); }
+        .nav-sync-btn.syncing { opacity: 0.6; pointer-events: none; }
 
         /* ===== FILTERS ===== */
         .filters-bar {
@@ -770,6 +777,7 @@
             <a class="main-nav-link" href="dashboard.html">Dashboard</a>
             <a class="main-nav-link active">Interactions</a>
             <a class="main-nav-link" href="tags.html">Tags</a>
+            <button class="nav-sync-btn" id="navSyncBtn" title="Sync All">Sync</button>
         </nav>
     </div>
 
@@ -1639,6 +1647,21 @@
     }
 
     init();
+
+    // Sync button
+    document.getElementById('navSyncBtn').addEventListener('click', async function() {
+        const btn = this;
+        btn.classList.add('syncing');
+        btn.textContent = 'Syncing...';
+        try {
+            await fetch('/api/sync', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({scope:'all'}) });
+            btn.textContent = 'Done!';
+            setTimeout(() => { btn.textContent = 'Sync'; btn.classList.remove('syncing'); location.reload(); }, 2000);
+        } catch(e) {
+            btn.textContent = 'Failed';
+            setTimeout(() => { btn.textContent = 'Sync'; btn.classList.remove('syncing'); }, 2000);
+        }
+    });
     </script>
 </body>
 </html>

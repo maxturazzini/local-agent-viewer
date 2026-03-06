@@ -49,6 +49,8 @@
         }
 
         .header-left { display: flex; align-items: center; gap: 20px; }
+        .logo-container { height: 40px; }
+        .logo-container svg { height: 100%; width: auto; }
         .header-title { border-left: 2px solid var(--light-gray); padding-left: 20px; }
         .header h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 2px; }
         .header .subtitle { color: var(--dim-gray); font-size: 0.85rem; }
@@ -61,6 +63,13 @@
         }
         .main-nav-link:hover { background: var(--light-gray); color: var(--black); }
         .main-nav-link.active { background: var(--ai-gradient); color: var(--white); }
+        .nav-sync-btn {
+            color: var(--dim-gray); font-weight: 600; font-size: 0.9rem;
+            padding: 8px 16px; border-radius: 8px; border: 1px solid var(--light-gray);
+            background: var(--white); cursor: pointer; transition: all 0.2s;
+        }
+        .nav-sync-btn:hover { background: var(--light-gray); color: var(--black); }
+        .nav-sync-btn.syncing { opacity: 0.6; pointer-events: none; }
 
         /* Stats bar */
         .stats-bar {
@@ -158,6 +167,17 @@
 <body>
     <div class="header">
         <div class="header-left">
+            <div class="logo-container">
+                <svg viewBox="0 0 861.25 247.91" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                        <style>.cls-2{fill:#004BFF;stroke-width:0px;}</style>
+                    </defs>
+                    <path class="cls-2" d="m126.54,0h610.76C805.71,0,861.25,55.54,861.25,123.96h0c0,68.41-55.54,123.96-123.96,123.96H0v-121.37C0,56.7,56.7,0,126.54,0Z"/>
+                    <text style="font-family:'Inter',sans-serif;font-size:170.26px;font-weight:700;" transform="translate(87.56 186.31)">
+                        <tspan x="0" y="0" fill="#35C2FF">AI, </tspan><tspan fill="#FFFFFF">MAX</tspan>
+                    </text>
+                </svg>
+            </div>
             <div class="header-title">
                 <h1>Tags & Classification</h1>
                 <div class="subtitle" id="subtitleText">Loading...</div>
@@ -167,6 +187,7 @@
             <a class="main-nav-link" href="dashboard.html">Dashboard</a>
             <a class="main-nav-link" href="interactions.html">Interactions</a>
             <a class="main-nav-link active">Tags</a>
+            <button class="nav-sync-btn" id="navSyncBtn" title="Sync All">Sync</button>
         </nav>
     </div>
 
@@ -344,6 +365,21 @@
             renderProcesses('processesCloud', cloud.processes || []);
         });
     })();
+
+    // Sync button
+    document.getElementById('navSyncBtn').addEventListener('click', async function() {
+        const btn = this;
+        btn.classList.add('syncing');
+        btn.textContent = 'Syncing...';
+        try {
+            await fetch('/api/sync', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({scope:'all'}) });
+            btn.textContent = 'Done!';
+            setTimeout(() => { btn.textContent = 'Sync'; btn.classList.remove('syncing'); location.reload(); }, 2000);
+        } catch(e) {
+            btn.textContent = 'Failed';
+            setTimeout(() => { btn.textContent = 'Sync'; btn.classList.remove('syncing'); }, 2000);
+        }
+    });
     </script>
 </body>
 </html>
