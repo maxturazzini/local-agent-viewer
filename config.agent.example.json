@@ -1,0 +1,5 @@
+{
+  "role": "agent",
+  "port": 8764,
+  "collector_url": "http://collector.local:8764"
+}

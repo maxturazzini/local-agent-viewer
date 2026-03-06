@@ -1,7 +1,7 @@
 """
-ConversationVectorStore - Qdrant client with integrated OpenAI embeddings.
+InteractionVectorStore - Qdrant client with integrated OpenAI embeddings.
 
-Provides semantic search for indexed Claude conversations.
+Provides semantic search for indexed AI interactions.
 Supports both local file mode and remote HTTP mode (Qdrant server).
 """
 
@@ -23,7 +23,7 @@ class SearchResult:
     session_id: str
 
 
-class ConversationVectorStore:
+class InteractionVectorStore:
     """Qdrant store + OpenAI embeddings in one class.
 
     Supports two connection modes:
@@ -37,7 +37,7 @@ class ConversationVectorStore:
     def __init__(
         self,
         data_path: Optional[Path] = None,
-        collection: str = "conversations",
+        collection: str = "interactions",
         openai_api_key: Optional[str] = None,
         url: Optional[str] = None,
     ):
@@ -68,8 +68,73 @@ class ConversationVectorStore:
 
         self._embed_cache: Dict[str, List[float]] = {}
 
+    def migrate_collection(self) -> None:
+        """Migrate data from old 'conversations' collection to new 'interactions' collection.
+
+        Checks if the old collection exists and the new one does not, then copies
+        all points in batches of 100 and deletes the old collection.
+        """
+        old_name = "conversations"
+        new_name = "interactions"
+
+        collections = [c.name for c in self.client.get_collections().collections]
+
+        if old_name not in collections:
+            return
+        # Skip if new collection already has data
+        if new_name in collections:
+            new_info = self.client.get_collection(new_name)
+            if new_info.points_count > 0:
+                return
+
+        print(f"[info] Migrating collection '{old_name}' → '{new_name}'")
+
+        # Create new collection with same config
+        self.client.create_collection(
+            collection_name=new_name,
+            vectors_config=models.VectorParams(
+                size=self.VECTOR_SIZE,
+                distance=models.Distance.COSINE,
+            ),
+        )
+
+        # Scroll and copy all points in batches
+        offset = None
+        total_migrated = 0
+        while True:
+            results, offset = self.client.scroll(
+                collection_name=old_name,
+                limit=100,
+                offset=offset,
+                with_payload=True,
+                with_vectors=True,
+            )
+
+            if results:
+                # Convert Record objects to PointStruct (needed for newer qdrant-client versions)
+                points = [
+                    models.PointStruct(id=r.id, vector=r.vector, payload=r.payload)
+                    for r in results
+                ]
+                self.client.upsert(
+                    collection_name=new_name,
+                    points=points,
+                    wait=True,
+                )
+                total_migrated += len(results)
+
+            if offset is None:
+                break
+
+        # Delete old collection
+        self.client.delete_collection(old_name)
+        print(f"[info] Migration complete: {total_migrated} points moved, '{old_name}' deleted")
+
     def ensure_collection(self, recreate: bool = False) -> None:
         """Create collection if it doesn't exist."""
+        # Attempt migration from old 'conversations' collection
+        self.migrate_collection()
+
         collections = [c.name for c in self.client.get_collections().collections]
 
         if recreate and self.collection in collections:
@@ -172,7 +237,7 @@ class ConversationVectorStore:
         return True
 
     def is_indexed(self, session_id: str) -> bool:
-        """Check if conversation is indexed."""
+        """Check if interaction is indexed."""
         point_id = self._session_to_id(session_id)
 
         try:
@@ -222,7 +287,7 @@ class ConversationVectorStore:
         return tag_counts
 
     def count(self, filters: Optional[Dict] = None) -> int:
-        """Count indexed conversations with optional filters."""
+        """Count indexed interactions with optional filters."""
         qdrant_filter = self._build_filter(filters) if filters else None
 
         result = self.client.count(

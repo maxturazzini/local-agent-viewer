@@ -12,6 +12,12 @@ mcp = ["fastmcp"]
 classifiers = ["openai"]
 all = ["qdrant-client", "openai", "anthropic", "fastmcp"]
 
+[tool.setuptools.packages.find]
+include = ["lav*"]
+
+[tool.setuptools.package-data]
+lav = ["static/**/*"]
+
 [project.scripts]
 lav-server = "lav.server:main"
 lav-parse = "lav.parsers.jsonl:main"

@@ -650,14 +650,14 @@ def get_date_range(conn, project_id=None, user_id=None, host_id=None, client_sou
 
 
 # ===========================================================================
-# CONVERSATIONS
+# INTERACTIONS
 # ===========================================================================
 
-def get_conversations_list(conn, project_id=None, user_id=None, host_id=None,
+def get_interactions_list(conn, project_id=None, user_id=None, host_id=None,
                            search=None, start_date=None, end_date=None,
                            limit=50, offset=0, client_source=None,
                            classification=None, sensitivity=None):
-    """Get list of conversations with 4D filters + optional metadata filters."""
+    """Get list of interactions with 4D filters + optional metadata filters."""
     where, params = build_filters(
         project_id=project_id, user_id=user_id, host_id=host_id,
         start=start_date, end=end_date, client=client_source, table_alias='c'
@@ -697,7 +697,7 @@ def get_conversations_list(conn, project_id=None, user_id=None, host_id=None,
             where = " WHERE " + extra
         params.append(sensitivity)
 
-    conversations = run_query(conn, f"""
+    interactions = run_query(conn, f"""
         SELECT
             c.session_id,
             c.project_id,
@@ -722,12 +722,12 @@ def get_conversations_list(conn, project_id=None, user_id=None, host_id=None,
             cm.classification as meta_classification,
             cm.data_sensitivity as meta_sensitivity,
             cm.summary as meta_summary
-        FROM conversations c
+        FROM interactions c
         {join}
         LEFT JOIN projects p ON p.id = c.project_id
         LEFT JOIN users u ON u.id = c.user_id
         LEFT JOIN hosts h ON h.id = c.host_id
-        LEFT JOIN conversation_metadata cm ON cm.session_id = c.session_id AND cm.project_id = c.project_id
+        LEFT JOIN interaction_metadata cm ON cm.session_id = c.session_id AND cm.project_id = c.project_id
         {where}
         ORDER BY c.timestamp DESC
         LIMIT ? OFFSET ?
@@ -735,15 +735,15 @@ def get_conversations_list(conn, project_id=None, user_id=None, host_id=None,
 
     count_result = run_query(conn, f"""
         SELECT COUNT(*) as total
-        FROM conversations c
+        FROM interactions c
         {join}
-        LEFT JOIN conversation_metadata cm ON cm.session_id = c.session_id AND cm.project_id = c.project_id
+        LEFT JOIN interaction_metadata cm ON cm.session_id = c.session_id AND cm.project_id = c.project_id
         {where}
     """, params if params else None)
     total = count_result[0]['total'] if count_result else 0
 
     return {
-        "conversations": conversations,
+        "interactions": interactions,
         "total": total,
         "limit": limit,
         "offset": offset,
@@ -803,10 +803,10 @@ def search_messages(conn, query: str, limit: int = 20,
             cm.summary as meta_summary,
             cm.process as meta_process
         FROM messages m
-        JOIN conversations c ON m.session_id = c.session_id AND m.project_id = c.project_id
+        JOIN interactions c ON m.session_id = c.session_id AND m.project_id = c.project_id
         LEFT JOIN projects p ON p.id = m.project_id
         LEFT JOIN users u ON u.id = m.user_id
-        LEFT JOIN conversation_metadata cm
+        LEFT JOIN interaction_metadata cm
             ON cm.session_id = m.session_id AND cm.project_id = m.project_id
         {join}
         {where}
@@ -818,13 +818,13 @@ def search_messages(conn, query: str, limit: int = 20,
     return results
 
 
-def get_conversation_detail(conn, session_id, project_id=None):
-    """Get full conversation transcript with parent info."""
+def get_interaction_detail(conn, session_id, project_id=None):
+    """Get full interaction transcript with parent info."""
     if project_id is not None:
         conv = run_query(conn, """
             SELECT c.*, COALESCE(ss.source, 'unknown') as client_source,
                    p.name as project_name, u.username, h.hostname
-            FROM conversations c
+            FROM interactions c
             LEFT JOIN session_sources ss ON ss.session_id = c.session_id AND ss.project_id = c.project_id
             LEFT JOIN projects p ON p.id = c.project_id
             LEFT JOIN users u ON u.id = c.user_id
@@ -835,7 +835,7 @@ def get_conversation_detail(conn, session_id, project_id=None):
         conv = run_query(conn, """
             SELECT c.*, COALESCE(ss.source, 'unknown') as client_source,
                    p.name as project_name, u.username, h.hostname
-            FROM conversations c
+            FROM interactions c
             LEFT JOIN session_sources ss ON ss.session_id = c.session_id AND ss.project_id = c.project_id
             LEFT JOIN projects p ON p.id = c.project_id
             LEFT JOIN users u ON u.id = c.user_id
@@ -846,15 +846,15 @@ def get_conversation_detail(conn, session_id, project_id=None):
     if not conv:
         return None
 
-    conversation = conv[0]
-    pid = conversation.get('project_id')
+    interaction = conv[0]
+    pid = interaction.get('project_id')
 
-    if conversation.get('parent_session_id'):
+    if interaction.get('parent_session_id'):
         parent = run_query(conn, """
             SELECT session_id, summary, display, timestamp
-            FROM conversations WHERE session_id = ? AND project_id = ?
-        """, [conversation['parent_session_id'], pid])
-        conversation['parent_conversation'] = parent[0] if parent else None
+            FROM interactions WHERE session_id = ? AND project_id = ?
+        """, [interaction['parent_session_id'], pid])
+        interaction['parent_interaction'] = parent[0] if parent else None
 
     messages = run_query(conn, """
         SELECT uuid, type, content, timestamp, tokens_in, tokens_out, model
@@ -864,7 +864,7 @@ def get_conversation_detail(conn, session_id, project_id=None):
     """, [session_id, pid])
 
     return {
-        "conversation": conversation,
+        "interaction": interaction,
         "messages": messages,
         "message_count": len(messages),
     }
@@ -887,7 +887,7 @@ def get_users_list(conn):
             COUNT(DISTINCT c.project_id) as total_projects,
             SUM(c.total_tokens) as total_tokens
         FROM users u
-        LEFT JOIN conversations c ON c.user_id = u.id
+        LEFT JOIN interactions c ON c.user_id = u.id
         WHERE u.username != 'unknown'
         GROUP BY u.id
         ORDER BY total_sessions DESC
@@ -898,7 +898,7 @@ def get_users_list(conn):
         uid = user['id']
         hosts = run_query(conn, """
             SELECT DISTINCT h.hostname
-            FROM conversations c
+            FROM interactions c
             JOIN hosts h ON h.id = c.host_id
             WHERE c.user_id = ?
         """, [uid])
@@ -931,7 +931,7 @@ def get_hosts_list(conn):
             COUNT(DISTINCT c.user_id) as total_users,
             SUM(c.total_tokens) as total_tokens
         FROM hosts h
-        LEFT JOIN conversations c ON c.host_id = h.id
+        LEFT JOIN interactions c ON c.host_id = h.id
         WHERE h.hostname != 'unknown'
         GROUP BY h.id
         ORDER BY total_sessions DESC
@@ -967,7 +967,7 @@ def get_projects_list(conn, user_id=None, host_id=None):
             SUM(c.total_tokens) as total_tokens,
             GROUP_CONCAT(DISTINCT ss.source) as sources_csv
         FROM projects p
-        LEFT JOIN conversations c ON c.project_id = p.id
+        LEFT JOIN interactions c ON c.project_id = p.id
         LEFT JOIN session_sources ss ON ss.session_id = c.session_id AND ss.project_id = c.project_id
         {where}
         GROUP BY p.id
@@ -994,7 +994,7 @@ def get_user_detail(conn, username):
             p.name,
             COUNT(DISTINCT c.session_id) as sessions,
             SUM(c.total_tokens) as tokens
-        FROM conversations c
+        FROM interactions c
         JOIN projects p ON p.id = c.project_id
         WHERE c.user_id = ?
         GROUP BY p.name
@@ -1025,7 +1025,7 @@ def get_user_detail(conn, username):
     # Hosts used
     hosts = run_query(conn, """
         SELECT h.hostname, h.os_type, COUNT(DISTINCT c.session_id) as sessions
-        FROM conversations c
+        FROM interactions c
         JOIN hosts h ON h.id = c.host_id
         WHERE c.user_id = ?
         GROUP BY h.hostname
@@ -1045,19 +1045,19 @@ def get_user_detail(conn, username):
 # ===========================================================================
 
 # ===========================================================================
-# CONVERSATION METADATA (SQL classification)
+# INTERACTION METADATA (SQL classification)
 # ===========================================================================
 
-def get_conversation_metadata(conn, session_id, project_id=None):
-    """Get SQL-based metadata for a single conversation."""
+def get_interaction_metadata(conn, session_id, project_id=None):
+    """Get SQL-based metadata for a single interaction."""
     if project_id is not None:
         rows = run_query(conn, """
-            SELECT * FROM conversation_metadata
+            SELECT * FROM interaction_metadata
             WHERE session_id = ? AND project_id = ?
         """, [session_id, project_id])
     else:
         rows = run_query(conn, """
-            SELECT * FROM conversation_metadata
+            SELECT * FROM interaction_metadata
             WHERE session_id = ?
         """, [session_id])
 
@@ -1088,8 +1088,8 @@ def get_classification_stats(conn, project_id=None, user_id=None, host_id=None,
 
     by_classification = run_query(conn, f"""
         SELECT cm.classification, COUNT(*) as count
-        FROM conversation_metadata cm
-        JOIN conversations c ON c.session_id = cm.session_id AND c.project_id = cm.project_id
+        FROM interaction_metadata cm
+        JOIN interactions c ON c.session_id = cm.session_id AND c.project_id = cm.project_id
         {join}
         {where}
         GROUP BY cm.classification
@@ -1098,8 +1098,8 @@ def get_classification_stats(conn, project_id=None, user_id=None, host_id=None,
 
     by_sensitivity = run_query(conn, f"""
         SELECT cm.data_sensitivity, COUNT(*) as count
-        FROM conversation_metadata cm
-        JOIN conversations c ON c.session_id = cm.session_id AND c.project_id = cm.project_id
+        FROM interaction_metadata cm
+        JOIN interactions c ON c.session_id = cm.session_id AND c.project_id = cm.project_id
         {join}
         {where}
         GROUP BY cm.data_sensitivity
@@ -1108,15 +1108,15 @@ def get_classification_stats(conn, project_id=None, user_id=None, host_id=None,
 
     total_classified = run_query(conn, f"""
         SELECT COUNT(*) as total
-        FROM conversation_metadata cm
-        JOIN conversations c ON c.session_id = cm.session_id AND c.project_id = cm.project_id
+        FROM interaction_metadata cm
+        JOIN interactions c ON c.session_id = cm.session_id AND c.project_id = cm.project_id
         {join}
         {where}
     """, params if params else None)
 
-    total_conversations = run_query(conn, f"""
+    total_interactions = run_query(conn, f"""
         SELECT COUNT(*) as total
-        FROM conversations c
+        FROM interactions c
         {join}
         {where}
     """, params if params else None)
@@ -1125,7 +1125,7 @@ def get_classification_stats(conn, project_id=None, user_id=None, host_id=None,
         "by_classification": by_classification,
         "by_sensitivity": by_sensitivity,
         "total_classified": total_classified[0]["total"] if total_classified else 0,
-        "total_conversations": total_conversations[0]["total"] if total_conversations else 0,
+        "total_interactions": total_interactions[0]["total"] if total_interactions else 0,
     }
 
 
@@ -1145,8 +1145,8 @@ def get_tagcloud_data(conn, project_id=None, user_id=None, host_id=None,
 
     rows = run_query(conn, f"""
         SELECT cm.topics, cm.people, cm.clients, cm.process
-        FROM conversation_metadata cm
-        JOIN conversations c ON c.session_id = cm.session_id AND c.project_id = cm.project_id
+        FROM interaction_metadata cm
+        JOIN interactions c ON c.session_id = cm.session_id AND c.project_id = cm.project_id
         {join}
         {where}
     """, params if params else None)
@@ -1189,11 +1189,11 @@ def export_sessions(conn, since_ts: str, limit: int = 1000) -> list:
     Batch-loads all child tables to avoid N+1 queries.
     Returns list of session dicts with nested data.
     """
-    # Get conversations since timestamp
-    conversations = run_query(conn, """
+    # Get interactions since timestamp
+    interactions = run_query(conn, """
         SELECT c.*, p.name as project_name, u.username, h.hostname, h.os_type,
                COALESCE(ss.source, 'unknown') as client_source
-        FROM conversations c
+        FROM interactions c
         LEFT JOIN projects p ON p.id = c.project_id
         LEFT JOIN users u ON u.id = c.user_id
         LEFT JOIN hosts h ON h.id = c.host_id
@@ -1203,11 +1203,11 @@ def export_sessions(conn, since_ts: str, limit: int = 1000) -> list:
         LIMIT ?
     """, [since_ts, limit])
 
-    if not conversations:
+    if not interactions:
         return []
 
     # Collect all (session_id, project_id) pairs for batch loading
-    session_keys = [(c["session_id"], c["project_id"]) for c in conversations]
+    session_keys = [(c["session_id"], c["project_id"]) for c in interactions]
 
     # Build IN clause for batch queries
     placeholders = ",".join(["(?,?)" for _ in session_keys])
@@ -1238,10 +1238,10 @@ def export_sessions(conn, since_ts: str, limit: int = 1000) -> list:
 
     # Assemble sessions
     sessions = []
-    for conv in conversations:
+    for conv in interactions:
         key = (conv["session_id"], conv["project_id"])
         sessions.append({
-            "conversation": conv,
+            "interaction": conv,
             "messages": messages_map.get(key, []),
             "token_usage": tokens_map.get(key, []),
             "file_operations": files_map.get(key, []),

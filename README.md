@@ -3,7 +3,7 @@
   <p align="center">
     Analytics dashboard for AI coding agents across machines, users, and projects.
     <br />
-    Track token usage, tool calls, file operations, and conversation history — all in one place.
+    Track token usage, tool calls, file operations, and interaction history — all in one place.
   </p>
 </p>
 
@@ -18,7 +18,7 @@
 
 ## Why?
 
-AI coding agents generate a wealth of data — tokens consumed, files modified, tools invoked, conversations held — but it's scattered across JSONL files, buried in `~/.claude/` and `~/.codex/`, with no way to query or visualize it.
+AI coding agents generate a wealth of data — tokens consumed, files modified, tools invoked, interactions held — but it's scattered across JSONL files, buried in `~/.claude/` and `~/.codex/`, with no way to query or visualize it.
 
 **LocalAgentViewer** parses all of it into a single SQLite database and serves a web dashboard. No cloud. No accounts. No dependencies. Just `lav-server`.
 
@@ -49,7 +49,7 @@ It supports **distributed setups** too: run an agent on each machine, and a cent
   <img src="docs/screenshots/lav2_redacted.png" width="80%" alt="Dashboard — subagent usage, MCP tool distribution" />
 </p>
 <p align="center">
-  <img src="docs/screenshots/lav3_redacted.png" width="80%" alt="Interactions — conversation list with classification badges, cost, and duration" />
+  <img src="docs/screenshots/lav3_redacted.png" width="80%" alt="Interactions — list with classification badges, cost, and duration" />
 </p>
 
 </details>
@@ -94,7 +94,7 @@ CHATGPT_EXPORT_PATH=             # Path to ChatGPT conversations.json
 ## Quick Start
 
 ```bash
-# Parse conversations from this machine
+# Parse interactions from this machine
 lav-parse
 
 # Start the server
@@ -109,11 +109,11 @@ The database is created automatically at `~/.local/share/local-agent-viewer/loca
 
 | Command | Description | Requires |
 |---------|-------------|----------|
-| `lav-parse` | Parse JSONL conversations (Claude Code, Codex, Desktop) | — |
+| `lav-parse` | Parse JSONL interactions (Claude Code, Codex, Desktop) | — |
 | `lav-parse-chatgpt` | Parse ChatGPT export | `CHATGPT_EXPORT_PATH` |
 | `lav-server` | Start the web server | — |
-| `lav-classify` | Classify conversations via gpt-4.1-mini | `OPENAI_API_KEY` |
-| `lav-index` | Index conversations into Qdrant | `QDRANT_URL` |
+| `lav-classify` | Classify interactions via gpt-4.1-mini | `OPENAI_API_KEY` |
+| `lav-index` | Index interactions into Qdrant | `QDRANT_URL` |
 | `lav-mcp` | Start MCP server | `fastmcp` |
 
 ### Parser options
@@ -127,6 +127,42 @@ lav-parse-chatgpt               # parse ChatGPT export
 lav-parse-chatgpt --full        # full reparse
 ```
 
+## Data Pipeline
+
+Three layers turn raw agent logs into a searchable, classified knowledge base:
+
+```
+JSONL / JSON logs
+    │
+    ▼
+┌─────────────────────────────────────────────────┐
+│  1. PARSE → SQLite                              │
+│  Raw interactions: sessions, messages, tokens,  │
+│  file ops, tool calls, costs, models            │
+│  ─ lav-parse / lav-parse-chatgpt                │
+└─────────────────┬───────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────┐
+│  2. CLASSIFY → interaction_metadata (optional)  │
+│  AI classification via gpt-4.1-mini:            │
+│  summary, topics, people, clients, sensitivity, │
+│  process type, tags                             │
+│  ─ lav-classify (or auto after sync)            │
+└─────────────────┬───────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────┐
+│  3. INDEX → Qdrant vector DB (optional)         │
+│  Semantic embeddings for meaning-based search.  │
+│  Reuses SQL metadata when available (no extra   │
+│  LLM call). Enables KB search in dashboard.     │
+│  ─ lav-index                                    │
+└─────────────────────────────────────────────────┘
+```
+
+Each layer is independent — the core works with just layer 1. Classification adds structured metadata. Qdrant adds semantic search on top.
+
 ## Features
 
 ### Analytics Dashboard
@@ -136,7 +172,7 @@ lav-parse-chatgpt --full        # full reparse
 - **Tools** — tool call frequency and distribution
 - **Timeline** — activity patterns and session duration
 - **Users** — per-user drill-down with 7 views
-- **Knowledge Base** — semantic search across conversations
+- **Knowledge Base** — semantic search across interactions
 
 ### 4D Filtering
 Every query supports four independent dimensions:
@@ -150,18 +186,14 @@ Every query supports four independent dimensions:
 
 ### Search
 - **Full-text search** via SQLite FTS5 — fast, no external dependencies
-- **Semantic search** via Qdrant vector DB (optional)
-- **Classification filters** — search by topic, sensitivity, process type
+- **Semantic search** via Qdrant vector DB (optional, layer 3)
+- **Classification filters** — search by topic, sensitivity, process type (layer 2)
 
 ### AI Classification (optional)
-Automatic conversation classification via **gpt-4.1-mini** (OpenAI Structured Outputs):
-- Summary, abstract, process type
-- Data sensitivity level
-- Topics, people, clients, tags
 
 ```bash
 # Requires OPENAI_API_KEY in .env
-lav-classify              # classify unclassified conversations
+lav-classify              # classify unclassified interactions
 lav-classify --full       # reclassify everything
 lav-classify --dry-run    # preview
 ```
@@ -169,12 +201,42 @@ lav-classify --dry-run    # preview
 Also runs automatically after each sync when `OPENAI_API_KEY` is set.
 
 ### MCP Server
-Expose your analytics to AI tools (Claude Code, etc.) via the [Model Context Protocol](https://modelcontextprotocol.io):
+Expose your analytics to AI tools via the [Model Context Protocol](https://modelcontextprotocol.io). This lets Claude Code, Claude Desktop, or any MCP-compatible client query your interaction history, search the knowledge base, and trigger syncs — all through natural language.
 
 ```bash
 # Requires: pip install fastmcp
 lav-mcp
 ```
+
+**Available tools:**
+
+| Tool | Auth | Description |
+|------|------|-------------|
+| `get_interactions` | `LAV_READ_API_KEY` | List/search interactions (FTS, filters by project/user/date) |
+| `get_interaction_details` | `LAV_READ_API_KEY` | Full transcript by session ID |
+| `semantic_search` | `LAV_READ_API_KEY` | Qdrant vector search with classification/tag/project filters |
+| `kb_status` | `LAV_READ_API_KEY` | Check if an interaction is indexed |
+| `sync` | `LAV_API_KEY` | Trigger data re-parse (all, by project, or by source) |
+| `kb_index` | `LAV_API_KEY` | Index an interaction into Qdrant (auto-tag or pre-metadata) |
+| `kb_remove` | `LAV_API_KEY` | Remove an interaction from Qdrant |
+| `kb_update_tags` | `LAV_API_KEY` | Update tags without re-embedding |
+
+**Claude Code configuration** (`~/.claude/claude_code_config.json`):
+```json
+{
+  "mcpServers": {
+    "local-agent-viewer": {
+      "command": "lav-mcp",
+      "env": {
+        "LAV_API_KEY": "your-write-api-key",
+        "LAV_READ_API_KEY": "your-read-api-key"
+      }
+    }
+  }
+}
+```
+
+Write tools require `LAV_API_KEY`. Read tools require `LAV_READ_API_KEY` if set on the server — if not set, read access is open. Both keys are defined in `.env` and passed to MCP clients via config.
 
 ## Multi-Machine Setup
 
@@ -183,7 +245,7 @@ lav-mcp
 
 ### Architecture
 
-LocalAgentViewer supports a distributed agent/collector model. Each machine parses its own conversations locally. A central collector pulls from all agents into one unified database.
+LocalAgentViewer supports a distributed agent/collector model. Each machine parses its own interactions locally. A central collector pulls from all agents into one unified database.
 
 ```
                   GET /api/export
@@ -201,14 +263,14 @@ LocalAgentViewer supports a distributed agent/collector model. Each machine pars
 
 | Role | Bind | Function |
 |------|------|----------|
-| **agent** | `0.0.0.0:8764` | Parses local conversations, exposes `/api/export` |
+| **agent** | `0.0.0.0:8764` | Parses local interactions, exposes `/api/export` |
 | **both** (default) | `0.0.0.0:8764` | Full server: local parse + pull from agents + dashboard |
 
 ### Configuration
 
 Each machine has a **local** config at `~/.local/share/local-agent-viewer/config.json` (not synced via git):
 
-**Collector** (the machine with the dashboard):
+**Collector** (the machine with the dashboard) — see [`config.collector.example.json`](config.collector.example.json):
 ```json
 {
   "role": "both",
@@ -224,7 +286,7 @@ Each machine has a **local** config at `~/.local/share/local-agent-viewer/config
 }
 ```
 
-**Agent** (each remote machine):
+**Agent** (each remote machine) — see [`config.agent.example.json`](config.agent.example.json):
 ```json
 {
   "role": "agent",
@@ -250,8 +312,8 @@ Pull is **on-demand** (triggered by the agent after each parse), not periodic po
 **On the agent:**
 ```bash
 mkdir -p ~/.local/share/local-agent-viewer
-echo '{"role": "agent", "port": 8764, "collector_url": "http://collector.local:8764"}' \
-  > ~/.local/share/local-agent-viewer/config.json
+cp config.agent.example.json ~/.local/share/local-agent-viewer/config.json
+# Edit collector_url to point to your collector machine
 
 lav-parse
 lav-server  # or install as a service (see below)
@@ -261,15 +323,8 @@ curl http://localhost:8764/api/health
 **On the collector:**
 ```bash
 mkdir -p ~/.local/share/local-agent-viewer
-cat > ~/.local/share/local-agent-viewer/config.json << 'EOF'
-{
-  "role": "both",
-  "port": 8764,
-  "agents": [
-    {"name": "laptop", "url": "http://laptop.local:8764", "timeout_seconds": 10}
-  ]
-}
-EOF
+cp config.collector.example.json ~/.local/share/local-agent-viewer/config.json
+# Edit agents list with your remote machines
 
 lav-parse
 lav-server
@@ -342,14 +397,14 @@ launchctl load ~/Library/LaunchAgents/com.aimax.lav-server.plist
 | `/api/users` | GET | User list with stats |
 | `/api/user/{username}` | GET | User detail |
 | `/api/hosts` | GET | Host list |
-| `/api/conversations` | GET | Conversation list (paginated) |
-| `/api/conversation/{id}` | GET | Full conversation transcript |
+| `/api/interactions` | GET | Interaction list (paginated) |
+| `/api/interaction/{id}` | GET | Full interaction transcript |
 | `/api/search?q=term` | GET | Full-text search |
 | `/api/sync` | POST | Trigger sync |
 | `/api/sync/status` | GET | Sync progress |
 | `/api/classifications/stats` | GET | Classification aggregations |
 | `/api/classifications/tagcloud` | GET | Topic/people/client frequencies |
-| `/api/conversation/{id}/metadata` | GET | Classification metadata |
+| `/api/interaction/{id}/metadata` | GET | Classification metadata |
 | `/api/kb/*` | GET/POST | Qdrant knowledge base |
 
 ### Query filters
@@ -371,7 +426,7 @@ Single SQLite database with composite primary keys and 4 independent filter dime
 
 | Table | Key | Contents |
 |-------|-----|----------|
-| `conversations` | `(session_id, project_id)` | Sessions with timestamps, cost, model |
+| `interactions` | `(session_id, project_id)` | Sessions with timestamps, cost, model |
 | `messages` | `(session_id, project_id, uuid)` | Individual messages |
 | `token_usage` | `(timestamp, session_id, project_id)` | Per-request token counts |
 | `file_operations` | `(timestamp, session_id, project_id, tool, file_path)` | File reads/writes |
@@ -380,7 +435,7 @@ Single SQLite database with composite primary keys and 4 independent filter dime
 | `skill_invocations` | | Skill usage |
 | `subagent_invocations` | | Sub-agent calls |
 | `mcp_tool_calls` | | MCP tool invocations |
-| `conversation_metadata` | | AI classification results |
+| `interaction_metadata` | | AI classification results |
 | `parse_state` | `(key, project_id, source, host_id)` | Incremental parse cursors |
 
 Reference tables: `projects`, `users`, `hosts`, `session_sources`.
@@ -407,14 +462,16 @@ local-agent-viewer/
 │   │   └── sql_classifier.py      # Batch CLI classifier (gpt-4.1-mini)
 │   └── qdrant/
 │       ├── store.py               # Qdrant vector store client
-│       ├── indexer.py              # Conversation indexer
+│       ├── indexer.py              # Interaction indexer
 │       └── kb_indexer.py           # CLI indexer (reuses SQL metadata)
 ├── static/                        # Frontend
 │   ├── dashboard.html             # Analytics dashboard (Chart.js)
-│   ├── interactions.html          # Conversation browser
+│   ├── interactions.html          # Interaction browser
 │   └── tags.html                  # Tag cloud + stats
 ├── scripts/
 │   └── migrate.py                 # Migration from claude-parser
+├── config.agent.example.json      # Example config for agent machines
+├── config.collector.example.json  # Example config for collector machine
 ├── pyproject.toml                 # Package config + CLI entry points
 ├── utils/services/                # LaunchAgent plists + install script
 └── docs/

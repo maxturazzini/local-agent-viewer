@@ -2,27 +2,27 @@
 """
 kb_indexer.py - Auto-indexer for LAV knowledge base (Qdrant).
 
-Reads conversations from the canonical SQLite DB and indexes them into Qdrant.
+Reads interactions from the canonical SQLite DB and indexes them into Qdrant.
 Designed to run on the collector machine where the canonical DB lives.
 
 Usage:
     python3 kb_indexer.py                          # incremental (only new/unindexed)
     python3 kb_indexer.py --full                   # reindex everything
-    python3 kb_indexer.py --session-id <ID>        # index one specific conversation
+    python3 kb_indexer.py --session-id <ID>        # index one specific interaction
     python3 kb_indexer.py --project miniMe          # filter by project
     python3 kb_indexer.py --source claude_code      # filter by source tool
     python3 kb_indexer.py --host myserver            # filter by hostname
     python3 kb_indexer.py --username john             # filter by user
-    python3 kb_indexer.py --min-messages 5          # skip short conversations
+    python3 kb_indexer.py --min-messages 5          # skip short interactions
     python3 kb_indexer.py --since 2025-01-01        # only from this date onward
-    python3 kb_indexer.py --limit 100               # process at most N conversations
+    python3 kb_indexer.py --limit 100               # process at most N interactions
     python3 kb_indexer.py --dry-run                 # preview without writing
 
-Payload stored in Qdrant per conversation:
+Payload stored in Qdrant per interaction:
     session_id      str         Identifier (UUID)
     project         str         Workspace name (e.g. miniMe)
     user            str         Username
-    host            str         Hostname where conversation happened
+    host            str         Hostname where interaction happened
     source          str         Tool: claude_code | chatgpt | codex_cli | cowork_desktop
     timestamp       str (ISO)   First message timestamp
     indexed_at      str (ISO)   When indexed
@@ -34,7 +34,7 @@ Payload stored in Qdrant per conversation:
     clients         list[str]   Companies/clients mentioned (Haiku)
     tags            list[str]   Manual tags
     message_count   int         Number of messages
-    tools_used      list[str]   Tools invoked in the conversation
+    tools_used      list[str]   Tools invoked in the interaction
 
 Searchable via MCP semantic_search filters:
     classification, tags, project
@@ -55,12 +55,12 @@ from lav.config import UNIFIED_DB_PATH, QDRANT_DATA_DIR, QDRANT_COLLECTION, QDRA
 # ── Store factory ────────────────────────────────────────────────────────────
 
 def _get_store():
-    from lav.qdrant.store import ConversationVectorStore
+    from lav.qdrant.store import InteractionVectorStore
     if QDRANT_URL:
-        store = ConversationVectorStore(url=QDRANT_URL, collection=QDRANT_COLLECTION)
+        store = InteractionVectorStore(url=QDRANT_URL, collection=QDRANT_COLLECTION)
     else:
         QDRANT_DATA_DIR.mkdir(parents=True, exist_ok=True)
-        store = ConversationVectorStore(data_path=QDRANT_DATA_DIR, collection=QDRANT_COLLECTION)
+        store = InteractionVectorStore(data_path=QDRANT_DATA_DIR, collection=QDRANT_COLLECTION)
     store.ensure_collection()
     return store
 
@@ -99,7 +99,7 @@ def _build_filter_query(
             ss.source,
             c.timestamp,
             c.message_count
-        FROM conversations c
+        FROM interactions c
         JOIN projects p ON c.project_id = p.id
         LEFT JOIN users u ON c.user_id = u.id
         LEFT JOIN hosts h ON c.host_id = h.id
@@ -139,13 +139,13 @@ def _build_filter_query(
     return sql, params
 
 
-def _fetch_conversations(conn: sqlite3.Connection, **kwargs) -> list:
+def _fetch_interactions(conn: sqlite3.Connection, **kwargs) -> list:
     sql, params = _build_filter_query(**kwargs)
     return conn.execute(sql, params).fetchall()
 
 
 def _fetch_messages(conn: sqlite3.Connection, session_id: str, project_id: int) -> list:
-    """Fetch messages for a conversation in indexer-compatible format."""
+    """Fetch messages for an interaction in indexer-compatible format."""
     rows = conn.execute(
         """
         SELECT type, content
@@ -160,7 +160,7 @@ def _fetch_messages(conn: sqlite3.Connection, session_id: str, project_id: int) 
 
 def _get_project_id(conn: sqlite3.Connection, session_id: str) -> int:
     row = conn.execute(
-        "SELECT project_id FROM conversations WHERE session_id = ?", (session_id,)
+        "SELECT project_id FROM interactions WHERE session_id = ?", (session_id,)
     ).fetchone()
     return row["project_id"] if row else -1
 
@@ -174,7 +174,7 @@ def _get_sql_metadata(conn: sqlite3.Connection, session_id: str, project_id: int
     row = conn.execute(
         """SELECT summary, abstract, process, classification, data_sensitivity,
                   sensitive_data_types, topics, people, clients
-           FROM conversation_metadata
+           FROM interaction_metadata
            WHERE session_id = ? AND project_id = ?""",
         (session_id, project_id),
     ).fetchone()
@@ -225,7 +225,7 @@ def run(
     conn = _get_db()
 
     try:
-        conversations = _fetch_conversations(
+        interactions = _fetch_interactions(
             conn,
             session_id=session_id,
             project=project,
@@ -236,21 +236,21 @@ def run(
             since=since,
             limit=limit,
         )
-        total = len(conversations)
-        print(f"  Conversations matched: {total}")
+        total = len(interactions)
+        print(f"  Interactions matched: {total}")
 
         if total == 0:
             print("  Nothing to do.")
             return
 
-        from lav.qdrant.indexer import ConversationIndexer
-        indexer = ConversationIndexer(store)
+        from lav.qdrant.indexer import InteractionIndexer
+        indexer = InteractionIndexer(store)
 
         indexed = 0
         skipped = 0
         errors = 0
 
-        for i, conv in enumerate(conversations, 1):
+        for i, conv in enumerate(interactions, 1):
             sid = conv["session_id"]
             proj = conv["project_name"] or ""
             user = conv["username"] or ""
@@ -259,7 +259,7 @@ def run(
             ts = conv["timestamp"] or ""
             msg_count = conv["message_count"] or 0
 
-            # Skip already indexed (unless full reindex or specific session)
+            # Skip already indexed (unless full reindex or specific interaction)
             if not full and not session_id and store.is_indexed(sid):
                 skipped += 1
                 continue
@@ -334,14 +334,14 @@ Examples:
   python3 kb_indexer.py                                # incremental, all
   python3 kb_indexer.py --project miniMe --since 2025-01-01
   python3 kb_indexer.py --source claude_code --min-messages 5
-  python3 kb_indexer.py --session-id abc123def456...  # single conversation
+  python3 kb_indexer.py --session-id abc123def456...  # single interaction
   python3 kb_indexer.py --dry-run --limit 20          # preview first 20
         """,
     )
     parser.add_argument("--full", action="store_true",
-        help="Reindex all conversations (default: only new/unindexed)")
+        help="Reindex all interactions (default: only new/unindexed)")
     parser.add_argument("--session-id", metavar="UUID",
-        help="Index one specific conversation by session_id")
+        help="Index one specific interaction by session_id")
     parser.add_argument("--project", metavar="NAME",
         help="Filter by project name (e.g. miniMe)")
     parser.add_argument("--source", metavar="SRC",
@@ -352,11 +352,11 @@ Examples:
     parser.add_argument("--username", metavar="USER",
         help="Filter by username")
     parser.add_argument("--min-messages", type=int, default=0, metavar="N",
-        help="Only index conversations with at least N messages")
+        help="Only index interactions with at least N messages")
     parser.add_argument("--since", metavar="YYYY-MM-DD",
-        help="Only index conversations from this date onward")
+        help="Only index interactions from this date onward")
     parser.add_argument("--limit", type=int, default=0, metavar="N",
-        help="Process at most N conversations (0 = no limit)")
+        help="Process at most N interactions (0 = no limit)")
     parser.add_argument("--dry-run", action="store_true",
         help="Show what would be indexed without writing to Qdrant")
 

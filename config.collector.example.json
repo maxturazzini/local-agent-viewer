@@ -1,0 +1,12 @@
+{
+  "role": "both",
+  "port": 8764,
+  "agents": [
+    {
+      "name": "laptop",
+      "url": "http://laptop.local:8764",
+      "fallback_url": "http://10.0.0.5:8764",
+      "timeout_seconds": 10
+    }
+  ]
+}

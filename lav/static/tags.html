@@ -271,7 +271,7 @@
                 var tag = document.createElement('span');
                 tag.className = 'tag-item ' + cssClass;
                 tag.textContent = item.name;
-                tag.title = item.count + ' conversations';
+                tag.title = item.count + ' interactions';
                 var size = sizeForCount(item.count, maxCount);
                 tag.style.fontSize = size + 'rem';
                 tag.addEventListener('click', function() {
@@ -315,7 +315,7 @@
 
             // Stats bar
             var classified = stats.total_classified || 0;
-            var total = stats.total_conversations || 0;
+            var total = stats.total_interactions || 0;
             var coverage = total > 0 ? Math.round(classified / total * 100) : 0;
             var uniqueTopics = cloud.topics ? cloud.topics.length : 0;
 
@@ -324,7 +324,7 @@
             document.getElementById('statCoverage').textContent = coverage + '%';
             document.getElementById('statTopics').textContent = uniqueTopics;
             document.getElementById('subtitleText').textContent =
-                classified + ' classified out of ' + total + ' conversations';
+                classified + ' classified out of ' + total + ' interactions';
 
             // Classification bars
             renderBars('classificationBars', stats.by_classification, 'cls');

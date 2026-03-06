@@ -8,7 +8,7 @@ Analytics tool for monitoring AI coding agents (Claude Code, Codex CLI, Claude D
 cd local-agent-viewer
 pip install -e .
 
-# Parse conversations from this host (incremental)
+# Parse interactions from this host (incremental)
 lav-parse
 # or: python3 -m lav.parsers.jsonl
 
@@ -18,7 +18,7 @@ lav-parse --project myProject
 # Force full reparse
 lav-parse --full
 
-# Parse ChatGPT export (conversations.json)
+# Parse ChatGPT export (interactions.json)
 lav-parse-chatgpt
 # or: python3 -m lav.parsers.chatgpt
 
@@ -26,7 +26,7 @@ lav-parse-chatgpt
 lav-server
 # or: python3 -m lav.server
 
-# Classify conversations (requires OPENAI_API_KEY in .env)
+# Classify interactions (requires OPENAI_API_KEY in .env)
 lav-classify
 
 # Index into Qdrant KB
@@ -49,25 +49,25 @@ python3 scripts/migrate.py
 ```
 local-agent-viewer/
 ├── lav/                       # Main package
-│   ├── __init__.py            # PROJECT_ROOT + .env loading
+│   ├── __init__.py            # PACKAGE_DIR, PROJECT_ROOT + .env loading
 │   ├── config.py              # Configuration (paths, ports, Qdrant)
 │   ├── queries.py             # SQL queries with 4D filters + metadata
 │   ├── server.py              # ThreadingHTTPServer + REST API + auto-classification
 │   ├── mcp_server.py          # FastMCP server for AI tool integration
 │   ├── parsers/
 │   │   ├── jsonl.py           # JSONL parser → unified DB (Claude Code, Codex, Cowork)
-│   │   └── chatgpt.py         # ChatGPT export parser (conversations.json) → DB
+│   │   └── chatgpt.py         # ChatGPT export parser (interactions.json) → DB
 │   ├── classifiers/
 │   │   ├── openai_classifier.py  # OpenAI Structured Outputs classifier
 │   │   └── sql_classifier.py    # Batch CLI for classification (gpt-4.1-mini)
 │   └── qdrant/
 │       ├── store.py           # Qdrant vector store client
-│       ├── indexer.py         # Conversation indexer with auto-tagging
+│       ├── indexer.py         # Interaction indexer with auto-tagging
 │       └── kb_indexer.py      # CLI indexer (reuses SQL metadata if available)
-├── static/                    # Frontend
-│   ├── dashboard.html         # Analytics dashboard (Chart.js)
-│   ├── interactions.html      # Conversation list with classification badges
-│   └── tags.html              # Tag cloud + classification stats
+│   └── static/                # Frontend (bundled as package data)
+│       ├── dashboard.html     # Analytics dashboard (Chart.js)
+│       ├── interactions.html  # Interaction list with classification badges
+│       └── tags.html          # Tag cloud + classification stats
 ├── scripts/
 │   └── migrate.py             # Migration from claude-parser (~40 DBs → 1)
 ├── pyproject.toml             # Package config + entry points
@@ -89,7 +89,7 @@ Single `local_agent_viewer.db` with **4 independent dimensions**:
 | **Host** | `hosts` | Which machine |
 | **Source** | `session_sources` | Which tool (claude_code/codex_cli/cowork_desktop/chatgpt) |
 
-Composite PK conversations: `(session_id, project_id)`
+Composite PK interactions: `(session_id, project_id)`
 Composite PK parse_state: `(key, project_id, source)`
 
 **DB path**: `~/.local/share/local-agent-viewer/local_agent_viewer.db` (per-machine, outside project dir). Legacy fallback: `data/local_agent_viewer.db`.
@@ -173,8 +173,8 @@ Each machine has its own `~/.local/share/local-agent-viewer/config.json` (local,
 | `/api/user/{username}` | GET | -- | yes | User detail |
 | `/api/hosts` | GET | -- | yes | Host list |
 | `/api/data` | GET | -- | yes | Analytics with 4D filters |
-| `/api/conversations` | GET | -- | yes | Conversation list |
-| `/api/conversation/{id}` | GET | -- | yes | Conversation detail |
+| `/api/interactions` | GET | -- | yes | Interaction list |
+| `/api/interaction/{id}` | GET | -- | yes | Interaction detail |
 | `/api/search` | GET | -- | yes | Full-text search |
 | `/api/sync` | POST | -- | yes | Granular sync (includes pull from agents) |
 | `/api/sync/status` | GET | -- | yes | Sync status |
@@ -198,7 +198,7 @@ Query filters: `?project=myProject&user=john&host=laptop&client=claude_code&star
 
 **Configuration**: Set `QDRANT_URL=http://your-server:6333` in the `.env` file.
 
-**Indexer** (indexes conversations from canonical DB):
+**Indexer** (indexes interactions from canonical DB):
 ```bash
 lav-index --dry-run   # preview
 lav-index --limit 50  # test with 50
@@ -209,16 +209,16 @@ lav-index             # all
 
 ## Classification & Indexing
 
-Two complementary systems for enriching conversations with metadata:
+Two complementary systems for enriching interactions with metadata:
 
-### SQL Classification (table `conversation_metadata`)
+### SQL Classification (table `interaction_metadata`)
 
 Structured classification via **gpt-4.1-mini** (OpenAI Structured Outputs). Independent from Qdrant.
 
 **Schema**: summary, abstract, process, classification, data_sensitivity, sensitive_data_types, topics, people, clients, tags.
 
 **When it runs**:
-1. **Automatic on sync** — After each pull/parse in `lav/server.py`, newly imported conversations are classified automatically (requires `OPENAI_API_KEY` in `.env`).
+1. **Automatic on sync** — After each pull/parse in `lav/server.py`, newly imported interactions are classified automatically (requires `OPENAI_API_KEY` in `.env`).
 2. **Manual batch** — Via CLI for backlog or reclassification:
 ```bash
 lav-classify                                  # incremental (unclassified only)
@@ -231,7 +231,7 @@ lav-classify --dry-run                        # preview without writing
 
 Vector indexing for meaning-based search. Generates embeddings + payload.
 
-**SQL integration**: `lav/qdrant/kb_indexer.py` checks if a conversation already has SQL metadata in `conversation_metadata`. If so, uses it as `pre_metadata` (skips Haiku call → cost savings). Otherwise, generates with Haiku.
+**SQL integration**: `lav/qdrant/kb_indexer.py` checks if an interaction already has SQL metadata in `interaction_metadata`. If so, uses it as `pre_metadata` (skips Haiku call → cost savings). Otherwise, generates with Haiku.
 
 ### Classification API endpoints
 
@@ -239,7 +239,7 @@ Vector indexing for meaning-based search. Generates embeddings + payload.
 |----------|-------------|
 | `GET /api/classifications/stats` | Aggregations by classification and sensitivity |
 | `GET /api/classifications/tagcloud` | Frequency of topics, people, clients, processes |
-| `GET /api/conversation/{id}/metadata` | SQL metadata for a single conversation |
+| `GET /api/interaction/{id}/metadata` | SQL metadata for a single interaction |
 | `GET /api/search?classification=X&sensitivity=Y&topic=Z` | Classification filters in search |
 
 ## Technical Notes

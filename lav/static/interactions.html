@@ -820,7 +820,7 @@
     <div class="stats-bar" id="statsBar">
         <div class="stat-item">
             <span class="stat-value" id="totalInteractions">-</span>
-            <span class="stat-label">conversations</span>
+            <span class="stat-label">interactions</span>
         </div>
         <div class="stat-item">
             <span class="stat-value" id="totalTokens">-</span>
@@ -828,7 +828,7 @@
         </div>
     </div>
 
-    <!-- ===== CONVERSATIONS LIST ===== -->
+    <!-- ===== INTERACTIONS LIST ===== -->
     <div class="interactions-container">
         <div class="interaction-header">
             <div>Timestamp</div>
@@ -854,7 +854,7 @@
     </div>
 
     <div class="footer">
-        LocalAgentViewer &mdash; <a href="#">AI, MAX</a>
+        <a href="https://aimax.it">AI, Max</a> &mdash; Local Agent Viewer
     </div>
 
     <!-- ===== MODAL ===== -->
@@ -1174,7 +1174,7 @@
     function resetAndLoad() {
         state.offset = 0;
         state.expandedId = null;
-        loadConversations();
+        loadInteractions();
     }
 
     // ===== PAGINATION =====
@@ -1182,7 +1182,7 @@
         if (state.offset > 0) {
             state.offset -= LIMIT;
             state.expandedId = null;
-            loadConversations();
+            loadInteractions();
         }
     });
 
@@ -1190,41 +1190,41 @@
         if (state.offset + LIMIT < state.total) {
             state.offset += LIMIT;
             state.expandedId = null;
-            loadConversations();
+            loadInteractions();
         }
     });
 
-    // ===== LOAD CONVERSATIONS =====
-    async function loadConversations() {
+    // ===== LOAD INTERACTIONS =====
+    async function loadInteractions() {
         const listEl = document.getElementById('interactionsList');
         listEl.textContent = '';
         listEl.insertAdjacentHTML('beforeend', '<div class="loading">Loading interactions</div>');
 
         try {
-            const data = await apiFetch('/api/conversations');
-            const conversations = data.conversations || data;
-            state.total = data.total || conversations.length;
+            const data = await apiFetch('/api/interactions');
+            const interactions = data.interactions || data;
+            state.total = data.total || interactions.length;
 
             // Update stats
             document.getElementById('totalInteractions').textContent = formatNumber(state.total);
-            const totalTokens = conversations.reduce((sum, c) => sum + (c.total_tokens || 0), 0);
+            const totalTokens = interactions.reduce((sum, c) => sum + (c.total_tokens || 0), 0);
             document.getElementById('totalTokens').textContent = formatNumber(totalTokens);
 
             // Update subtitle
-            document.getElementById('subtitle').textContent = `${formatNumber(state.total)} conversations`;
+            document.getElementById('subtitle').textContent = `${formatNumber(state.total)} interactions`;
 
             // Render
             listEl.textContent = '';
 
-            if (conversations.length === 0) {
+            if (interactions.length === 0) {
                 listEl.insertAdjacentHTML('beforeend',
-                    '<div class="empty-state"><h3>No conversations found</h3><p>Try adjusting your filters or running a sync.</p></div>'
+                    '<div class="empty-state"><h3>No interactions found</h3><p>Try adjusting your filters or running a sync.</p></div>'
                 );
                 document.getElementById('pagination').style.display = 'none';
                 return;
             }
 
-            conversations.forEach(conv => {
+            interactions.forEach(conv => {
                 // Main row
                 const row = document.createElement('div');
                 row.className = 'interaction-item';
@@ -1290,7 +1290,7 @@
             }
 
         } catch (err) {
-            console.error('Failed to load conversations:', err);
+            console.error('Failed to load interactions:', err);
             listEl.textContent = '';
             listEl.insertAdjacentHTML('beforeend',
                 '<div class="empty-state"><h3>Could not connect to server</h3><p>Make sure the backend is running on port 8764</p></div>'
@@ -1400,9 +1400,9 @@
 
         try {
             var qs = projectId ? '?project=' + encodeURIComponent(projectId) : '';
-            var convPromise = apiFetchRaw(API_BASE + '/api/conversation/' + encodeURIComponent(sessionId) + qs);
+            var convPromise = apiFetchRaw(API_BASE + '/api/interaction/' + encodeURIComponent(sessionId) + qs);
             var kbPromise = apiFetchRaw(API_BASE + '/api/kb/status?session_id=' + encodeURIComponent(sessionId)).catch(function() { return null; });
-            var sqlMetaPromise = apiFetchRaw(API_BASE + '/api/conversation/' + encodeURIComponent(sessionId) + '/metadata' + qs).catch(function() { return null; });
+            var sqlMetaPromise = apiFetchRaw(API_BASE + '/api/interaction/' + encodeURIComponent(sessionId) + '/metadata' + qs).catch(function() { return null; });
             var results = await Promise.all([convPromise, kbPromise, sqlMetaPromise]);
             var data = results[0];
             var kbData = results[1];
@@ -1410,7 +1410,7 @@
             renderInteractionDetail(data);
             renderKbEnrichment(kbData, sqlMeta);
         } catch (err) {
-            console.error('Failed to load conversation:', err);
+            console.error('Failed to load interaction:', err);
             document.getElementById('modalBody').textContent = '';
             var errDiv = document.createElement('div');
             errDiv.className = 'empty-state';
@@ -1525,19 +1525,19 @@
     }
 
     function renderInteractionDetail(data) {
-        const conversation = data.conversation || data;
+        const interaction = data.interaction || data;
         const messages = data.messages || [];
 
-        document.getElementById('modalTitle').textContent = (conversation.summary || conversation.display || 'Interaction').slice(0, 80);
+        document.getElementById('modalTitle').textContent = (interaction.summary || interaction.display || 'Interaction').slice(0, 80);
 
         const metaEl = document.getElementById('modalMeta');
         metaEl.textContent = '';
         metaEl.insertAdjacentHTML('beforeend',
-            '<span>' + formatTimestamp(conversation.timestamp) + '</span>' +
+            '<span>' + formatTimestamp(interaction.timestamp) + '</span>' +
             '<span>' + messages.length + ' messages</span>' +
-            '<span>' + formatNumber(conversation.total_tokens) + ' tokens</span>' +
-            '<span>' + shortenModel(conversation.model) + '</span>' +
-            '<span class="modal-session-id" data-full-id="' + (conversation.session_id || '') + '" onclick="copySessionId(this); event.stopPropagation();" title="Click to copy: ' + (conversation.session_id || '') + '">ID: ' + shortenSessionId(conversation.session_id || '') + '</span>'
+            '<span>' + formatNumber(interaction.total_tokens) + ' tokens</span>' +
+            '<span>' + shortenModel(interaction.model) + '</span>' +
+            '<span class="modal-session-id" data-full-id="' + (interaction.session_id || '') + '" onclick="copySessionId(this); event.stopPropagation();" title="Click to copy: ' + (interaction.session_id || '') + '">ID: ' + shortenSessionId(interaction.session_id || '') + '</span>'
         );
 
         if (!messages || messages.length === 0) {
@@ -1548,10 +1548,10 @@
 
         let html = '';
 
-        // Breadcrumb if child conversation
-        if (conversation.parent_session_id && conversation.parent_conversation) {
-            const parentSummary = conversation.parent_conversation.summary || conversation.parent_conversation.display || 'Parent';
-            html += '<nav class="breadcrumb"><a href="#" onclick="openInteraction(\'' + conversation.parent_session_id + '\', ' + (conversation.project_id || 'null') + '); return false;">\u2190 ' + escapeHtml(parentSummary.slice(0, 60)) + '</a><span> / Current</span></nav>';
+        // Breadcrumb if child interaction
+        if (interaction.parent_session_id && interaction.parent_interaction) {
+            const parentSummary = interaction.parent_interaction.summary || interaction.parent_interaction.display || 'Parent';
+            html += '<nav class="breadcrumb"><a href="#" onclick="openInteraction(\'' + interaction.parent_session_id + '\', ' + (interaction.project_id || 'null') + '); return false;">\u2190 ' + escapeHtml(parentSummary.slice(0, 60)) + '</a><span> / Current</span></nav>';
         }
 
         // Render messages
@@ -1628,9 +1628,9 @@
         document.getElementById('startDate').value = state.startDate;
         document.getElementById('endDate').value = state.endDate;
         await initFilters();
-        await loadConversations();
+        await loadInteractions();
 
-        // Auto-open conversation if ?session=XXX is in URL (e.g. from KB search results)
+        // Auto-open interaction if ?session=XXX is in URL (e.g. from KB search results)
         var urlParams = new URLSearchParams(window.location.search);
         var sessionParam = urlParams.get('session');
         if (sessionParam) {

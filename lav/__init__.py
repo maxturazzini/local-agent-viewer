@@ -1,8 +1,15 @@
 """LocalAgentViewer - AI agent analytics."""
 import os
+from importlib.metadata import version, PackageNotFoundError
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+try:
+    __version__ = version("local-agent-viewer")
+except PackageNotFoundError:
+    __version__ = "0.0.0-dev"
+
+PACKAGE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = PACKAGE_DIR.parent
 
 
 def _load_env():

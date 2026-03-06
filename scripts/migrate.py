@@ -52,10 +52,10 @@ def migrate_single_db(unified_conn: sqlite3.Connection, old_db_path: Path, dry_r
     # For existing DBs, we use the current user/host as best guess
     hostname, os_type, home_dir = detect_host()
 
-    # Try to find the source path from parse_state or conversations.cwd
+    # Try to find the source path from parse_state or interactions.cwd
     try:
         temp_conn = sqlite3.connect(str(old_db_path))
-        row = temp_conn.execute("SELECT cwd FROM conversations WHERE cwd IS NOT NULL AND cwd != '' LIMIT 1").fetchone()
+        row = temp_conn.execute("SELECT cwd FROM interactions WHERE cwd IS NOT NULL AND cwd != '' LIMIT 1").fetchone()
         source_path = row[0] if row else ""
         if source_path:
             username = detect_user_from_path(Path(source_path))
@@ -77,7 +77,7 @@ def migrate_single_db(unified_conn: sqlite3.Connection, old_db_path: Path, dry_r
     if dry_run:
         temp_conn = sqlite3.connect(str(old_db_path))
         counts = {}
-        for table in ["conversations", "messages", "file_operations", "bash_commands",
+        for table in ["interactions", "messages", "file_operations", "bash_commands",
                        "search_operations", "skill_invocations", "subagent_invocations",
                        "mcp_tool_calls", "token_usage", "session_sources"]:
             try:
@@ -96,23 +96,23 @@ def migrate_single_db(unified_conn: sqlite3.Connection, old_db_path: Path, dry_r
     stats = {}
 
     try:
-        # Migrate conversations
+        # Migrate interactions
         try:
             unified_conn.execute(f"""
-                INSERT OR IGNORE INTO conversations
+                INSERT OR IGNORE INTO interactions
                 (session_id, project_id, user_id, host_id, timestamp, display, summary, project, model,
                  total_tokens, message_count, tools_used, cwd, git_branch, parent_session_id, agent_id)
                 SELECT
                     session_id, ?, ?, ?, timestamp, display, summary, project, model,
                     total_tokens, message_count, tools_used, cwd, git_branch, parent_session_id, agent_id
-                FROM {alias}.conversations
+                FROM {alias}.interactions
             """, (project_id, user_id, host_id))
-            stats["conversations"] = unified_conn.execute(
-                f"SELECT COUNT(*) FROM {alias}.conversations"
+            stats["interactions"] = unified_conn.execute(
+                f"SELECT COUNT(*) FROM {alias}.interactions"
             ).fetchone()[0]
         except sqlite3.Error as e:
-            print(f"    Warning: conversations migration: {e}")
-            stats["conversations"] = 0
+            print(f"    Warning: interactions migration: {e}")
+            stats["interactions"] = 0
 
         # Migrate messages
         try:
@@ -291,7 +291,7 @@ def verify_counts(conn: sqlite3.Connection):
     """Print verification counts for the unified DB."""
     print("\n  Verification counts:")
     tables = [
-        "projects", "users", "hosts", "conversations", "messages",
+        "projects", "users", "hosts", "interactions", "messages",
         "file_operations", "bash_commands", "search_operations",
         "skill_invocations", "subagent_invocations", "mcp_tool_calls",
         "token_usage", "session_sources",

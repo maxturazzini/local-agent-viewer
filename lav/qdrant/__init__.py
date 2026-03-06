@@ -1,17 +1,17 @@
 """
-Qdrant-based semantic search for Claude conversations.
+Qdrant-based semantic search for AI interactions.
 
 Self-contained module with:
-- ConversationVectorStore: Qdrant client + OpenAI embeddings
-- ConversationIndexer: Pipeline for indexing conversations with auto-tagging
+- InteractionVectorStore: Qdrant client + OpenAI embeddings
+- InteractionIndexer: Pipeline for indexing interactions with auto-tagging
 """
 
-from .store import ConversationVectorStore, SearchResult
-from .indexer import ConversationIndexer, generate_tags
+from .store import InteractionVectorStore, SearchResult
+from .indexer import InteractionIndexer, generate_tags
 
 __all__ = [
-    "ConversationVectorStore",
+    "InteractionVectorStore",
     "SearchResult",
-    "ConversationIndexer",
+    "InteractionIndexer",
     "generate_tags",
 ]

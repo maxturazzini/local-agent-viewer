@@ -23,7 +23,7 @@ UNIFIED_DB_PATH = _LOCAL_DB_PATH if _LOCAL_DB_PATH.exists() else _LEGACY_DB_PATH
 # SOURCE DIRECTORIES
 # ===========================================================================
 
-# Default source directory for Claude Code conversations (JSONL)
+# Default source directory for Claude Code interactions (JSONL)
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
 # Additional Claude Desktop location (NOT JSONL, but useful as a discoverable hint/source)
@@ -66,7 +66,7 @@ FILE_COMMANDS = [
 # ===========================================================================
 
 QDRANT_DATA_DIR = Path.home() / ".local" / "share" / "local-agent-viewer" / "qdrant_data"
-QDRANT_COLLECTION = "conversations"
+QDRANT_COLLECTION = "interactions"
 
 # Optional: HTTP URL to a remote Qdrant server (e.g. "http://your-server:6333").
 # When set, all Qdrant operations use HTTP instead of the local file path above.

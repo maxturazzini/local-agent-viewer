@@ -1635,7 +1635,7 @@
     </div>
 
     <div class="footer">
-        LocalAgentViewer &mdash; <a href="#">AI, MAX</a>
+        <a href="https://aimax.it">AI, Max</a> &mdash; Local Agent Viewer
     </div>
 
     <script>
@@ -2149,7 +2149,7 @@
             const dbEl = document.getElementById('settingsDb');
             let dbHtml = '';
             if (state.data) {
-                dbHtml += `<div class="settings-info-row"><span class="key">Total sessions</span><span class="val">${formatNumber(state.data.total_conversations || 0)}</span></div>`;
+                dbHtml += `<div class="settings-info-row"><span class="key">Total sessions</span><span class="val">${formatNumber(state.data.total_interactions || 0)}</span></div>`;
                 dbHtml += `<div class="settings-info-row"><span class="key">Total tokens</span><span class="val">${formatNumber(state.data.total_tokens || 0)}</span></div>`;
                 dbHtml += `<div class="settings-info-row"><span class="key">Projects</span><span class="val">${state.projects.length}</span></div>`;
                 dbHtml += `<div class="settings-info-row"><span class="key">Users</span><span class="val">${state.users.length}</span></div>`;
@@ -2215,7 +2215,7 @@
         const statsEl = document.getElementById('overviewStats');
         statsEl.textContent = '';
         statsEl.insertAdjacentHTML('beforeend', `
-            <div class="stat-card"><div class="number">${formatNumber(d.total_conversations || 0)}</div><div class="label">Sessions</div></div>
+            <div class="stat-card"><div class="number">${formatNumber(d.total_interactions || 0)}</div><div class="label">Sessions</div></div>
             <div class="stat-card"><div class="number">${formatNumber(d.total_tokens || 0)}</div><div class="label">Total Tokens</div></div>
             <div class="stat-card"><div class="number">${formatNumber(d.total_messages || 0)}</div><div class="label">Messages</div></div>
             <div class="stat-card"><div class="number">${formatNumber(d.total_file_ops || 0)}</div><div class="label">File Ops</div></div>
@@ -3283,7 +3283,7 @@
         if (results.length === 0) {
             const p = document.createElement('p');
             p.style.cssText = 'color: var(--dim-gray); padding: 20px;';
-            p.textContent = 'No matching conversations found.';
+            p.textContent = 'No matching interactions found.';
             container.appendChild(p);
             return;
         }

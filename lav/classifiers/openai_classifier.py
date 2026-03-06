@@ -1,5 +1,5 @@
 """
-OpenAI-based conversation classifier using Structured Outputs.
+OpenAI-based interaction classifier using Structured Outputs.
 
 Schema identical to Qdrant KB for 1:1 comparison, plus `process` field.
 """
@@ -12,7 +12,7 @@ CLASSIFICATION_SCHEMA = {
     "properties": {
         "summary": {
             "type": "string",
-            "description": "1-sentence summary of the conversation"
+            "description": "1-sentence summary of the interaction"
         },
         "abstract": {
             "type": "string",
@@ -25,7 +25,7 @@ CLASSIFICATION_SCHEMA = {
         "classification": {
             "type": "string",
             "enum": ["development", "meeting", "analysis", "brainstorm", "support", "learning"],
-            "description": "Primary classification of the conversation"
+            "description": "Primary classification of the interaction"
         },
         "data_sensitivity": {
             "type": "string",
@@ -60,7 +60,7 @@ CLASSIFICATION_SCHEMA = {
     "additionalProperties": False,
 }
 
-SYSTEM_PROMPT = """You are a conversation classifier for conversations between users and AI assistants.
+SYSTEM_PROMPT = """You are an interaction classifier for interactions between users and AI assistants.
 Analyze the messages and produce structured metadata.
 
 Fields:
@@ -94,7 +94,7 @@ sensitive_data_types (if not public): credentials, api_keys, financial, personal
 
 
 def prepare_messages_for_classification(messages: List[Dict]) -> str:
-    """Filter: user messages + first line of each assistant message. Truncate to 6000 chars."""
+    """Filter: user messages + first line of each assistant message for classification. Truncate to 6000 chars."""
     parts = []
     for msg in messages:
         msg_type = msg.get("type", "")
@@ -126,12 +126,12 @@ def prepare_messages_for_classification(messages: List[Dict]) -> str:
     return text[:6000]
 
 
-def classify_conversation(
+def classify_interaction(
     messages: List[Dict],
     openai_client,
     model: str = "gpt-4.1-mini",
 ) -> Dict[str, Any]:
-    """Classify a conversation using OpenAI Structured Outputs.
+    """Classify an interaction using OpenAI Structured Outputs.
 
     Returns dict with summary, abstract, process, classification,
     data_sensitivity, sensitive_data_types, topics, people, clients.
@@ -140,7 +140,7 @@ def classify_conversation(
 
     if not text.strip():
         return {
-            "summary": "(empty conversation)",
+            "summary": "(empty interaction)",
             "abstract": "",
             "process": "",
             "classification": "development",
@@ -155,12 +155,12 @@ def classify_conversation(
         model=model,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"Classify this conversation:\n\n{text}"},
+            {"role": "user", "content": f"Classify this interaction:\n\n{text}"},
         ],
         response_format={
             "type": "json_schema",
             "json_schema": {
-                "name": "conversation_metadata",
+                "name": "interaction_metadata",
                 "strict": True,
                 "schema": CLASSIFICATION_SCHEMA,
             },

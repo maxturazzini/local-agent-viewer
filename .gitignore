@@ -7,3 +7,4 @@ __pycache__/
 *.db-wal
 *.db-shm
 .DS_Store
+internal_docs/

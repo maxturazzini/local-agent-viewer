@@ -2,18 +2,18 @@
 """
 LocalAgentViewer MCP Server
 
-FastMCP server exposing conversation search (SQL + Qdrant semantic),
+FastMCP server exposing interaction search (SQL + Qdrant semantic),
 knowledge base indexing, and sync trigger.
 
 Tools (read):
-  - get_conversations: list/search conversations (FTS SQLite)
-  - get_conversation_details: full transcript by session_id
+  - get_interactions: list/search interactions (FTS SQLite)
+  - get_interaction_details: full transcript by session_id
   - semantic_search: Qdrant vector search on indexed KB
-  - kb_status: check if conversation is indexed
+  - kb_status: check if interaction is indexed
 
 Tools (write, require LAV_API_KEY):
-  - kb_index: index conversation into Qdrant (auto-tag via Haiku or pre-metadata)
-  - kb_remove: remove conversation from Qdrant
+  - kb_index: index interaction into Qdrant (auto-tag via Haiku or pre-metadata)
+  - kb_remove: remove interaction from Qdrant
   - kb_update_tags: update tags without re-embedding
   - sync: trigger data re-parse
 """
@@ -46,21 +46,32 @@ def _get_kb_store():
     """Lazy-init Qdrant vector store (HTTP or file mode)."""
     global _kb_store
     if _kb_store is None:
-        from lav.qdrant.store import ConversationVectorStore
+        from lav.qdrant.store import InteractionVectorStore
         if QDRANT_URL:
-            _kb_store = ConversationVectorStore(url=QDRANT_URL, collection=QDRANT_COLLECTION)
+            _kb_store = InteractionVectorStore(url=QDRANT_URL, collection=QDRANT_COLLECTION)
         else:
             QDRANT_DATA_DIR.mkdir(parents=True, exist_ok=True)
-            _kb_store = ConversationVectorStore(data_path=QDRANT_DATA_DIR, collection=QDRANT_COLLECTION)
+            _kb_store = InteractionVectorStore(data_path=QDRANT_DATA_DIR, collection=QDRANT_COLLECTION)
         _kb_store.ensure_collection()
     return _kb_store
 
 
 def _check_api_key(api_key: str) -> bool:
-    """Validate api_key against LAV_API_KEY env var."""
+    """Validate api_key against LAV_API_KEY env var (write operations)."""
     expected = os.environ.get("LAV_API_KEY", "")
     if not expected:
         return False
+    return api_key == expected
+
+
+def _check_read_api_key(api_key: Optional[str] = None) -> bool:
+    """Validate api_key against LAV_READ_API_KEY env var (read operations).
+
+    If LAV_READ_API_KEY is not set, read access is open (backwards compatible).
+    """
+    expected = os.environ.get("LAV_READ_API_KEY", "")
+    if not expected:
+        return True
     return api_key == expected
 
 
@@ -69,7 +80,7 @@ def _check_api_key(api_key: str) -> bool:
 mcp = FastMCP(
     "local-agent-viewer",
     instructions=(
-        "Search and explore Claude Code conversation history. "
+        "Search and explore Claude Code interaction history. "
         "Supports SQL full-text search, Qdrant semantic search, "
         "and data sync triggers."
     ),
@@ -77,15 +88,16 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-def get_conversations(
+def get_interactions(
     search: Optional[str] = None,
     project: Optional[str] = None,
     user: Optional[str] = None,
     start: Optional[str] = None,
     end: Optional[str] = None,
     limit: int = 20,
+    api_key: Optional[str] = None,
 ) -> dict:
-    """List conversations with optional filters.
+    """List interactions with optional filters.
 
     Args:
         search: Full-text search in message content
@@ -94,8 +106,12 @@ def get_conversations(
         start: Start date (YYYY-MM-DD)
         end: End date (YYYY-MM-DD)
         limit: Max results (default 20)
+        api_key: LAV_READ_API_KEY (required if set on server)
     """
-    from lav.queries import get_conversations_list, run_query
+    if not _check_read_api_key(api_key):
+        return {"error": "Invalid or missing api_key (LAV_READ_API_KEY)"}
+
+    from lav.queries import get_interactions_list, run_query
 
     conn = _get_read_connection()
     if not conn:
@@ -114,7 +130,7 @@ def get_conversations(
             if row:
                 user_id = row[0]["id"]
 
-        data = get_conversations_list(
+        data = get_interactions_list(
             conn,
             project_id=project_id,
             user_id=user_id,
@@ -129,22 +145,26 @@ def get_conversations(
 
 
 @mcp.tool()
-def get_conversation_details(session_id: str) -> dict:
-    """Get full conversation transcript by session ID.
+def get_interaction_details(session_id: str, api_key: Optional[str] = None) -> dict:
+    """Get full interaction transcript by session ID.
 
     Args:
-        session_id: The conversation session UUID
+        session_id: The interaction session UUID
+        api_key: LAV_READ_API_KEY (required if set on server)
     """
-    from lav.queries import get_conversation_detail
+    if not _check_read_api_key(api_key):
+        return {"error": "Invalid or missing api_key (LAV_READ_API_KEY)"}
+
+    from lav.queries import get_interaction_detail
 
     conn = _get_read_connection()
     if not conn:
         return {"error": "No database. Run sync first."}
 
     try:
-        data = get_conversation_detail(conn, session_id)
+        data = get_interaction_detail(conn, session_id)
         if not data:
-            return {"error": f"Conversation '{session_id}' not found"}
+            return {"error": f"Interaction '{session_id}' not found"}
         return data
     finally:
         conn.close()
@@ -157,6 +177,7 @@ def semantic_search(
     classification: Optional[str] = None,
     tags: Optional[str] = None,
     project: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> dict:
     """Semantic search in the indexed knowledge base (Qdrant).
 
@@ -166,7 +187,11 @@ def semantic_search(
         classification: Filter by type (development, meeting, analysis, brainstorm, support, learning)
         tags: Comma-separated tags to filter by
         project: Filter by project name
+        api_key: LAV_READ_API_KEY (required if set on server)
     """
+    if not _check_read_api_key(api_key):
+        return {"error": "Invalid or missing api_key (LAV_READ_API_KEY)"}
+
     try:
         store = _get_kb_store()
     except Exception as e:
@@ -230,14 +255,14 @@ def kb_index(
     tags: Optional[str] = None,
     pre_metadata: Optional[str] = None,
 ) -> dict:
-    """Index a conversation into the semantic knowledge base (Qdrant).
+    """Index an interaction into the semantic knowledge base (Qdrant).
 
-    Retrieves the conversation from SQLite, generates metadata via Haiku
+    Retrieves the interaction from SQLite, generates metadata via Haiku
     (or uses pre-computed metadata), embeds the content, and stores in Qdrant.
 
     Args:
         api_key: LAV_API_KEY for authorization
-        session_id: The conversation session UUID to index
+        session_id: The interaction session UUID to index
         tags: Optional comma-separated tags (e.g. "importante,cliente-coop")
         pre_metadata: Optional JSON string with pre-computed metadata
             (keys: summary, classification, topics, people, clients).
@@ -251,21 +276,21 @@ def kb_index(
     except Exception as e:
         return {"error": f"KB not available: {e}"}
 
-    # Get conversation from SQLite
-    from lav.queries import get_conversation_detail
+    # Get interaction from SQLite
+    from lav.queries import get_interaction_detail
     conn = _get_read_connection()
     if not conn:
         return {"error": "No database. Run sync first."}
 
     try:
-        data = get_conversation_detail(conn, session_id)
+        data = get_interaction_detail(conn, session_id)
     finally:
         conn.close()
 
     if not data:
-        return {"error": f"Conversation '{session_id}' not found in SQLite"}
+        return {"error": f"Interaction '{session_id}' not found in SQLite"}
 
-    conv = data["conversation"]
+    conv = data["interaction"]
     messages = data["messages"]
 
     # Parse optional inputs
@@ -273,9 +298,9 @@ def kb_index(
     tag_list = [t.strip() for t in tags.split(",")] if tags else []
     metadata = json.loads(pre_metadata) if pre_metadata else None
 
-    # Index via ConversationIndexer
-    from lav.qdrant.indexer import ConversationIndexer
-    indexer = ConversationIndexer(store)
+    # Index via InteractionIndexer
+    from lav.qdrant.indexer import InteractionIndexer
+    indexer = InteractionIndexer(store)
 
     try:
         payload = indexer.index(
@@ -302,11 +327,11 @@ def kb_remove(
     api_key: str,
     session_id: str,
 ) -> dict:
-    """Remove a conversation from the semantic knowledge base (Qdrant).
+    """Remove an interaction from the semantic knowledge base (Qdrant).
 
     Args:
         api_key: LAV_API_KEY for authorization
-        session_id: The conversation session UUID to remove
+        session_id: The interaction session UUID to remove
     """
     if not _check_api_key(api_key):
         return {"error": "Invalid or missing api_key"}
@@ -323,12 +348,17 @@ def kb_remove(
 @mcp.tool()
 def kb_status(
     session_id: str,
+    api_key: Optional[str] = None,
 ) -> dict:
-    """Check if a conversation is indexed in the knowledge base.
+    """Check if an interaction is indexed in the knowledge base.
 
     Args:
-        session_id: The conversation session UUID to check
+        session_id: The interaction session UUID to check
+        api_key: LAV_READ_API_KEY (required if set on server)
     """
+    if not _check_read_api_key(api_key):
+        return {"error": "Invalid or missing api_key (LAV_READ_API_KEY)"}
+
     try:
         store = _get_kb_store()
     except Exception as e:
@@ -350,11 +380,11 @@ def kb_update_tags(
     session_id: str,
     tags: str,
 ) -> dict:
-    """Update tags on an indexed conversation without re-embedding.
+    """Update tags on an indexed interaction without re-embedding.
 
     Args:
         api_key: LAV_API_KEY for authorization
-        session_id: The conversation session UUID
+        session_id: The interaction session UUID
         tags: Comma-separated tags (replaces existing tags)
     """
     if not _check_api_key(api_key):
@@ -366,7 +396,7 @@ def kb_update_tags(
         return {"error": f"KB not available: {e}"}
 
     if not store.is_indexed(session_id):
-        return {"error": f"Conversation '{session_id}' not indexed. Use kb_index first."}
+        return {"error": f"Interaction '{session_id}' not indexed. Use kb_index first."}
 
     tag_list = [t.strip() for t in tags.split(",")]
     store.update_tags(session_id, tag_list)

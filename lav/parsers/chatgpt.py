@@ -6,7 +6,7 @@ Parses OpenAI's conversations.json export (monolithic JSON array) into the
 unified SQLite database as source "chatgpt", host "cloud".
 
 Key differences from JSONL parsers:
-  - Single JSON file (~634MB, 6k+ conversations)
+  - Single JSON file (~634MB, 6k+ interactions)
   - Messages stored as a DAG tree (parent/children), not a flat list
   - Timestamps are Unix epoch floats (not ISO 8601)
   - No token usage data in export
@@ -44,7 +44,7 @@ from lav.parsers.jsonl import (
 # ===========================================================================
 
 def format_chatgpt_session_id(conversation_id: str) -> str:
-    """Prefix ChatGPT conversation IDs to avoid collisions."""
+    """Prefix ChatGPT interaction IDs to avoid collisions."""
     if not conversation_id:
         return ""
     if conversation_id.startswith("chatgpt:"):
@@ -225,6 +225,8 @@ def parse_chatgpt_export(
     Returns:
         Stats dict with counts.
     """
+    # NOTE: "conversation_id", "conversations.json" are OpenAI's external
+    # schema keys and must not be renamed.
     user = user or getpass.getuser()
     if not filepath.exists():
         print(f"ChatGPT export not found: {filepath}")
@@ -252,20 +254,20 @@ def parse_chatgpt_export(
     # Load JSON
     print("  Loading JSON...")
     with open(filepath, "r", encoding="utf-8") as f:
-        conversations = json.load(f)
-    print(f"  Loaded {len(conversations)} conversations")
+        interactions = json.load(f)
+    print(f"  Loaded {len(interactions)} interactions")
 
     max_update_time = last_update_float
-    convs_processed = 0
-    convs_skipped = 0
+    interactions_processed = 0
+    interactions_skipped = 0
     messages_inserted = 0
     tool_calls_inserted = 0
 
-    for conv in conversations:
+    for conv in interactions:
         update_time = conv.get("update_time") or 0.0
         # Skip if not newer than last parse
         if update_time <= last_update_float:
-            convs_skipped += 1
+            interactions_skipped += 1
             continue
 
         conversation_id = conv.get("conversation_id", "")
@@ -299,11 +301,11 @@ def parse_chatgpt_export(
 
         # Linearize tree
         if not current_node or not mapping:
-            # No messages to process, just create conversation record
+            # No messages to process, just create interaction record
             timestamp = epoch_to_iso(create_time)
             try:
                 conn.execute(
-                    """INSERT OR REPLACE INTO conversations
+                    """INSERT OR REPLACE INTO interactions
                        (session_id, project_id, user_id, host_id, timestamp,
                         display, summary, project, model, total_tokens,
                         message_count, tools_used, cwd, git_branch,
@@ -313,8 +315,8 @@ def parse_chatgpt_export(
                      title[:200] if title else "", title or "(no title)", project_name, default_model),
                 )
             except sqlite3.Error as e:
-                print(f"  DB error (empty conv): {e}")
-            convs_processed += 1
+                print(f"  DB error (empty interaction): {e}")
+            interactions_processed += 1
             continue
 
         messages = linearize_tree(mapping, current_node)
@@ -322,7 +324,7 @@ def parse_chatgpt_export(
         # Insert messages
         first_user_text = ""
         msg_count = 0
-        conv_model = default_model
+        interaction_model = default_model
 
         for msg in messages:
             role = msg.get("author", {}).get("role", "")
@@ -360,13 +362,13 @@ def parse_chatgpt_export(
                 continue
 
             if model:
-                conv_model = model
+                interaction_model = model
 
             # Capture first user text for display
             if msg_type == "user" and not first_user_text and text.strip():
                 first_user_text = text.strip()
 
-            # Generate a stable UUID from conversation_id + message position
+            # Generate a stable UUID from interaction's conversation_id + message position
             msg_id = msg.get("id", "")
             uuid = f"chatgpt:{hashlib.sha1((conversation_id + '|' + msg_id).encode()).hexdigest()}"
 
@@ -393,27 +395,27 @@ def parse_chatgpt_export(
         display = first_user_text[:200] if first_user_text else (title[:200] if title else "")
         timestamp = epoch_to_iso(create_time)
 
-        # Upsert conversation
+        # Upsert interaction
         try:
             conn.execute(
-                """INSERT OR REPLACE INTO conversations
+                """INSERT OR REPLACE INTO interactions
                    (session_id, project_id, user_id, host_id, timestamp,
                     display, summary, project, model, total_tokens,
                     message_count, tools_used, cwd, git_branch,
                     parent_session_id, agent_id)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, '', '', NULL, NULL)""",
                 (session_id, project_id, user_id, host_id, timestamp,
-                 display, summary, project_name, conv_model, msg_count, tools_json),
+                 display, summary, project_name, interaction_model, msg_count, tools_json),
             )
         except sqlite3.Error as e:
-            print(f"  DB error (conversation): {e}")
+            print(f"  DB error (interaction): {e}")
 
-        convs_processed += 1
+        interactions_processed += 1
 
-        # Commit every 500 conversations for crash resilience
-        if convs_processed % 500 == 0:
+        # Commit every 500 interactions for crash resilience
+        if interactions_processed % 500 == 0:
             conn.commit()
-            print(f"  Progress: {convs_processed} conversations processed...")
+            print(f"  Progress: {interactions_processed} interactions processed...")
 
     # Final commit
     conn.commit()
@@ -425,15 +427,15 @@ def parse_chatgpt_export(
 
     stats = {
         "source": SOURCE_CHATGPT,
-        "conversations_processed": convs_processed,
-        "conversations_skipped": convs_skipped,
+        "interactions_processed": interactions_processed,
+        "interactions_skipped": interactions_skipped,
         "messages_inserted": messages_inserted,
         "tool_calls_inserted": tool_calls_inserted,
     }
 
-    print(f"  Done: {convs_processed} conversations, {messages_inserted} messages, {tool_calls_inserted} tool calls")
-    if convs_skipped:
-        print(f"  Skipped (already parsed): {convs_skipped}")
+    print(f"  Done: {interactions_processed} interactions, {messages_inserted} messages, {tool_calls_inserted} tool calls")
+    if interactions_skipped:
+        print(f"  Skipped (already parsed): {interactions_skipped}")
 
     return stats
 

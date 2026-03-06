@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-LocalAgentViewer - Multi-user, multi-host AI agent conversation parser.
+LocalAgentViewer - Multi-user, multi-host AI agent interaction parser.
 
-Parses Claude Code, Codex CLI, and Claude Desktop conversation files (.jsonl)
+Parses Claude Code, Codex CLI, and Claude Desktop interaction files (.jsonl)
 into a unified SQLite database with 4 dimensions:
   - project_id: which codebase
   - user_id: which person
@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS projects (
 
 -- Data tables: all with project_id + user_id + host_id
 
-CREATE TABLE IF NOT EXISTS conversations (
+CREATE TABLE IF NOT EXISTS interactions (
     session_id TEXT NOT NULL,
     project_id INTEGER NOT NULL REFERENCES projects(id),
     user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id),
@@ -264,10 +264,10 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
 END;
 
 -- Indexes: per dimension
-CREATE INDEX IF NOT EXISTS idx_conv_project_ts ON conversations(project_id, timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations(user_id);
-CREATE INDEX IF NOT EXISTS idx_conv_host ON conversations(host_id);
-CREATE INDEX IF NOT EXISTS idx_conv_user_project ON conversations(user_id, project_id);
+CREATE INDEX IF NOT EXISTS idx_int_project_ts ON interactions(project_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_int_user ON interactions(user_id);
+CREATE INDEX IF NOT EXISTS idx_int_host ON interactions(host_id);
+CREATE INDEX IF NOT EXISTS idx_int_user_project ON interactions(user_id, project_id);
 
 CREATE INDEX IF NOT EXISTS idx_token_project_ts ON token_usage(project_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_token_user ON token_usage(user_id, timestamp);
@@ -289,13 +289,13 @@ CREATE INDEX IF NOT EXISTS idx_mcp_tool ON mcp_tool_calls(tool_name);
 CREATE INDEX IF NOT EXISTS idx_mcp_timestamp ON mcp_tool_calls(timestamp);
 CREATE INDEX IF NOT EXISTS idx_token_timestamp ON token_usage(timestamp);
 CREATE INDEX IF NOT EXISTS idx_token_model ON token_usage(model);
-CREATE INDEX IF NOT EXISTS idx_conv_timestamp ON conversations(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_int_timestamp ON interactions(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_msg_session ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_msg_timestamp ON messages(timestamp);
 CREATE INDEX IF NOT EXISTS idx_session_sources_source ON session_sources(source);
 
--- Conversation metadata (SQL-based classification, independent from Qdrant)
-CREATE TABLE IF NOT EXISTS conversation_metadata (
+-- Interaction metadata (SQL-based classification, independent from Qdrant)
+CREATE TABLE IF NOT EXISTS interaction_metadata (
     session_id TEXT NOT NULL,
     project_id INTEGER NOT NULL,
     summary TEXT,
@@ -312,12 +312,12 @@ CREATE TABLE IF NOT EXISTS conversation_metadata (
     created_at TEXT,
     updated_at TEXT,
     PRIMARY KEY (session_id, project_id),
-    FOREIGN KEY (session_id, project_id) REFERENCES conversations(session_id, project_id)
+    FOREIGN KEY (session_id, project_id) REFERENCES interactions(session_id, project_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_convmeta_classification ON conversation_metadata(classification);
-CREATE INDEX IF NOT EXISTS idx_convmeta_sensitivity ON conversation_metadata(data_sensitivity);
-CREATE INDEX IF NOT EXISTS idx_convmeta_project ON conversation_metadata(project_id);
+CREATE INDEX IF NOT EXISTS idx_intmeta_classification ON interaction_metadata(classification);
+CREATE INDEX IF NOT EXISTS idx_intmeta_sensitivity ON interaction_metadata(data_sensitivity);
+CREATE INDEX IF NOT EXISTS idx_intmeta_project ON interaction_metadata(project_id);
 """
 
 PRAGMAS = """
@@ -355,6 +355,44 @@ def _migrate_parse_state(conn: sqlite3.Connection):
     print("  Migration complete (old parse_state dropped, full reparse needed)")
 
 
+def _migrate_conversations_to_interactions(conn: sqlite3.Connection, db_path: Path):
+    """Migrate old 'conversations'/'conversation_metadata' tables to 'interactions'/'interaction_metadata'."""
+    # Check if old 'conversations' table exists
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'"
+    ).fetchone()
+    if not row:
+        return  # No old table, nothing to migrate
+
+    # Check if new 'interactions' table is empty (freshly created by schema)
+    count = conn.execute("SELECT COUNT(*) FROM interactions").fetchone()[0]
+    if count > 0:
+        return  # Already has data, skip migration
+
+    import shutil
+    bak_path = db_path.with_suffix('.db.bak')
+    print(f"Migrating conversations -> interactions (backup: {bak_path})")
+    shutil.copy2(str(db_path), str(bak_path))
+
+    # Copy conversations -> interactions
+    conn.execute("INSERT INTO interactions SELECT * FROM conversations")
+    print(f"  Copied conversations -> interactions")
+
+    # Copy conversation_metadata -> interaction_metadata (if old table exists)
+    meta_row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_metadata'"
+    ).fetchone()
+    if meta_row:
+        conn.execute("INSERT INTO interaction_metadata SELECT * FROM conversation_metadata")
+        print(f"  Copied conversation_metadata -> interaction_metadata")
+
+    # Drop old tables
+    conn.execute("DROP TABLE IF EXISTS conversation_metadata")
+    conn.execute("DROP TABLE conversations")
+    conn.commit()
+    print("  Migration complete: old tables dropped")
+
+
 def init_db(db_path: Path = UNIFIED_DB_PATH) -> sqlite3.Connection:
     """Initialize the unified SQLite database with schema."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -367,6 +405,11 @@ def init_db(db_path: Path = UNIFIED_DB_PATH) -> sqlite3.Connection:
         _migrate_parse_state(conn)
     except Exception as e:
         print(f"  Migration check skipped: {e}")
+    # Migrate conversations -> interactions
+    try:
+        _migrate_conversations_to_interactions(conn, db_path)
+    except Exception as e:
+        print(f"  conversations->interactions migration skipped: {e}")
     return conn
 
 
@@ -1085,13 +1128,13 @@ def process_codex_token_count(event: dict, session_ctx: dict, conn: sqlite3.Conn
 
 
 # ===========================================================================
-# CONVERSATION UPDATE
+# INTERACTION UPDATE
 # ===========================================================================
 
-def update_conversation(session_id: str, project_name: str, conn: sqlite3.Connection,
-                        project_id: int, user_id: int, host_id: int,
-                        summary: str = None, parent_session_id: str = None, agent_id: str = None):
-    """Aggregate and update conversation metadata from messages."""
+def update_interaction(session_id: str, project_name: str, conn: sqlite3.Connection,
+                       project_id: int, user_id: int, host_id: int,
+                       summary: str = None, parent_session_id: str = None, agent_id: str = None):
+    """Aggregate and update interaction metadata from messages."""
     try:
         cursor = conn.execute("""
             SELECT
@@ -1168,7 +1211,7 @@ def update_conversation(session_id: str, project_name: str, conn: sqlite3.Connec
         git_branch = ctx_row[1] if ctx_row else ""
 
         conn.execute("""
-            INSERT OR REPLACE INTO conversations
+            INSERT OR REPLACE INTO interactions
             (session_id, project_id, user_id, host_id, timestamp, display, summary, project, model,
              total_tokens, message_count, tools_used, cwd, git_branch, parent_session_id, agent_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1176,11 +1219,11 @@ def update_conversation(session_id: str, project_name: str, conn: sqlite3.Connec
               total_tokens or 0, msg_count, tools_json, cwd, git_branch, parent_session_id, agent_id))
 
     except sqlite3.Error as e:
-        print(f"DB error (conversation): {e}")
+        print(f"DB error (interaction): {e}")
 
 
 def resolve_agent_parents(conn: sqlite3.Connection, project_id: int):
-    """Post-process to find real parent_session_id for agent conversations."""
+    """Post-process to find real parent_session_id for agent interactions."""
     parent_mapping = {}
 
     cursor = conn.execute("""
@@ -1198,7 +1241,7 @@ def resolve_agent_parents(conn: sqlite3.Connection, project_id: int):
     cursor = conn.execute("""
         SELECT m.session_id, m.timestamp, m.content
         FROM messages m
-        JOIN conversations c ON m.session_id = c.session_id AND m.project_id = c.project_id
+        JOIN interactions c ON m.session_id = c.session_id AND m.project_id = c.project_id
         WHERE m.project_id = ?
           AND m.content LIKE '%"name": "Task"%'
           AND m.type = 'assistant'
@@ -1217,7 +1260,7 @@ def resolve_agent_parents(conn: sqlite3.Connection, project_id: int):
 
     cursor = conn.execute("""
         SELECT session_id, agent_id, timestamp
-        FROM conversations
+        FROM interactions
         WHERE project_id = ?
           AND agent_id IS NOT NULL
           AND (parent_session_id IS NULL OR parent_session_id = session_id)
@@ -1254,7 +1297,7 @@ def resolve_agent_parents(conn: sqlite3.Connection, project_id: int):
     updated = 0
     for agent_id, parent_session_id in parent_mapping.items():
         cursor = conn.execute("""
-            UPDATE conversations
+            UPDATE interactions
             SET parent_session_id = ?
             WHERE project_id = ? AND agent_id = ? AND (parent_session_id IS NULL OR parent_session_id = session_id)
         """, (parent_session_id, project_id, agent_id))
@@ -1270,7 +1313,7 @@ def resolve_agent_parents(conn: sqlite3.Connection, project_id: int):
 # ===========================================================================
 
 def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: bool = False) -> dict:
-    """Parse all conversations for a single Claude Code project into the unified DB."""
+    """Parse all interactions for a single Claude Code project into the unified DB."""
     project_name = extract_project_name(project_dir)
 
     # Detect user + host
@@ -1305,7 +1348,7 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
     session_agent_info = {}
 
     jsonl_files = sorted(project_dir.rglob("*.jsonl"))
-    print(f"  Found {len(jsonl_files)} conversation files")
+    print(f"  Found {len(jsonl_files)} interaction files")
 
     for jsonl_file in jsonl_files:
         files_processed += 1
@@ -1376,7 +1419,7 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
         summary = session_summaries.get(session_id)
         agent_info = session_agent_info.get(session_id)
         parent_sid, agent_id = agent_info if agent_info else (None, None)
-        update_conversation(session_id, project_name, conn, project_id, user_id, host_id,
+        update_interaction(session_id, project_name, conn, project_id, user_id, host_id,
                             summary=summary, parent_session_id=parent_sid, agent_id=agent_id)
 
     resolve_agent_parents(conn, project_id)
@@ -1396,10 +1439,10 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
         "files_processed": files_processed,
         "messages_processed": messages_processed,
         "tool_calls_processed": tool_calls_processed,
-        "conversations_updated": len(sessions_updated),
+        "interactions_updated": len(sessions_updated),
     }
 
-    print(f"  Processed: {messages_processed} messages, {tool_calls_processed} tool calls, {len(sessions_updated)} conversations")
+    print(f"  Processed: {messages_processed} messages, {tool_calls_processed} tool calls, {len(sessions_updated)} interactions")
     return stats
 
 
@@ -1589,11 +1632,11 @@ def parse_codex_sessions(
                 if payload.get("type") == "token_count":
                     process_codex_token_count(event, session_ctx, conn, project_id, user_id, host_id)
 
-        # Update conversations for this file
+        # Update interactions for this file
         if project_id is not None:
             for sid in sessions_updated:
                 if sid:
-                    update_conversation(sid, project_name, conn, project_id, user_id, host_id)
+                    update_interaction(sid, project_name, conn, project_id, user_id, host_id)
             conn.commit()
 
             if messages_processed > 0:
@@ -1751,8 +1794,8 @@ def parse_cowork_sessions(
 
             process_token_usage(msg, conn, project_id, user_id, host_id)
 
-            # Update conversation for this session
-            update_conversation(sid, project_name, conn, project_id, user_id, host_id)
+            # Update interaction for this session
+            update_interaction(sid, project_name, conn, project_id, user_id, host_id)
 
         conn.commit()
 
@@ -1781,7 +1824,7 @@ def parse_cowork_sessions(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="LocalAgentViewer - Parse AI agent conversations into unified analytics DB"
+        description="LocalAgentViewer - Parse AI agent interactions into unified analytics DB"
     )
     parser.add_argument("--full", "-f", action="store_true", help="Force full reparse")
     parser.add_argument("--project", "-p", type=str, help="Parse only a specific project")
@@ -1807,7 +1850,7 @@ def main():
                 if project_dir.is_dir():
                     name = extract_project_name(project_dir)
                     count = len(list(project_dir.glob("*.jsonl")))
-                    print(f"  {name}: {count} conversation files")
+                    print(f"  {name}: {count} interaction files")
         return
 
     # Initialize unified DB
@@ -1939,7 +1982,7 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
     user_id = get_or_create_user(conn, username)
 
     for session_data in sessions:
-        conv = session_data.get("conversation", {})
+        conv = session_data.get("interaction", session_data.get("conversation", {}))
         session_id = conv.get("session_id")
         if not session_id:
             continue
@@ -1953,10 +1996,10 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
         r_host_id = host_id
         r_user_id = user_id
 
-        # Insert conversation (OR IGNORE = anti-duplicate on PK)
+        # Insert interaction (OR IGNORE = anti-duplicate on PK)
         try:
             conn.execute("""
-                INSERT OR IGNORE INTO conversations
+                INSERT OR IGNORE INTO interactions
                 (session_id, project_id, user_id, host_id, timestamp, display, summary,
                  project, model, total_tokens, message_count, tools_used, cwd, git_branch,
                  parent_session_id, agent_id)

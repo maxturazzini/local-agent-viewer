@@ -23,7 +23,7 @@ from socketserver import ThreadingMixIn
 from typing import Optional
 from urllib.parse import urlparse, parse_qs, unquote
 
-from lav import PROJECT_ROOT
+from lav import PACKAGE_DIR
 from lav.config import (
     UNIFIED_DB_PATH,
     QDRANT_DATA_DIR,
@@ -46,7 +46,7 @@ from lav.parsers.jsonl import (
     extract_project_name,
     parse_jsonl_file,
     process_message_content,
-    update_conversation,
+    update_interaction,
     get_or_create_project,
     get_or_create_user,
     get_or_create_host,
@@ -70,15 +70,15 @@ from lav.queries import (
     get_client_stats,
     get_timeline_stats,
     get_date_range,
-    get_conversations_list,
+    get_interactions_list,
     search_messages,
-    get_conversation_detail,
+    get_interaction_detail,
     get_users_list,
     get_hosts_list,
     get_projects_list,
     get_user_detail,
     export_sessions,
-    get_conversation_metadata,
+    get_interaction_metadata,
     get_classification_stats,
     get_tagcloud_data,
 )
@@ -109,12 +109,12 @@ def get_kb_store(require_openai: bool = True):
         import os
         if not require_openai and not os.getenv("OPENAI_API_KEY"):
             return None
-        from lav.qdrant.store import ConversationVectorStore
+        from lav.qdrant.store import InteractionVectorStore
         if QDRANT_URL:
-            _kb_store = ConversationVectorStore(url=QDRANT_URL, collection=QDRANT_COLLECTION)
+            _kb_store = InteractionVectorStore(url=QDRANT_URL, collection=QDRANT_COLLECTION)
         else:
             QDRANT_DATA_DIR.mkdir(parents=True, exist_ok=True)
-            _kb_store = ConversationVectorStore(data_path=QDRANT_DATA_DIR, collection=QDRANT_COLLECTION)
+            _kb_store = InteractionVectorStore(data_path=QDRANT_DATA_DIR, collection=QDRANT_COLLECTION)
         _kb_store.ensure_collection()
     return _kb_store
 
@@ -123,8 +123,8 @@ def get_kb_indexer():
     """Get or create the KB indexer (lazy initialization)."""
     global _kb_indexer
     if _kb_indexer is None:
-        from lav.qdrant.indexer import ConversationIndexer
-        _kb_indexer = ConversationIndexer(get_kb_store())
+        from lav.qdrant.indexer import InteractionIndexer
+        _kb_indexer = InteractionIndexer(get_kb_store())
     return _kb_indexer
 
 
@@ -264,7 +264,7 @@ def pull_from_agents(conn, agents_config: list, agent_filter: str = None, full: 
 # ===========================================================================
 
 def _auto_classify_new(conv_ids: set = None) -> int:
-    """Classify new conversations using OpenAI gpt-4.1-mini.
+    """Classify new interactions using OpenAI gpt-4.1-mini.
 
     Called automatically after sync with the set of (session_id, project_id)
     tuples that were added during this sync. Only classifies those.
@@ -294,8 +294,8 @@ def _auto_classify_new(conv_ids: set = None) -> int:
 
         candidates = read_conn.execute(f"""
             SELECT c.session_id, c.project_id, c.message_count
-            FROM conversations c
-            LEFT JOIN conversation_metadata cm
+            FROM interactions c
+            LEFT JOIN interaction_metadata cm
                 ON cm.session_id = c.session_id AND cm.project_id = c.project_id
             WHERE cm.session_id IS NULL
               AND c.message_count >= 2
@@ -307,11 +307,11 @@ def _auto_classify_new(conv_ids: set = None) -> int:
             read_conn.close()
             return 0
 
-        print(f"[classify] {len(candidates)} new conversations to classify")
-        _sync_status["progress"] = f"Classifying {len(candidates)} conversations..."
+        print(f"[classify] {len(candidates)} new interactions to classify")
+        _sync_status["progress"] = f"Classifying {len(candidates)} interactions..."
 
         import openai
-        from lav.classifiers.openai_classifier import classify_conversation
+        from lav.classifiers.openai_classifier import classify_interaction
 
         client = openai.OpenAI(api_key=api_key)
         write_conn = init_db(UNIFIED_DB_PATH)
@@ -329,11 +329,11 @@ def _auto_classify_new(conv_ids: set = None) -> int:
                 if not messages:
                     continue
 
-                metadata = classify_conversation(messages, client, model=model)
+                metadata = classify_interaction(messages, client, model=model)
 
                 now = datetime.now().isoformat()
                 write_conn.execute("""
-                    INSERT INTO conversation_metadata
+                    INSERT INTO interaction_metadata
                         (session_id, project_id, summary, abstract, process, classification,
                          data_sensitivity, sensitive_data_types, topics, people, clients,
                          tags, model_used, created_at, updated_at)
@@ -397,10 +397,10 @@ def sync_data(scope: str, project: str = None, user: str = None,
             conn = get_write_connection()
             results = []
 
-            # Snapshot existing conversation IDs before sync
+            # Snapshot existing interaction IDs before sync
             _pre_sync_ids = set(
                 (r[0], r[1]) for r in conn.execute(
-                    "SELECT session_id, project_id FROM conversations"
+                    "SELECT session_id, project_id FROM interactions"
                 ).fetchall()
             )
 
@@ -484,16 +484,16 @@ def sync_data(scope: str, project: str = None, user: str = None,
                     except Exception as e:
                         print(f"[sync] ChatGPT parse failed (non-fatal): {e}")
 
-            # Find new conversations added during this sync
+            # Find new interactions added during this sync
             _post_sync_ids = set(
                 (r[0], r[1]) for r in conn.execute(
-                    "SELECT session_id, project_id FROM conversations"
+                    "SELECT session_id, project_id FROM interactions"
                 ).fetchall()
             )
             new_conv_ids = _post_sync_ids - _pre_sync_ids
             conn.close()
 
-            # Auto-classify only newly synced conversations
+            # Auto-classify only newly synced interactions
             classify_count = _auto_classify_new(conv_ids=new_conv_ids) if new_conv_ids else 0
 
             _sync_status["running"] = False
@@ -531,7 +531,7 @@ class APIHandler(SimpleHTTPRequestHandler):
     """HTTP handler for API endpoints and static files."""
 
     def __init__(self, *args, **kwargs):
-        kwargs.setdefault("directory", str(PROJECT_ROOT / "static"))
+        kwargs.setdefault("directory", str(PACKAGE_DIR / "static"))
         super().__init__(*args, **kwargs)
 
     # Endpoints allowed in agent-only mode
@@ -640,11 +640,11 @@ class APIHandler(SimpleHTTPRequestHandler):
                                 (token_totals.get("cache_creation") or 0) +
                                 (token_totals.get("cache_read") or 0))
 
-                # Conversation + message counts (with client/source filter)
+                # Interaction + message counts (with client/source filter)
                 where_c, params_c = build_filters(ids["project_id"], ids["user_id"], ids["host_id"],
-                                                   start_date, end_date, client_source, 'conversations')
-                ss_join_c = " LEFT JOIN session_sources ss ON ss.session_id = conversations.session_id AND ss.project_id = conversations.project_id" if client_source else ""
-                conv_row = conn.execute("SELECT COUNT(*) FROM conversations" + ss_join_c + where_c, params_c).fetchone()
+                                                   start_date, end_date, client_source, 'interactions')
+                ss_join_c = " LEFT JOIN session_sources ss ON ss.session_id = interactions.session_id AND ss.project_id = interactions.project_id" if client_source else ""
+                conv_row = conn.execute("SELECT COUNT(*) FROM interactions" + ss_join_c + where_c, params_c).fetchone()
 
                 where_m, params_m = build_filters(ids["project_id"], ids["user_id"], ids["host_id"],
                                                    start_date, end_date, client_source, 'messages')
@@ -659,7 +659,7 @@ class APIHandler(SimpleHTTPRequestHandler):
                 by_project = conn.execute(
                     f"""SELECT p.name, COUNT(DISTINCT c.session_id) as sessions,
                               SUM(c.total_tokens) as tokens
-                       FROM conversations c
+                       FROM interactions c
                        JOIN projects p ON c.project_id = p.id
                        {ss_join}""" +
                     where_bp + " GROUP BY p.name ORDER BY sessions DESC", params_bp
@@ -668,7 +668,7 @@ class APIHandler(SimpleHTTPRequestHandler):
                 by_user = conn.execute(
                     f"""SELECT u.username, COUNT(DISTINCT c.session_id) as sessions,
                               SUM(c.total_tokens) as tokens
-                       FROM conversations c
+                       FROM interactions c
                        JOIN users u ON c.user_id = u.id
                        {ss_join}""" +
                     where_bp + " GROUP BY u.username ORDER BY sessions DESC", params_bp
@@ -677,7 +677,7 @@ class APIHandler(SimpleHTTPRequestHandler):
                 by_model = conn.execute(
                     f"""SELECT COALESCE(NULLIF(c.model, ''), 'unknown') as model,
                               COUNT(DISTINCT c.session_id) as sessions
-                       FROM conversations c
+                       FROM interactions c
                        {ss_join}""" +
                     where_bp + " GROUP BY model ORDER BY sessions DESC", params_bp
                 ).fetchall()
@@ -706,7 +706,7 @@ class APIHandler(SimpleHTTPRequestHandler):
                         "client": client_source,
                     },
                     # Top-level summaries
-                    "total_conversations": conv_row[0] if conv_row else 0,
+                    "total_interactions": conv_row[0] if conv_row else 0,
                     "total_tokens": total_tokens,
                     "total_messages": msg_row[0] if msg_row else 0,
                     "total_file_ops": files_data.get("totals", {}).get("total_ops", 0),
@@ -731,9 +731,9 @@ class APIHandler(SimpleHTTPRequestHandler):
                 conn.close()
             return
 
-        # ==== CONVERSATIONS ====
+        # ==== INTERACTIONS ====
 
-        if path == "/api/conversations":
+        if path == "/api/interactions":
             conn = get_read_connection()
             if not conn:
                 self.send_error(404, "No database")
@@ -749,7 +749,7 @@ class APIHandler(SimpleHTTPRequestHandler):
                 limit = int(params.get("limit", [50])[0])
                 offset = int(params.get("offset", [0])[0])
 
-                data = get_conversations_list(
+                data = get_interactions_list(
                     conn,
                     project_id=ids["project_id"],
                     user_id=ids["user_id"],
@@ -768,15 +768,15 @@ class APIHandler(SimpleHTTPRequestHandler):
                 conn.close()
             return
 
-        if path.startswith("/api/conversation/") and path.endswith("/metadata"):
-            session_id = unquote(path.split("/api/conversation/")[1].split("/")[0])
+        if path.startswith("/api/interaction/") and path.endswith("/metadata"):
+            session_id = unquote(path.split("/api/interaction/")[1].split("/")[0])
             conn = get_read_connection()
             if not conn:
                 self.send_error(404, "No database")
                 return
             try:
                 ids = resolve_ids(conn, params)
-                data = get_conversation_metadata(conn, session_id, project_id=ids.get("project_id"))
+                data = get_interaction_metadata(conn, session_id, project_id=ids.get("project_id"))
                 if not data:
                     self.send_json({"classified": False, "session_id": session_id})
                     return
@@ -785,17 +785,17 @@ class APIHandler(SimpleHTTPRequestHandler):
                 conn.close()
             return
 
-        if path.startswith("/api/conversation/"):
-            session_id = unquote(path.split("/api/conversation/")[1].split("/")[0])
+        if path.startswith("/api/interaction/"):
+            session_id = unquote(path.split("/api/interaction/")[1].split("/")[0])
             conn = get_read_connection()
             if not conn:
                 self.send_error(404, "No database")
                 return
             try:
                 ids = resolve_ids(conn, params)
-                data = get_conversation_detail(conn, session_id, project_id=ids["project_id"])
+                data = get_interaction_detail(conn, session_id, project_id=ids["project_id"])
                 if not data:
-                    self.send_error(404, f"Conversation '{session_id}' not found")
+                    self.send_error(404, f"Interaction '{session_id}' not found")
                     return
                 self.send_json(data)
             finally:
@@ -878,7 +878,7 @@ class APIHandler(SimpleHTTPRequestHandler):
             if conn:
                 try:
                     sources = run_query(conn, "SELECT DISTINCT source FROM session_sources")
-                    sessions_count = run_query(conn, "SELECT COUNT(*) as c FROM conversations")[0]["c"]
+                    sessions_count = run_query(conn, "SELECT COUNT(*) as c FROM interactions")[0]["c"]
                     last_parse = run_query(conn, "SELECT MAX(value) as v FROM parse_state WHERE key LIKE 'last_%'")
                     info["sources"] = [s["source"] for s in sources]
                     info["sessions_count"] = sessions_count
@@ -1145,20 +1145,20 @@ class APIHandler(SimpleHTTPRequestHandler):
                     self.send_error(404, "No database")
                     return
 
-                conv_data = get_conversation_detail(conn, session_id)
+                conv_data = get_interaction_detail(conn, session_id)
                 conn.close()
 
                 if not conv_data:
-                    self.send_error(404, f"Conversation '{session_id}' not found")
+                    self.send_error(404, f"Interaction '{session_id}' not found")
                     return
 
                 indexer = get_kb_indexer()
                 payload = indexer.index(
                     session_id=session_id,
                     messages=conv_data["messages"],
-                    project=project or conv_data["conversation"].get("project", ""),
-                    timestamp=conv_data["conversation"].get("timestamp", ""),
-                    user=user or conv_data["conversation"].get("username", ""),
+                    project=project or conv_data["interaction"].get("project", ""),
+                    timestamp=conv_data["interaction"].get("timestamp", ""),
+                    user=user or conv_data["interaction"].get("username", ""),
                     custom_tags=tags,
                     pre_metadata=pre_metadata,
                 )

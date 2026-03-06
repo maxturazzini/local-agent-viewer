@@ -1,5 +1,5 @@
 """
-ConversationIndexer - Pipeline for indexing conversations with auto-tagging.
+InteractionIndexer - Pipeline for indexing interactions with auto-tagging.
 
 Uses Haiku for fast metadata extraction (summary, classification, topics, etc.)
 """
@@ -12,21 +12,21 @@ import re
 
 import anthropic
 
-from .store import ConversationVectorStore
+from .store import InteractionVectorStore
 
 
-TAGGING_PROMPT = """Analyze this conversation between a user and an AI assistant and extract structured metadata.
+TAGGING_PROMPT = """Analyze this interaction between a user and an AI assistant and extract structured metadata.
 
-CONVERSATION:
-{conversation}
+INTERACTION:
+{interaction}
 
 Respond ONLY with valid JSON (no text before or after):
 {{
-  "summary": "1-2 sentence summary of the conversation",
+  "summary": "1-2 sentence summary of the interaction",
   "abstract": "more detailed 2-3 sentence description of the context, problem addressed, and decisions made",
   "classification": "ONE of: development | meeting | analysis | brainstorm | support | learning",
   "topics": ["topic1", "topic2", "topic3"],
-  "people": ["person name if mentioned in the conversation, exclude the user and the assistant"],
+  "people": ["person name if mentioned in the interaction, exclude the user and the assistant"],
   "clients": ["client/company name if mentioned"],
   "data_sensitivity": "ONE of: public | internal | confidential | restricted",
   "sensitive_data_types": ["type1", "type2"]
@@ -35,7 +35,7 @@ Respond ONLY with valid JSON (no text before or after):
 NOTES:
 - classification: development=coding/architecture, meeting=meetings/calls, analysis=data analysis/research, brainstorm=ideation, support=troubleshooting, learning=study/training
 - topics: max 5, specific keywords (e.g. "qdrant", "vector-database", not generic like "AI")
-- people: only third parties mentioned, NOT the user or the assistant
+- people: only third parties mentioned in the interaction, NOT the user or the assistant
 - clients: companies/clients mentioned
 - data_sensitivity: public=generic discussions without sensitive data, internal=internal work details/architecture/tools, confidential=client data/commercial strategies/offers/pricing, restricted=credentials/tokens/API keys/personal financial data
 - sensitive_data_types: empty list if public, otherwise choose from: credentials, api_keys, financial, personal_data, client_strategy, pricing, contracts, internal_architecture, employee_data
@@ -56,7 +56,7 @@ def generate_tags(text: str, api_key: Optional[str] = None) -> Dict[str, Any]:
         max_tokens=500,
         messages=[{
             "role": "user",
-            "content": TAGGING_PROMPT.format(conversation=text_truncated)
+            "content": TAGGING_PROMPT.format(interaction=text_truncated)
         }]
     )
 
@@ -70,7 +70,7 @@ def generate_tags(text: str, api_key: Optional[str] = None) -> Dict[str, Any]:
         result = json.loads(response_text)
     except json.JSONDecodeError:
         result = {
-            "summary": "Conversation could not be analyzed",
+            "summary": "Interaction could not be analyzed",
             "abstract": "",
             "classification": "development",
             "topics": [],
@@ -95,7 +95,7 @@ def generate_tags(text: str, api_key: Optional[str] = None) -> Dict[str, Any]:
     return result
 
 
-class ConversationIndexer:
+class InteractionIndexer:
     """Pipeline: messages -> payload -> embedding -> Qdrant."""
 
     VALID_CLASSIFICATIONS = {
@@ -109,7 +109,7 @@ class ConversationIndexer:
 
     def __init__(
         self,
-        store: ConversationVectorStore,
+        store: InteractionVectorStore,
         anthropic_api_key: Optional[str] = None
     ):
         self.store = store
@@ -125,7 +125,7 @@ class ConversationIndexer:
         custom_tags: Optional[List[str]] = None,
         pre_metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Index a conversation."""
+        """Index an interaction."""
         full_text = self._messages_to_text(messages)
 
         if pre_metadata:
@@ -176,7 +176,7 @@ class ConversationIndexer:
         user: str = "",
         preserve_tags: bool = True
     ) -> Dict[str, Any]:
-        """Re-index a conversation, optionally preserving manual tags."""
+        """Re-index an interaction, optionally preserving manual tags."""
         existing_tags = []
         if preserve_tags:
             existing = self.store.get(session_id)
@@ -210,7 +210,7 @@ class ConversationIndexer:
         return "\n\n".join(parts)
 
     def _extract_tools(self, messages: List[Dict]) -> Set[str]:
-        """Extract tool names used in conversation."""
+        """Extract tool names used in interaction."""
         tools = set()
 
         for msg in messages:

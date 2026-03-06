@@ -1,1 +1,1 @@
-# Classifiers package for conversation metadata extraction
+# Classifiers package for interaction metadata extraction

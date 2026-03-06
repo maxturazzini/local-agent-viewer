@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-sql_classifier.py - Batch classifier for conversation metadata (SQLite-based).
+sql_classifier.py - Batch classifier for interaction metadata (SQLite-based).
 
-Uses gpt-4o-mini via OpenAI Structured Outputs to classify conversations
-and store metadata in the conversation_metadata table.
+Uses gpt-4o-mini via OpenAI Structured Outputs to classify interactions
+and store metadata in the interaction_metadata table.
 
 Independent from Qdrant — same schema for 1:1 comparison.
 
@@ -12,7 +12,7 @@ Usage:
     python3 sql_classifier.py --full                     # reclassify everything
     python3 sql_classifier.py --limit 50                 # test on 50
     python3 sql_classifier.py --project miniMe           # filter by project
-    python3 sql_classifier.py --min-messages 5           # skip short conversations
+    python3 sql_classifier.py --min-messages 5           # skip short interactions
     python3 sql_classifier.py --dry-run                  # preview without writing
 """
 
@@ -60,7 +60,7 @@ def _fetch_candidates(
     since: str = "",
     limit: int = 0,
 ) -> list:
-    """Fetch conversations to classify."""
+    """Fetch interactions to classify."""
     sql = """
         SELECT
             c.session_id,
@@ -71,7 +71,7 @@ def _fetch_candidates(
             ss.source,
             c.timestamp,
             c.message_count
-        FROM conversations c
+        FROM interactions c
         JOIN projects p ON c.project_id = p.id
         LEFT JOIN users u ON c.user_id = u.id
         LEFT JOIN hosts h ON c.host_id = h.id
@@ -81,7 +81,7 @@ def _fetch_candidates(
 
     if not full:
         sql += """
-        LEFT JOIN conversation_metadata cm
+        LEFT JOIN interaction_metadata cm
             ON cm.session_id = c.session_id AND cm.project_id = c.project_id
         """
 
@@ -142,7 +142,7 @@ def _upsert_metadata(
     now = datetime.now().isoformat()
     conn.execute(
         """
-        INSERT INTO conversation_metadata
+        INSERT INTO interaction_metadata
             (session_id, project_id, summary, abstract, process, classification,
              data_sensitivity, sensitive_data_types, topics, people, clients,
              tags, model_used, created_at, updated_at)
@@ -234,7 +234,7 @@ def run(
         read_conn.close()
 
     total = len(candidates)
-    print(f"  Conversations to classify: {total}")
+    print(f"  Interactions to classify: {total}")
 
     if total == 0:
         print("  Nothing to do.")
@@ -246,7 +246,7 @@ def run(
         import openai
         openai_client = openai.OpenAI(api_key=api_key)
 
-    from lav.classifiers.openai_classifier import classify_conversation
+    from lav.classifiers.openai_classifier import classify_interaction
 
     # Write connection for storing results
     write_conn = None
@@ -288,7 +288,7 @@ def run(
 
             try:
                 t0 = time.time()
-                metadata = classify_conversation(messages, openai_client, model=model)
+                metadata = classify_interaction(messages, openai_client, model=model)
                 elapsed = time.time() - t0
 
                 _upsert_metadata(write_conn, sid, pid, metadata, model)
@@ -321,7 +321,7 @@ def run(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="SQL-based conversation classifier (gpt-4o-mini)",
+        description="SQL-based interaction classifier (gpt-4o-mini)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -345,11 +345,11 @@ Examples:
     parser.add_argument("--username", metavar="USER",
         help="Filter by username")
     parser.add_argument("--min-messages", type=int, default=0, metavar="N",
-        help="Skip conversations with fewer than N messages")
+        help="Skip interactions with fewer than N messages")
     parser.add_argument("--since", metavar="YYYY-MM-DD",
         help="Only classify from this date onward")
     parser.add_argument("--limit", type=int, default=0, metavar="N",
-        help="Process at most N conversations (0 = no limit)")
+        help="Process at most N interactions (0 = no limit)")
     parser.add_argument("--model", default="gpt-4.1-mini",
         help="OpenAI model (default: gpt-4o-mini)")
     parser.add_argument("--dry-run", action="store_true",
