@@ -1,250 +1,98 @@
-# LocalAgentViewer
+# CLAUDE.md
 
-Analytics tool for monitoring AI coding agents (Claude Code, Codex CLI, Claude Desktop, ChatGPT) across multiple users, hosts, and projects.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Quick Start
+## What this is
+
+LocalAgentViewer (LAV) — local long-term memory for AI agent interactions. Parses JSONL/JSON logs from Claude Code, Codex CLI, Claude Desktop, and ChatGPT into a single SQLite database with a web dashboard, AI classification, and optional vector search.
+
+## Commands
 
 ```bash
-cd local-agent-viewer
-pip install -e .
+# Install (zero dependencies for core, extras for optional features)
+pip install -e .              # core only
+pip install -e ".[all]"       # everything (qdrant, openai, fastmcp)
 
-# Parse interactions from this host (incremental)
-lav-parse
-# or: python3 -m lav.parsers.jsonl
+# Parse & serve
+lav-parse                     # incremental parse from local JSONL
+lav-parse --project myProject # parse one project
+lav-parse --full              # full reparse
+lav-parse-chatgpt             # parse ChatGPT export
+lav-server                    # start server on :8764
 
-# Parse only one project
-lav-parse --project myProject
-
-# Force full reparse
-lav-parse --full
-
-# Parse ChatGPT export (interactions.json)
-lav-parse-chatgpt
-# or: python3 -m lav.parsers.chatgpt
-
-# Start server
-lav-server
-# or: python3 -m lav.server
-
-# Classify interactions (requires OPENAI_API_KEY in .env)
-lav-classify
-
-# Index into Qdrant KB
-lav-index
-
-# MCP server (requires fastmcp)
-lav-mcp
-
-# Migrate from claude-parser (one-time)
-python3 scripts/migrate.py
+# Optional features
+lav-classify                  # AI classification (needs OPENAI_API_KEY)
+lav-index                     # Qdrant vector indexing
+lav-mcp                       # MCP server (needs fastmcp)
 ```
 
-**Server**: http://localhost:8764
-- Dashboard: http://localhost:8764/dashboard.html
-- Interactions: http://localhost:8764/interactions.html
-- Tags: http://localhost:8764/tags.html
+Server at http://localhost:8764 — dashboard.html, interactions.html, tags.html.
 
-## Structure
-
-```
-local-agent-viewer/
-├── lav/                       # Main package
-│   ├── __init__.py            # PACKAGE_DIR, PROJECT_ROOT + .env loading
-│   ├── config.py              # Configuration (paths, ports, Qdrant)
-│   ├── queries.py             # SQL queries with 4D filters + metadata
-│   ├── server.py              # ThreadingHTTPServer + REST API + auto-classification
-│   ├── mcp_server.py          # FastMCP server for AI tool integration
-│   ├── parsers/
-│   │   ├── jsonl.py           # JSONL parser → unified DB (Claude Code, Codex, Cowork)
-│   │   └── chatgpt.py         # ChatGPT export parser (interactions.json) → DB
-│   ├── classifiers/
-│   │   ├── openai_classifier.py  # OpenAI Structured Outputs classifier
-│   │   └── sql_classifier.py    # Batch CLI for classification (gpt-4.1-mini)
-│   └── qdrant/
-│       ├── store.py           # Qdrant vector store client
-│       ├── indexer.py         # Interaction indexer with auto-tagging
-│       └── kb_indexer.py      # CLI indexer (reuses SQL metadata if available)
-│   └── static/                # Frontend (bundled as package data)
-│       ├── dashboard.html     # Analytics dashboard (Chart.js)
-│       ├── interactions.html  # Interaction list with classification badges
-│       └── tags.html          # Tag cloud + classification stats
-├── scripts/
-│   └── migrate.py             # Migration from claude-parser (~40 DBs → 1)
-├── pyproject.toml             # Package config + entry points
-├── docs/
-│   └── CHANGELOG.md
-└── data/                      # (legacy, DB moved outside project)
-```
+**No test suite exists.** Manual testing via the running server and CLI commands.
 
 ## Architecture
 
-### DB
+### Three-layer data pipeline
 
-Single `local_agent_viewer.db` with **4 independent dimensions**:
+1. **Parse → SQLite** (`lav/parsers/`) — raw interactions, tokens, files, tools, costs
+2. **Classify → `interaction_metadata`** (`lav/classifiers/`) — AI classification via gpt-4.1-mini (optional)
+3. **Index → Qdrant** (`lav/qdrant/`) — vector embeddings for semantic search (optional)
 
-| Dimension | Ref table | Filter |
-|-----------|-----------|--------|
-| **Project** | `projects` | Which codebase |
-| **User** | `users` | Which person |
-| **Host** | `hosts` | Which machine |
-| **Source** | `session_sources` | Which tool (claude_code/codex_cli/cowork_desktop/chatgpt) |
+Each layer is independent. The core works with just layer 1.
 
-Composite PK interactions: `(session_id, project_id)`
-Composite PK parse_state: `(key, project_id, source)`
+### Database
 
-**DB path**: `~/.local/share/local-agent-viewer/local_agent_viewer.db` (per-machine, outside project dir). Legacy fallback: `data/local_agent_viewer.db`.
+Single SQLite DB at `~/.local/share/local-agent-viewer/local_agent_viewer.db`.
 
-### Agent/Collector Architecture
+**4 independent filter dimensions** on every query:
+- **Project** (`projects`) — which codebase
+- **User** (`users`) — which person
+- **Host** (`hosts`) — which machine
+- **Source** (`session_sources`) — which agent (claude_code, codex_cli, cowork_desktop, chatgpt)
 
-Distributed architecture for cross-machine analytics. Code is shared (git). **Runtime configurations** are per-machine.
+Composite PK: `interactions(session_id, project_id)`. Append-only — records are never deleted.
 
-#### Roles
+### Server (`lav/server.py`)
 
-| Role | Bind | Function |
-|------|------|----------|
-| **agent** | `0.0.0.0:8764` | Thin server: local parse, exposes `/api/export`, `/api/health`, `/api/info` |
-| **collector** | `localhost:8764` | Pulls from remote agents, no local parse |
-| **both** (default) | `localhost:8764` | Agent + collector: pull + local parse + dashboard + MCP |
+ThreadingHTTPServer with role gating:
+- **agent**: thin server — only `/api/health`, `/api/info`, `/api/export`
+- **both** (default): full dashboard + API + sync + MCP
+- **collector**: pulls from remote agents, no local parse
 
-#### Data flow (push-triggered pull)
+Read-only connections for queries (`PRAGMA query_only=ON`), WAL mode, busy_timeout 5000ms.
 
-```
-laptop lav-parser (every 15 min)
-  → parse ~/.claude/projects (local JSONL)
-  → local DB (~/.local/share/local-agent-viewer/)
-  → notify_collector() in lav/parsers/jsonl.py
-      → POST http://server.local:8764/api/sync (scope=agent)
-          → server pulls from laptop via /api/export
-          → canonical DB updated
-```
+### Agent/Collector distributed model
 
-**IMPORTANT**: Pull happens ON DEMAND via HTTP trigger from the agent.
-NOT periodic polling.
+Code is shared (git). Runtime config is per-machine at `~/.local/share/local-agent-viewer/config.json` (not tracked). Example configs in repo: `config.agent.example.json`, `config.collector.example.json`.
 
-#### Per-machine config
+**Data flow**: agent parses locally → notifies collector via POST → collector pulls via `/api/export`. Push-triggered pull, NOT periodic polling.
 
-Each machine has its own `~/.local/share/local-agent-viewer/config.json` (local, not synced):
+### MCP Server (`lav/mcp_server.py`)
 
-```json
-// server — collector + dashboard
-{
-  "role": "both",
-  "port": 8764,
-  "agents": [
-    {"name": "laptop", "url": "http://laptop.local:8764", "fallback_url": "http://10.0.0.5:8764", "timeout_seconds": 10}
-  ]
-}
+FastMCP server with 8 tools. Read tools use `LAV_READ_API_KEY` (optional). Write tools require `LAV_API_KEY`.
 
-// laptop — agent (with collector_url for push-triggered pull)
-{
-  "role": "agent",
-  "port": 8764,
-  "collector_url": "http://server.local:8764"
-}
-```
+### Frontend (`lav/static/`)
 
-#### What's local vs shared
+Vanilla HTML/JS/CSS + Chart.js CDN. Three pages: dashboard (6 sub-tabs), interactions list, tags. Filters auto-disable when only one value exists.
 
-| What | Path | Sync |
-|------|------|------|
-| Code | `local-agent-viewer/` | Shared (git) |
-| Runtime config | `~/.local/share/local-agent-viewer/config.json` | **Local** per machine |
-| SQLite database | `~/.local/share/local-agent-viewer/local_agent_viewer.db` | **Local** per machine |
-| Qdrant data | `~/.local/share/local-agent-viewer/qdrant_data/` | **Local** per machine |
+### Environment & config
 
-### Server
+- `.env` in project root — loaded by `lav/__init__.py` via `os.environ.setdefault`
+- `lav/config.py` — reads all config from env vars at import time
+- `lav/__init__.py` must be imported before `lav.config` (enforced by import order in server.py)
+- Version lives in `pyproject.toml` only, read via `importlib.metadata` in `lav/__init__.__version__`
 
-- **Port**: 8764
-- **ThreadingHTTPServer** for concurrency
-- Read-only connections for queries (`PRAGMA query_only=ON`)
-- WAL mode + busy_timeout 5000ms
-- Granular sync in background thread
-- **Role gating**: in agent mode, only thin endpoints (health/info/export)
+### Key conventions
 
-### API Endpoints
+- **`internal_docs/`** is gitignored — private notes and TODO, not shipped
+- **Sentinel values**: `parse_state` uses `project_id=-1` and `source=''` (never NULL)
+- **Per-project commits** in parsers for crash resilience
+- **`conversation_id`** in `chatgpt.py` is OpenAI's external field name — not a bug, don't rename
+- Migration code referencing old `conversations` table in `jsonl.py` and `qdrant/store.py` is intentional
 
-| Endpoint | Method | Agent | Both/Collector | Description |
-|----------|--------|-------|----------------|-------------|
-| `/api/health` | GET | yes | yes | Status, hostname, role, uptime |
-| `/api/info` | GET | yes | yes | Detailed info (sources, sessions, DB size) |
-| `/api/export` | GET | yes | yes | Telemetry package for pull (`?since=T&limit=N`) |
-| `/api/projects` | GET | -- | yes | Project list |
-| `/api/users` | GET | -- | yes | User list with stats |
-| `/api/user/{username}` | GET | -- | yes | User detail |
-| `/api/hosts` | GET | -- | yes | Host list |
-| `/api/data` | GET | -- | yes | Analytics with 4D filters |
-| `/api/interactions` | GET | -- | yes | Interaction list |
-| `/api/interaction/{id}` | GET | -- | yes | Interaction detail |
-| `/api/search` | GET | -- | yes | Full-text search |
-| `/api/sync` | POST | -- | yes | Granular sync (includes pull from agents) |
-| `/api/sync/status` | GET | -- | yes | Sync status |
-| `/api/retention/status` | GET | -- | yes | JSONL stats |
-| `/api/kb/*` | GET/POST | -- | yes | Qdrant knowledge base |
+### Production deployment (this machine)
 
-Query filters: `?project=myProject&user=john&host=laptop&client=claude_code&start=2026-01-01&end=2026-02-11`
-
-## Frontend
-
-- **Supported sources**: `claude_code`, `codex_cli`, `cowork_desktop`, `chatgpt`
-- **Vanilla HTML/JS/CSS** + Chart.js CDN
-- Filters **auto-disable** (grayed out if only one value, never hidden)
-- Dashboard sub-tabs: Overview, Tokens, Files, Tools, Timeline, Users
-- Users tab with full drill-down (7 views)
-- Sync panel in toolbar
-
-## Qdrant (Semantic Knowledge Base)
-
-**Architecture**: Qdrant HTTP server runs on your always-on machine (port 6333). All clients connect via HTTP.
-
-**Configuration**: Set `QDRANT_URL=http://your-server:6333` in the `.env` file.
-
-**Indexer** (indexes interactions from canonical DB):
-```bash
-lav-index --dry-run   # preview
-lav-index --limit 50  # test with 50
-lav-index             # all
-```
-
-**Fallback file mode**: if `QDRANT_URL` is not set, uses local file in `~/.local/share/local-agent-viewer/qdrant_data/`.
-
-## Classification & Indexing
-
-Two complementary systems for enriching interactions with metadata:
-
-### SQL Classification (table `interaction_metadata`)
-
-Structured classification via **gpt-4.1-mini** (OpenAI Structured Outputs). Independent from Qdrant.
-
-**Schema**: summary, abstract, process, classification, data_sensitivity, sensitive_data_types, topics, people, clients, tags.
-
-**When it runs**:
-1. **Automatic on sync** — After each pull/parse in `lav/server.py`, newly imported interactions are classified automatically (requires `OPENAI_API_KEY` in `.env`).
-2. **Manual batch** — Via CLI for backlog or reclassification:
-```bash
-lav-classify                                  # incremental (unclassified only)
-lav-classify --full --since 2026-01-01        # reclassify from date
-lav-classify --limit 50                       # test on 50
-lav-classify --dry-run                        # preview without writing
-```
-
-### Qdrant KB (semantic search)
-
-Vector indexing for meaning-based search. Generates embeddings + payload.
-
-**SQL integration**: `lav/qdrant/kb_indexer.py` checks if an interaction already has SQL metadata in `interaction_metadata`. If so, uses it as `pre_metadata` (skips Haiku call → cost savings). Otherwise, generates with Haiku.
-
-### Classification API endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/classifications/stats` | Aggregations by classification and sensitivity |
-| `GET /api/classifications/tagcloud` | Frequency of topics, people, clients, processes |
-| `GET /api/interaction/{id}/metadata` | SQL metadata for a single interaction |
-| `GET /api/search?classification=X&sensitivity=Y&topic=Z` | Classification filters in search |
-
-## Technical Notes
-
-- **Append-only**: DB records are never deleted
-- **Per-project commits**: resilience to partial crashes during parsing
-- **Sentinel values**: parse_state uses `project_id=-1` and `source=''` (never NULL)
-- **Cross-platform**: detect_user/detect_host work on Mac, Linux, Windows
+- venv: `~/.local/lav-venv/`
+- LaunchAgents: `com.aimax.lav-server` (KeepAlive), `com.aimax.lav-parser` (every 15 min)
+- Wrapper scripts: `~/.local/bin/lav-server.sh`, `~/.local/bin/lav-parser.sh`
+- To deploy changes: `~/.local/lav-venv/bin/pip install -e .` then `kill $(pgrep -f lav-server)` (KeepAlive restarts it)
