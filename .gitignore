@@ -1,0 +1,9 @@
+.env
+data/
+qdrant_data/
+__pycache__/
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+.DS_Store

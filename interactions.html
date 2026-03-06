@@ -1,0 +1,1644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactions | LocalAgentViewer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* AI, MAX Brand Guidelines */
+        :root {
+            --white: #FFFFFF;
+            --black: #000000;
+            --dodger-blue: #004BFF;
+            --deep-sky-blue: #35C2FF;
+            --yellow: #F9C927;
+            --spring-green: #00D35D;
+            --red: #FF4C53;
+            --orange: #FF7A20;
+            --light-pink: #FF9DCB;
+            --lilla: #6E87FF;
+            --dim-gray: #666666;
+            --dark-gray: #999999;
+            --light-gray: #F2F2F2;
+            --ai-gradient: linear-gradient(135deg, #004BFF 0%, #35C2FF 100%);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--light-gray);
+            min-height: 100vh;
+            color: var(--black);
+            padding: 12px;
+            font-size: 15px;
+            line-height: 1.3;
+        }
+
+        /* ===== HEADER ===== */
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+            padding: 12px 16px;
+            background: var(--white);
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .logo-container { height: 28px; }
+        .logo-container svg { height: 100%; width: auto; }
+
+        .header-title {
+            border-left: 2px solid var(--light-gray);
+            padding-left: 8px;
+        }
+
+        .header h1 {
+            font-size: 1.2rem;
+            font-weight: 700;
+            color: var(--black);
+            margin-bottom: 0;
+        }
+
+        .header .subtitle {
+            color: var(--dim-gray);
+            font-size: 0.75rem;
+        }
+
+        .main-nav {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .main-nav-link {
+            color: var(--dim-gray);
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 0.9rem;
+            padding: 8px 16px;
+            border-radius: 8px;
+            transition: all 0.2s;
+            cursor: pointer;
+        }
+
+        .main-nav-link:hover {
+            background: var(--light-gray);
+            color: var(--black);
+        }
+
+        .main-nav-link.active {
+            background: var(--ai-gradient);
+            color: var(--white);
+        }
+
+        /* ===== FILTERS ===== */
+        .filters-bar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+            padding: 10px 16px;
+            background: var(--white);
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+            flex-wrap: wrap;
+        }
+
+        .filter-group {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .filter-label {
+            font-size: 0.75rem;
+            color: var(--dim-gray);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+
+        .filter-select, .filter-input {
+            padding: 4px 8px;
+            border: 2px solid var(--light-gray);
+            border-radius: 6px;
+            background: var(--white);
+            color: var(--black);
+            font-family: inherit;
+            font-size: 0.85rem;
+            transition: border-color 0.2s;
+        }
+
+        .filter-select:hover:not(:disabled), .filter-select:focus:not(:disabled),
+        .filter-input:hover, .filter-input:focus {
+            border-color: var(--deep-sky-blue);
+            outline: none;
+        }
+
+        .filter-select:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            background: var(--light-gray);
+        }
+
+        /* Project searchable combobox */
+        .project-filter-wrapper { position: relative; }
+
+        .project-filter-input {
+            padding: 4px 8px;
+            border: 2px solid var(--light-gray);
+            border-radius: 6px;
+            background: var(--white);
+            color: var(--black);
+            font-family: inherit;
+            font-size: 0.85rem;
+            transition: border-color 0.2s;
+            min-width: 150px;
+            width: 150px;
+        }
+
+        .project-filter-input:hover,
+        .project-filter-input:focus {
+            border-color: var(--deep-sky-blue);
+            outline: none;
+        }
+
+        .project-dropdown {
+            position: absolute;
+            top: calc(100% + 4px);
+            left: 0;
+            right: 0;
+            background: var(--white);
+            border-radius: 8px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+            max-height: 240px;
+            overflow-y: auto;
+            z-index: 1000;
+            display: none;
+        }
+
+        .project-dropdown.active { display: block; }
+
+        .project-option {
+            padding: 6px 10px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: background 0.15s;
+        }
+
+        .project-option:hover { background: var(--light-gray); }
+        .project-option.selected { background: rgba(0, 75, 255, 0.1); color: var(--dodger-blue); font-weight: 600; }
+
+        .search-input {
+            min-width: 200px;
+            flex: 1;
+        }
+
+        .btn {
+            padding: 4px 12px;
+            background: var(--ai-gradient);
+            color: var(--white);
+            border: none;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: opacity 0.2s;
+            font-family: inherit;
+        }
+
+        .btn:hover { opacity: 0.9; }
+
+        .btn-secondary {
+            background: var(--light-gray);
+            color: var(--dim-gray);
+        }
+
+        /* ===== STATS BAR ===== */
+        .stats-bar {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 12px;
+            padding: 8px 16px;
+            background: var(--white);
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        }
+
+        .stat-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .stat-value {
+            font-weight: 700;
+            color: var(--dodger-blue);
+            font-size: 0.9rem;
+        }
+
+        .stat-label {
+            color: var(--dim-gray);
+            font-size: 0.8rem;
+        }
+
+        /* ===== INTERACTIONS LIST ===== */
+        .interactions-container {
+            background: var(--white);
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+            overflow: hidden;
+        }
+
+        .interaction-header {
+            display: grid;
+            grid-template-columns: 140px 1fr 100px 100px 90px 100px 90px 90px 80px 90px 100px;
+            gap: 8px;
+            padding: 10px 16px;
+            border-bottom: 2px solid var(--light-gray);
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--dodger-blue);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .interaction-item {
+            display: grid;
+            grid-template-columns: 140px 1fr 100px 100px 90px 100px 90px 90px 80px 90px 100px;
+            gap: 12px;
+            padding: 10px 16px;
+            border-bottom: 1px solid var(--light-gray);
+            cursor: pointer;
+            transition: background 0.2s;
+            align-items: center;
+        }
+
+        .interaction-item:hover {
+            background: var(--light-gray);
+        }
+
+        .conv-timestamp {
+            font-size: 0.8rem;
+            color: var(--dim-gray);
+        }
+
+        .conv-summary-cell {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            overflow: hidden;
+        }
+
+        .conv-display {
+            font-size: 0.9rem;
+            color: var(--black);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex: 1;
+        }
+
+        /* Badges */
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            white-space: nowrap;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        .badge:hover { opacity: 0.8; }
+
+        .badge-project {
+            color: var(--white);
+        }
+
+        .badge-user {
+            background: rgba(110, 135, 255, 0.15);
+            color: var(--lilla);
+        }
+
+        .badge-model {
+            background: rgba(0, 75, 255, 0.1);
+            color: var(--dodger-blue);
+            cursor: default;
+        }
+
+        .badge-model:hover { opacity: 1; }
+
+        .conv-tokens {
+            font-weight: 600;
+            color: var(--dodger-blue);
+            font-size: 0.85rem;
+        }
+
+        .conv-messages {
+            color: var(--dim-gray);
+            font-size: 0.8rem;
+        }
+
+        .conv-tools {
+            font-size: 0.75rem;
+            color: var(--dark-gray);
+        }
+
+        .conv-session-id {
+            font-size: 0.7rem;
+            padding: 2px 6px;
+            background: rgba(100, 100, 100, 0.1);
+            color: var(--dim-gray);
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+            transition: all 0.2s;
+        }
+
+        .conv-session-id:hover {
+            background: rgba(0, 75, 255, 0.2);
+            color: var(--dodger-blue);
+        }
+
+        /* ===== MODAL ===== */
+        .modal-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            padding: 4px;
+        }
+        .modal-overlay.active { display: flex; }
+
+        .modal {
+            background: var(--white);
+            border-radius: 12px;
+            max-width: 900px;
+            width: 100%;
+            max-height: 90vh;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+        }
+
+        .modal-header {
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--light-gray);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .modal-title { font-size: 1rem; font-weight: 700; }
+
+        .modal-meta {
+            display: flex;
+            gap: 6px;
+            color: var(--dim-gray);
+            font-size: 0.75rem;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .modal-session-id {
+            font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+            font-size: 0.75rem;
+            padding: 4px 8px;
+            background: rgba(100, 100, 100, 0.1);
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .modal-session-id:hover {
+            background: rgba(0, 75, 255, 0.2);
+            color: var(--dodger-blue);
+        }
+
+        .modal-close {
+            width: 24px; height: 24px;
+            border: none;
+            background: var(--light-gray);
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 1rem;
+            color: var(--dim-gray);
+            transition: all 0.2s;
+            flex-shrink: 0;
+        }
+        .modal-close:hover { background: var(--red); color: var(--white); }
+
+        .kb-enrichment {
+            padding: 12px 16px;
+            margin: 8px 10px;
+            background: linear-gradient(135deg, rgba(0,75,255,0.04), rgba(53,194,255,0.06));
+            border: 1.5px solid var(--dodger-blue);
+            border-radius: 8px;
+            font-size: 0.85rem;
+        }
+        .kb-enrichment-summary { font-weight: 600; margin-bottom: 4px; color: var(--black); }
+        .kb-enrichment-abstract { color: var(--dim-gray); line-height: 1.4; margin-bottom: 8px; }
+        .kb-enrichment-process { color: var(--dodger-blue); font-size: 0.8rem; font-style: italic; margin-bottom: 8px; }
+        .kb-enrichment-meta { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; font-size: 0.8rem; color: var(--dark-gray); }
+        .badge-classification { padding: 1px 6px; border-radius: 3px; font-weight: 600; font-size: 0.65rem; text-transform: uppercase; display: inline-block; line-height: 1.4; }
+        .badge-classification.development { background: rgba(0, 75, 255, 0.1); color: var(--dodger-blue); }
+        .badge-classification.meeting { background: rgba(249, 201, 39, 0.15); color: #B8860B; }
+        .badge-classification.analysis { background: rgba(0, 211, 93, 0.1); color: #00A94A; }
+        .badge-classification.brainstorm { background: rgba(255, 122, 32, 0.1); color: var(--orange); }
+        .badge-classification.support { background: rgba(255, 76, 83, 0.1); color: var(--red); }
+        .badge-classification.learning { background: rgba(110, 135, 255, 0.15); color: var(--lilla); }
+
+        .kb-enrichment-classification { padding: 2px 8px; border-radius: 4px; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; }
+        .kb-enrichment-classification.development { background: rgba(0, 75, 255, 0.1); color: var(--dodger-blue); }
+        .kb-enrichment-classification.meeting { background: rgba(249, 201, 39, 0.15); color: #B8860B; }
+        .kb-enrichment-classification.analysis { background: rgba(0, 211, 93, 0.1); color: var(--spring-green); }
+        .kb-enrichment-classification.brainstorm { background: rgba(255, 122, 32, 0.1); color: var(--orange); }
+        .kb-enrichment-classification.support { background: rgba(255, 76, 83, 0.1); color: var(--red); }
+        .kb-enrichment-classification.learning { background: rgba(110, 135, 255, 0.15); color: var(--lilla); }
+        .kb-enrichment-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+        .kb-tag { padding: 2px 8px; background: var(--light-gray); border-radius: 4px; font-size: 0.75rem; color: var(--dim-gray); }
+        .kb-tag.topic { background: rgba(53, 194, 255, 0.15); color: var(--deep-sky-blue); }
+        .kb-tag.client { background: rgba(255, 157, 203, 0.2); color: #c06; }
+        .kb-tag.person { background: rgba(110, 135, 255, 0.15); color: var(--lilla); }
+        .kb-sensitivity { padding: 2px 8px; border-radius: 4px; font-weight: 600; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; }
+        .kb-sensitivity.public { background: rgba(0, 211, 93, 0.1); color: var(--spring-green); }
+        .kb-sensitivity.internal { background: rgba(53, 194, 255, 0.1); color: var(--deep-sky-blue); }
+        .kb-sensitivity.confidential { background: rgba(255, 165, 0, 0.15); color: #cc8400; }
+        .kb-sensitivity.restricted { background: rgba(255, 76, 83, 0.15); color: var(--red); }
+
+        .modal-body {
+            padding: 6px 10px;
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        /* ===== MESSAGES ===== */
+        .message {
+            margin-bottom: 8px;
+            padding: 8px 12px;
+            border-radius: 4px;
+        }
+        .message.user { background: var(--light-gray); }
+        .message.assistant {
+            background: linear-gradient(135deg, rgba(0,75,255,0.05) 0%, rgba(53,194,255,0.05) 100%);
+            border-left: 3px solid var(--dodger-blue);
+        }
+        .message-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 1px;
+        }
+        .message-role {
+            font-weight: 700;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+        }
+        .message.user .message-role { color: var(--dim-gray); }
+        .message.assistant .message-role { color: var(--dodger-blue); }
+        .message-tokens { font-size: 0.7rem; color: var(--dark-gray); }
+        .message-content {
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-size: 0.9rem;
+            line-height: 1.3;
+        }
+
+        /* Thinking blocks */
+        .thinking-block {
+            margin: 6px 0;
+            border-left: 3px solid #9b59b6;
+            background: rgba(155, 89, 182, 0.05);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .thinking-header {
+            padding: 6px 10px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            color: #9b59b6;
+            user-select: none;
+            transition: background 0.2s;
+            font-weight: 500;
+        }
+        .thinking-header:hover { background: rgba(155, 89, 182, 0.15); }
+        .thinking-content {
+            padding: 0 6px;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.8rem;
+            font-style: italic;
+            color: #666;
+            max-height: 600px;
+            overflow-y: auto;
+            transition: max-height 0.3s ease-out, padding 0.3s ease-out, opacity 0.3s ease-out;
+            opacity: 1;
+        }
+        .thinking-content.collapsed {
+            max-height: 0 !important;
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
+            opacity: 0;
+            overflow: hidden;
+        }
+        .thinking-content pre { padding: 2px 0; margin: 0; white-space: pre-wrap; }
+
+        /* Tool calls */
+        .tool-call {
+            margin: 6px 0;
+            border-left: 3px solid #3498db;
+            background: rgba(52, 152, 219, 0.05);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .tool-call.error { border-left-color: #e74c3c; background: rgba(231, 76, 60, 0.05); }
+        .tool-header {
+            padding: 6px 10px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: background 0.2s;
+            user-select: none;
+            font-weight: 500;
+        }
+        .tool-header:hover { background: rgba(52, 152, 219, 0.1); }
+        .tool-output {
+            padding: 0 6px;
+            background: #f8f9fa;
+            max-height: 500px;
+            overflow-y: auto;
+            transition: max-height 0.3s ease-out, padding 0.3s ease-out, opacity 0.3s ease-out;
+            opacity: 1;
+        }
+        .tool-output.collapsed {
+            max-height: 0 !important;
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
+            opacity: 0;
+            overflow: hidden;
+        }
+        .tool-output pre { padding: 2px 0; margin: 0; font-size: 0.8rem; white-space: pre-wrap; }
+        .tool-icon { margin-right: 4px; font-size: 1rem; }
+
+        /* Tool result standalone */
+        .tool-result-standalone {
+            margin: 6px 0;
+            padding: 6px 10px;
+            background: #f0f0f0;
+            border-left: 3px solid #27ae60;
+            border-radius: 4px;
+            font-size: 0.85rem;
+        }
+        .tool-result-standalone.error { border-left-color: #e74c3c; background: rgba(231, 76, 60, 0.05); }
+        .tool-result-standalone pre { margin: 0; padding: 2px 0; white-space: pre-wrap; font-size: 0.8rem; max-height: 200px; overflow-y: auto; }
+
+        .toggle-icon {
+            float: right;
+            font-size: 0.7rem;
+            transition: transform 0.2s ease-out;
+            display: inline-block;
+        }
+        .toggle-icon.open { transform: rotate(90deg); }
+
+        /* Subagents */
+        .subagents {
+            margin: 2px 0;
+            border: 1px solid rgba(100, 100, 100, 0.2);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .subagents-header {
+            padding: 6px 10px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            font-weight: 500;
+            background: rgba(0, 75, 255, 0.05);
+        }
+        .subagents-list { padding: 4px; }
+        .subagent-item {
+            padding: 4px 8px;
+            cursor: pointer;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            transition: background 0.2s;
+        }
+        .subagent-item:hover { background: var(--light-gray); }
+
+        /* Breadcrumb */
+        .breadcrumb {
+            padding: 6px 10px;
+            font-size: 0.85rem;
+            color: var(--dim-gray);
+            margin-bottom: 8px;
+        }
+        .breadcrumb a { color: var(--dodger-blue); text-decoration: none; }
+        .breadcrumb a:hover { text-decoration: underline; }
+
+        /* ===== PAGINATION ===== */
+        .pagination {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 16px;
+            border-top: 1px solid var(--light-gray);
+        }
+
+        .pagination button {
+            padding: 8px 16px;
+            border: 2px solid var(--light-gray);
+            background: var(--white);
+            border-radius: 8px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 0.9rem;
+            transition: all 0.2s;
+        }
+
+        .pagination button:hover:not(:disabled) {
+            border-color: var(--deep-sky-blue);
+            color: var(--dodger-blue);
+        }
+
+        .pagination button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .pagination .page-info {
+            color: var(--dim-gray);
+            font-size: 0.9rem;
+        }
+
+        /* ===== LOADING / EMPTY ===== */
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 60px;
+            color: var(--dim-gray);
+        }
+
+        .loading::after {
+            content: '';
+            width: 32px;
+            height: 32px;
+            border: 3px solid var(--light-gray);
+            border-top-color: var(--dodger-blue);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 12px;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--dim-gray);
+        }
+
+        .empty-state h3 {
+            margin-bottom: 8px;
+            color: var(--black);
+        }
+
+        /* ===== FOOTER ===== */
+        .footer {
+            text-align: center;
+            padding: 24px;
+            color: var(--dim-gray);
+            font-size: 0.85rem;
+        }
+
+        .footer a {
+            color: var(--dodger-blue);
+            text-decoration: none;
+        }
+
+        /* ===== RESPONSIVE ===== */
+        @media (max-width: 900px) {
+            .interaction-header { display: none; }
+            .interaction-item {
+                grid-template-columns: 1fr;
+                gap: 4px;
+            }
+            .filters-bar {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            .search-input { min-width: auto; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- ===== HEADER ===== -->
+    <div class="header">
+        <div class="header-left">
+            <div class="logo-container">
+                <svg viewBox="0 0 861.25 247.91" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                        <style>.cls-2{fill:#004BFF;stroke-width:0px;}</style>
+                    </defs>
+                    <path class="cls-2" d="m126.54,0h610.76C805.71,0,861.25,55.54,861.25,123.96h0c0,68.41-55.54,123.96-123.96,123.96H0v-121.37C0,56.7,56.7,0,126.54,0Z"/>
+                    <text style="font-family:'Inter',sans-serif;font-size:170.26px;font-weight:700;" transform="translate(87.56 186.31)">
+                        <tspan x="0" y="0" fill="#35C2FF">AI, </tspan><tspan fill="#FFFFFF">MAX</tspan>
+                    </text>
+                </svg>
+            </div>
+            <div class="header-title">
+                <h1>Interactions</h1>
+                <div class="subtitle" id="subtitle">Loading...</div>
+            </div>
+        </div>
+        <nav class="main-nav">
+            <a class="main-nav-link" href="dashboard.html">Dashboard</a>
+            <a class="main-nav-link active">Interactions</a>
+            <a class="main-nav-link" href="tags.html">Tags</a>
+        </nav>
+    </div>
+
+    <!-- ===== FILTERS ===== -->
+    <div class="filters-bar">
+        <div class="filter-group">
+            <span class="filter-label">Project</span>
+            <div class="project-filter-wrapper">
+                <input type="text" class="project-filter-input" id="projectFilter" placeholder="All Projects" autocomplete="off">
+                <div class="project-dropdown" id="projectDropdown"></div>
+            </div>
+        </div>
+        <div class="filter-group">
+            <span class="filter-label">User</span>
+            <select class="filter-select" id="userFilter">
+                <option value="">All Users</option>
+            </select>
+        </div>
+        <div class="filter-group">
+            <span class="filter-label">Host</span>
+            <select class="filter-select" id="hostFilter">
+                <option value="">All Hosts</option>
+            </select>
+        </div>
+        <div class="filter-group">
+            <span class="filter-label">Source</span>
+            <select class="filter-select" id="sourceFilter">
+                <option value="">All Sources</option>
+            </select>
+        </div>
+        <div class="filter-group" style="flex: 1;">
+            <span class="filter-label">Search</span>
+            <input type="text" class="filter-input search-input" id="searchInput" placeholder="Full-text search...">
+        </div>
+        <div class="filter-group">
+            <span class="filter-label">From</span>
+            <input type="date" class="filter-input" id="startDate">
+        </div>
+        <div class="filter-group">
+            <span class="filter-label">To</span>
+            <input type="date" class="filter-input" id="endDate">
+        </div>
+        <button class="btn" id="searchBtn">Search</button>
+        <button class="btn btn-secondary" id="clearBtn">Clear</button>
+    </div>
+
+    <!-- ===== STATS BAR ===== -->
+    <div class="stats-bar" id="statsBar">
+        <div class="stat-item">
+            <span class="stat-value" id="totalInteractions">-</span>
+            <span class="stat-label">conversations</span>
+        </div>
+        <div class="stat-item">
+            <span class="stat-value" id="totalTokens">-</span>
+            <span class="stat-label">tokens</span>
+        </div>
+    </div>
+
+    <!-- ===== CONVERSATIONS LIST ===== -->
+    <div class="interactions-container">
+        <div class="interaction-header">
+            <div>Timestamp</div>
+            <div>Summary</div>
+            <div>Project</div>
+            <div>User</div>
+            <div>Host</div>
+            <div>Source</div>
+            <div>Class</div>
+            <div>Sens</div>
+            <div>Tokens</div>
+            <div>Messages</div>
+            <div>Session</div>
+        </div>
+        <div id="interactionsList">
+            <div class="loading">Loading interactions</div>
+        </div>
+        <div class="pagination" id="pagination" style="display: none;">
+            <button id="prevBtn">Previous</button>
+            <span class="page-info" id="pageInfo">Page 1</span>
+            <button id="nextBtn">Next</button>
+        </div>
+    </div>
+
+    <div class="footer">
+        LocalAgentViewer &mdash; <a href="#">AI, MAX</a>
+    </div>
+
+    <!-- ===== MODAL ===== -->
+    <div class="modal-overlay" id="modalOverlay">
+        <div class="modal">
+            <div class="modal-header">
+                <div>
+                    <div class="modal-title" id="modalTitle">Interaction</div>
+                    <div class="modal-meta" id="modalMeta"></div>
+                </div>
+                <button class="modal-close" id="modalClose">&times;</button>
+            </div>
+            <div class="kb-enrichment" id="kbEnrichment" style="display:none;"></div>
+            <div class="modal-body" id="modalBody">
+                <div class="loading">Loading transcript</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    // ===== CONFIGURATION =====
+    const API_BASE = (window.location.origin && window.location.origin !== 'null')
+        ? window.location.origin
+        : 'http://localhost:8764';
+    const LIMIT = 25;
+
+    // ===== STATE =====
+    const state = {
+        project: null,
+        projectId: null,
+        user: null,
+        host: null,
+        source: null,
+        startDate: (() => { const d = new Date(); d.setDate(d.getDate() - 7); return d.toISOString().split('T')[0]; })(),
+        endDate: new Date().toISOString().split('T')[0],
+        search: '',
+        offset: 0,
+        total: 0,
+        projects: [],
+        users: [],
+        hosts: [],
+        multiUser: false,
+        expandedId: null
+    };
+
+    // Project color map for badges
+    const PROJECT_COLORS = [
+        '#004BFF', '#00D35D', '#FF7A20', '#6E87FF', '#F9C927',
+        '#FF4C53', '#35C2FF', '#FF9DCB', '#666666', '#999999'
+    ];
+    const projectColorMap = {};
+    function getProjectColor(name) {
+        if (!projectColorMap[name]) {
+            const idx = Object.keys(projectColorMap).length;
+            projectColorMap[name] = PROJECT_COLORS[idx % PROJECT_COLORS.length];
+        }
+        return projectColorMap[name];
+    }
+
+    // ===== UTILITY =====
+    function formatNumber(n) {
+        if (n == null) return '0';
+        if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+        if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
+        return n.toLocaleString();
+    }
+
+    function formatTimestamp(ts) {
+        if (!ts) return '-';
+        const date = new Date(ts);
+        return date.toLocaleString('it-IT', {
+            day: '2-digit', month: 'short', year: 'numeric',
+            hour: '2-digit', minute: '2-digit'
+        });
+    }
+
+    function shortenModel(model) {
+        if (!model) return '-';
+        return model.replace('claude-', '').replace(/-\d{8}$/, '');
+    }
+
+    function shortenSessionId(sid) {
+        if (!sid) return '';
+        // For chatgpt:UUID, show first 8 chars of the UUID part
+        if (sid.startsWith('chatgpt:')) return sid.substring(8, 16);
+        return sid.substring(0, 8);
+    }
+
+    function buildQueryParams() {
+        const params = new URLSearchParams();
+        if (state.projectId) params.set('project', state.projectId);
+        if (state.user) params.set('user', state.user);
+        if (state.host) params.set('host', state.host);
+        if (state.source) params.set('client', state.source);
+        if (state.startDate) params.set('start', state.startDate);
+        if (state.endDate) params.set('end', state.endDate);
+        if (state.search) params.set('search', state.search);
+        params.set('offset', state.offset);
+        params.set('limit', LIMIT);
+        return params.toString();
+    }
+
+    async function apiFetch(endpoint) {
+        const sep = endpoint.includes('?') ? '&' : '?';
+        const qs = buildQueryParams();
+        const url = `${API_BASE}${endpoint}${qs ? sep + qs : ''}`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`API error: ${res.status}`);
+        return res.json();
+    }
+
+    async function apiFetchRaw(url) {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`API error: ${res.status}`);
+        return res.json();
+    }
+
+    // ===== FILTER INITIALIZATION =====
+    async function initFilters() {
+        try {
+            const [projects, users, hosts] = await Promise.all([
+                apiFetchRaw(`${API_BASE}/api/projects`).catch(() => []),
+                apiFetchRaw(`${API_BASE}/api/users`).catch(() => []),
+                apiFetchRaw(`${API_BASE}/api/hosts`).catch(() => [])
+            ]);
+
+            state.projects = projects;
+            state.users = users;
+            state.hosts = hosts;
+            state.multiUser = users.length > 1;
+
+            // Assign colors to all projects
+            projects.forEach(p => getProjectColor(p.name));
+
+            // Project searchable combobox
+            populateProjectDropdown(projects);
+
+            // User filter
+            const userSelect = document.getElementById('userFilter');
+            userSelect.textContent = '';
+            const allUsersOpt = document.createElement('option');
+            allUsersOpt.value = '';
+            allUsersOpt.textContent = 'All Users';
+            userSelect.appendChild(allUsersOpt);
+            users.forEach(u => {
+                const opt = document.createElement('option');
+                opt.value = u.username;
+                opt.textContent = u.display_name || u.username;
+                userSelect.appendChild(opt);
+            });
+            autoDisableFilter(userSelect, users.length);
+
+            // Host filter
+            const hostSelect = document.getElementById('hostFilter');
+            hostSelect.textContent = '';
+            const allHostsOpt = document.createElement('option');
+            allHostsOpt.value = '';
+            allHostsOpt.textContent = 'All Hosts';
+            hostSelect.appendChild(allHostsOpt);
+            hosts.forEach(h => {
+                const opt = document.createElement('option');
+                opt.value = h.hostname;
+                opt.textContent = h.hostname;
+                hostSelect.appendChild(opt);
+            });
+            autoDisableFilter(hostSelect, hosts.length);
+
+            // Source filter - populate dynamically from DB
+            const SOURCE_LABELS = {
+                claude_code: 'Claude Code',
+                codex_cli: 'Codex CLI',
+                cowork_desktop: 'Claude Desktop',
+                chatgpt: 'ChatGPT',
+            };
+            const distinctSources = new Set();
+            projects.forEach(p => {
+                if (p.sources) p.sources.forEach(s => distinctSources.add(s));
+            });
+            const sourceSelect = document.getElementById('sourceFilter');
+            while (sourceSelect.options.length > 1) sourceSelect.remove(1);
+            [...distinctSources].sort().forEach(s => {
+                const opt = document.createElement('option');
+                opt.value = s;
+                opt.textContent = SOURCE_LABELS[s] || s;
+                sourceSelect.appendChild(opt);
+            });
+            autoDisableFilter(sourceSelect, distinctSources.size);
+
+            // Check URL params for pre-filters
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.get('project')) {
+                const projName = urlParams.get('project');
+                const proj = projects.find(p => p.name === projName);
+                if (proj) {
+                    state.project = proj.name;
+                    state.projectId = proj.id;
+                    document.getElementById('projectFilter').value = proj.name;
+                }
+            }
+            if (urlParams.get('user')) {
+                state.user = urlParams.get('user');
+                document.getElementById('userFilter').value = state.user;
+            }
+
+        } catch (err) {
+            console.error('Failed to init filters:', err);
+        }
+    }
+
+    function autoDisableFilter(selectEl, count) {
+        const optionCount = selectEl.options.length - 1;
+        if (optionCount <= 1) {
+            selectEl.disabled = true;
+            if (optionCount === 1) selectEl.selectedIndex = 1;
+        } else {
+            selectEl.disabled = false;
+        }
+    }
+
+    function populateProjectDropdown(projects) {
+        const dropdown = document.getElementById('projectDropdown');
+        const input = document.getElementById('projectFilter');
+
+        function render(filter) {
+            dropdown.textContent = '';
+            const allOpt = document.createElement('div');
+            allOpt.className = 'project-option' + (!state.project ? ' selected' : '');
+            allOpt.textContent = 'All Projects';
+            allOpt.addEventListener('click', () => {
+                state.project = null;
+                state.projectId = null;
+                input.value = '';
+                input.placeholder = 'All Projects';
+                dropdown.classList.remove('active');
+                resetAndLoad();
+            });
+            dropdown.appendChild(allOpt);
+
+            const filtered = filter
+                ? projects.filter(p => p.name.toLowerCase().includes(filter.toLowerCase()))
+                : projects;
+
+            filtered.forEach(p => {
+                const opt = document.createElement('div');
+                opt.className = 'project-option' + (state.project === p.name ? ' selected' : '');
+                opt.textContent = p.name;
+                opt.addEventListener('click', () => {
+                    state.project = p.name;
+                    state.projectId = p.id;
+                    input.value = p.name;
+                    dropdown.classList.remove('active');
+                    resetAndLoad();
+                });
+                dropdown.appendChild(opt);
+            });
+        }
+
+        input.addEventListener('focus', () => {
+            render(input.value);
+            dropdown.classList.add('active');
+        });
+
+        input.addEventListener('input', () => {
+            render(input.value);
+            dropdown.classList.add('active');
+        });
+
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.project-filter-wrapper')) {
+                dropdown.classList.remove('active');
+            }
+        });
+    }
+
+    // ===== FILTER EVENTS =====
+    document.getElementById('userFilter').addEventListener('change', function() {
+        state.user = this.value || null;
+        resetAndLoad();
+    });
+
+    document.getElementById('hostFilter').addEventListener('change', function() {
+        state.host = this.value || null;
+        resetAndLoad();
+    });
+
+    document.getElementById('sourceFilter').addEventListener('change', function() {
+        state.source = this.value || null;
+        resetAndLoad();
+    });
+
+    document.getElementById('searchBtn').addEventListener('click', () => {
+        state.search = document.getElementById('searchInput').value;
+        state.startDate = document.getElementById('startDate').value || null;
+        state.endDate = document.getElementById('endDate').value || null;
+        resetAndLoad();
+    });
+
+    document.getElementById('searchInput').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            document.getElementById('searchBtn').click();
+        }
+    });
+
+    document.getElementById('clearBtn').addEventListener('click', () => {
+        state.search = '';
+        const now = new Date();
+        const start = new Date(now);
+        start.setDate(start.getDate() - 7);
+        state.startDate = start.toISOString().split('T')[0];
+        state.endDate = now.toISOString().split('T')[0];
+        document.getElementById('searchInput').value = '';
+        document.getElementById('startDate').value = state.startDate;
+        document.getElementById('endDate').value = state.endDate;
+        resetAndLoad();
+    });
+
+    function resetAndLoad() {
+        state.offset = 0;
+        state.expandedId = null;
+        loadConversations();
+    }
+
+    // ===== PAGINATION =====
+    document.getElementById('prevBtn').addEventListener('click', () => {
+        if (state.offset > 0) {
+            state.offset -= LIMIT;
+            state.expandedId = null;
+            loadConversations();
+        }
+    });
+
+    document.getElementById('nextBtn').addEventListener('click', () => {
+        if (state.offset + LIMIT < state.total) {
+            state.offset += LIMIT;
+            state.expandedId = null;
+            loadConversations();
+        }
+    });
+
+    // ===== LOAD CONVERSATIONS =====
+    async function loadConversations() {
+        const listEl = document.getElementById('interactionsList');
+        listEl.textContent = '';
+        listEl.insertAdjacentHTML('beforeend', '<div class="loading">Loading interactions</div>');
+
+        try {
+            const data = await apiFetch('/api/conversations');
+            const conversations = data.conversations || data;
+            state.total = data.total || conversations.length;
+
+            // Update stats
+            document.getElementById('totalInteractions').textContent = formatNumber(state.total);
+            const totalTokens = conversations.reduce((sum, c) => sum + (c.total_tokens || 0), 0);
+            document.getElementById('totalTokens').textContent = formatNumber(totalTokens);
+
+            // Update subtitle
+            document.getElementById('subtitle').textContent = `${formatNumber(state.total)} conversations`;
+
+            // Render
+            listEl.textContent = '';
+
+            if (conversations.length === 0) {
+                listEl.insertAdjacentHTML('beforeend',
+                    '<div class="empty-state"><h3>No conversations found</h3><p>Try adjusting your filters or running a sync.</p></div>'
+                );
+                document.getElementById('pagination').style.display = 'none';
+                return;
+            }
+
+            conversations.forEach(conv => {
+                // Main row
+                const row = document.createElement('div');
+                row.className = 'interaction-item';
+                row.dataset.sessionId = conv.session_id;
+
+                const sourceLabel = (conv.client_source || '').replace('_', ' ');
+                const hostShort = (conv.hostname || '').replace('.localdomain', '');
+
+                const metaCls = conv.meta_classification || '';
+                const clsBadge = metaCls
+                    ? `<span class="badge-classification ${metaCls}">${metaCls}</span>`
+                    : '<span style="color:#ccc">-</span>';
+                const metaSens = conv.meta_sensitivity || '';
+                const sensBadge = metaSens
+                    ? `<span class="kb-sensitivity ${metaSens}">${metaSens}</span>`
+                    : '<span style="color:#ccc">-</span>';
+
+                row.insertAdjacentHTML('beforeend', `
+                    <div class="conv-timestamp">${formatTimestamp(conv.timestamp)}</div>
+                    <div class="conv-summary-cell">
+                        <span class="conv-display" title="${conv.display || conv.summary || ''}">${conv.display || conv.summary || '(no summary)'}</span>
+                    </div>
+                    <div class="conv-project"><span class="badge badge-project" style="background: ${conv.project ? getProjectColor(conv.project) : '#999'};" data-project="${conv.project || ''}" title="Filter by ${conv.project || ''}">${conv.project || '-'}</span></div>
+                    <div class="conv-user">${conv.username || '-'}</div>
+                    <div class="conv-host">${hostShort || '-'}</div>
+                    <div class="conv-source">${sourceLabel || '-'}</div>
+                    <div class="conv-classification">${clsBadge}</div>
+                    <div class="conv-sensitivity">${sensBadge}</div>
+                    <div class="conv-tokens">${formatNumber(conv.total_tokens)}</div>
+                    <div class="conv-messages">${conv.message_count || 0} msgs</div>
+                    <div><span class="conv-session-id" data-full-id="${conv.session_id}" onclick="event.stopPropagation(); copySessionId(this);">${conv.session_id.substring(0, 8)}</span></div>
+                `);
+
+                row.addEventListener('click', (e) => {
+                    // Don't toggle if clicking badge to filter
+                    if (e.target.closest('.badge-project')) {
+                        const projName = e.target.dataset.project;
+                        filterByProject(projName);
+                        return;
+                    }
+                    if (e.target.closest('.badge-user')) {
+                        const userName = e.target.dataset.user;
+                        filterByUser(userName);
+                        return;
+                    }
+                    openInteraction(conv.session_id, conv.project_id || conv.project);
+                });
+
+                listEl.appendChild(row);
+            });
+
+            // Pagination
+            const paginationEl = document.getElementById('pagination');
+            if (state.total > LIMIT) {
+                paginationEl.style.display = 'flex';
+                const page = Math.floor(state.offset / LIMIT) + 1;
+                const totalPages = Math.ceil(state.total / LIMIT);
+                document.getElementById('pageInfo').textContent = `Page ${page} of ${totalPages}`;
+                document.getElementById('prevBtn').disabled = state.offset === 0;
+                document.getElementById('nextBtn').disabled = state.offset + LIMIT >= state.total;
+            } else {
+                paginationEl.style.display = 'none';
+            }
+
+        } catch (err) {
+            console.error('Failed to load conversations:', err);
+            listEl.textContent = '';
+            listEl.insertAdjacentHTML('beforeend',
+                '<div class="empty-state"><h3>Could not connect to server</h3><p>Make sure the backend is running on port 8764</p></div>'
+            );
+        }
+    }
+
+    // ===== FILTER BY BADGE CLICK =====
+    function filterByProject(name) {
+        const proj = state.projects.find(p => p.name === name);
+        if (proj) {
+            state.project = proj.name;
+            state.projectId = proj.id;
+            document.getElementById('projectFilter').value = proj.name;
+            resetAndLoad();
+        }
+    }
+
+    function filterByUser(username) {
+        state.user = username;
+        const userSelect = document.getElementById('userFilter');
+        for (let i = 0; i < userSelect.options.length; i++) {
+            if (userSelect.options[i].value === username) {
+                userSelect.selectedIndex = i;
+                break;
+            }
+        }
+        resetAndLoad();
+    }
+
+    // ===== MODAL: UTILITIES =====
+    function escapeHtml(str) {
+        if (!str) return '';
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    function toggleCollapsible(headerEl) {
+        const content = headerEl.nextElementSibling;
+        const icon = headerEl.querySelector('.toggle-icon');
+        if (!content) return;
+        if (content.classList.contains('collapsed')) {
+            content.style.maxHeight = content.scrollHeight + 'px';
+            content.classList.remove('collapsed');
+            if (icon) icon.classList.add('open');
+        } else {
+            content.style.maxHeight = '0';
+            content.classList.add('collapsed');
+            if (icon) icon.classList.remove('open');
+        }
+    }
+
+    function parseMessageContent(content) {
+        if (!content) return [{type: 'text', text: ''}];
+        if (typeof content === 'string') {
+            try {
+                const parsed = JSON.parse(content);
+                return Array.isArray(parsed) ? parsed : [{type: 'text', text: content}];
+            } catch {
+                return [{type: 'text', text: content}];
+            }
+        }
+        return Array.isArray(content) ? content : [{type: 'text', text: String(content)}];
+    }
+
+    function getToolIcon(toolName) {
+        const icons = { 'Bash': '\u26A1', 'Read': '\uD83D\uDCD6', 'Write': '\u270D\uFE0F', 'Edit': '\u270F\uFE0F', 'Grep': '\uD83D\uDD0D', 'Glob': '\uD83D\uDCC1', 'Task': '\uD83E\uDD16', 'Skill': '\u2B50', 'WebSearch': '\uD83C\uDF10', 'WebFetch': '\uD83C\uDF0D', 'TodoWrite': '\uD83D\uDCCB' };
+        return icons[toolName] || '\uD83D\uDD27';
+    }
+
+    function renderThinking(text) {
+        return '<div class="thinking-block"><div class="thinking-header" onclick="toggleCollapsible(this)">\uD83D\uDCAD Extended Thinking <span class="toggle-icon">\u25B6</span></div><div class="thinking-content collapsed"><pre>' + escapeHtml(text) + '</pre></div></div>';
+    }
+
+    function renderToolResult(item) {
+        const isError = item.is_error || false;
+        const contentText = typeof item.content === 'string' ? item.content : JSON.stringify(item.content);
+        return '<div class="tool-result-standalone ' + (isError ? 'error' : '') + '"><div class="tool-header" onclick="toggleCollapsible(this)"><span class="tool-icon">' + (isError ? '\u274C' : '\u2705') + '</span> <strong>Tool Result</strong>' + (item.tool_use_id ? ' (' + item.tool_use_id.slice(0,8) + ')' : '') + ' <span class="toggle-icon">\u25B6</span></div><div class="tool-output collapsed"><pre>' + escapeHtml(contentText) + '</pre></div></div>';
+    }
+
+    function renderToolUse(item, nextMessage) {
+        let toolResult = null;
+        let isError = false;
+        if (nextMessage && nextMessage.type === 'user') {
+            try {
+                const nextContent = parseMessageContent(nextMessage.content);
+                toolResult = nextContent.find(c => c.type === 'tool_result' && c.tool_use_id === item.id);
+                isError = toolResult?.is_error || false;
+            } catch {}
+        }
+        const inputPreview = item.input ? JSON.stringify(item.input, null, 2) : '';
+        const desc = item.input?.description ? ' - ' + escapeHtml(item.input.description).slice(0, 60) : '';
+        return '<div class="tool-call ' + (isError ? 'error' : '') + '"><div class="tool-header" onclick="toggleCollapsible(this)"><span class="tool-icon">' + getToolIcon(item.name) + '</span> <strong>' + item.name + '</strong>' + desc + ' <span class="toggle-icon">\u25B6</span></div><div class="tool-output collapsed">' + (inputPreview ? '<div><strong>Input:</strong><pre>' + escapeHtml(inputPreview) + '</pre></div>' : '') + (toolResult ? '<div><strong>Output:</strong><pre>' + escapeHtml(toolResult.content || '') + '</pre></div>' : '') + '</div></div>';
+    }
+
+    // ===== MODAL: OPEN INTERACTION =====
+    async function openInteraction(sessionId, projectId) {
+        document.getElementById('modalOverlay').classList.add('active');
+        document.getElementById('modalBody').textContent = '';
+        document.getElementById('kbEnrichment').style.display = 'none';
+        document.getElementById('kbEnrichment').textContent = '';
+        var loadingDiv = document.createElement('div');
+        loadingDiv.className = 'loading';
+        loadingDiv.textContent = 'Loading transcript';
+        document.getElementById('modalBody').appendChild(loadingDiv);
+
+        try {
+            var qs = projectId ? '?project=' + encodeURIComponent(projectId) : '';
+            var convPromise = apiFetchRaw(API_BASE + '/api/conversation/' + encodeURIComponent(sessionId) + qs);
+            var kbPromise = apiFetchRaw(API_BASE + '/api/kb/status?session_id=' + encodeURIComponent(sessionId)).catch(function() { return null; });
+            var sqlMetaPromise = apiFetchRaw(API_BASE + '/api/conversation/' + encodeURIComponent(sessionId) + '/metadata' + qs).catch(function() { return null; });
+            var results = await Promise.all([convPromise, kbPromise, sqlMetaPromise]);
+            var data = results[0];
+            var kbData = results[1];
+            var sqlMeta = results[2];
+            renderInteractionDetail(data);
+            renderKbEnrichment(kbData, sqlMeta);
+        } catch (err) {
+            console.error('Failed to load conversation:', err);
+            document.getElementById('modalBody').textContent = '';
+            var errDiv = document.createElement('div');
+            errDiv.className = 'empty-state';
+            var errH3 = document.createElement('h3');
+            errH3.textContent = 'Error loading interaction';
+            errDiv.appendChild(errH3);
+            document.getElementById('modalBody').appendChild(errDiv);
+        }
+    }
+
+    function renderKbEnrichment(kbData, sqlMeta) {
+        var el = document.getElementById('kbEnrichment');
+        el.textContent = '';
+        el.style.display = 'none';
+
+        // Use Qdrant data if available, otherwise fall back to SQL metadata
+        var p = null;
+        var sourceLabel = '';
+        if (kbData && kbData.indexed && kbData.payload) {
+            p = kbData.payload;
+            sourceLabel = 'Qdrant KB';
+        } else if (sqlMeta && sqlMeta.classified && sqlMeta.metadata) {
+            p = sqlMeta.metadata;
+            sourceLabel = 'SQL Classification';
+        }
+
+        if (!p) return;
+        el.style.display = 'block';
+
+        if (p.summary) {
+            var summaryDiv = document.createElement('div');
+            summaryDiv.className = 'kb-enrichment-summary';
+            summaryDiv.textContent = p.summary;
+            el.appendChild(summaryDiv);
+        }
+
+        if (p.abstract) {
+            var abstractDiv = document.createElement('div');
+            abstractDiv.className = 'kb-enrichment-abstract';
+            abstractDiv.textContent = p.abstract;
+            el.appendChild(abstractDiv);
+        }
+
+        if (p.process) {
+            var processDiv = document.createElement('div');
+            processDiv.className = 'kb-enrichment-process';
+            processDiv.textContent = p.process;
+            el.appendChild(processDiv);
+        }
+
+        var metaDiv = document.createElement('div');
+        metaDiv.className = 'kb-enrichment-meta';
+
+        if (sourceLabel) {
+            var srcSpan2 = document.createElement('span');
+            srcSpan2.style.cssText = 'font-size:0.65rem;color:#999;font-style:italic';
+            srcSpan2.textContent = sourceLabel;
+            metaDiv.appendChild(srcSpan2);
+        }
+
+        if (p.classification) {
+            var classSpan = document.createElement('span');
+            classSpan.className = 'kb-enrichment-classification ' + p.classification;
+            classSpan.textContent = p.classification;
+            metaDiv.appendChild(classSpan);
+        }
+
+        if (p.data_sensitivity) {
+            var sensSpan = document.createElement('span');
+            sensSpan.className = 'kb-sensitivity ' + p.data_sensitivity;
+            sensSpan.textContent = p.data_sensitivity;
+            if (p.sensitive_data_types && p.sensitive_data_types.length > 0) {
+                sensSpan.title = p.sensitive_data_types.join(', ');
+            }
+            metaDiv.appendChild(sensSpan);
+        }
+
+        if (p.host) {
+            var hostSpan = document.createElement('span');
+            hostSpan.textContent = p.host;
+            metaDiv.appendChild(hostSpan);
+        }
+
+        if (p.source) {
+            var srcSpan = document.createElement('span');
+            srcSpan.textContent = p.source;
+            metaDiv.appendChild(srcSpan);
+        }
+
+        el.appendChild(metaDiv);
+
+        var tagsDiv = document.createElement('div');
+        tagsDiv.className = 'kb-enrichment-tags';
+        var hasTags = false;
+
+        ['topics', 'clients', 'people', 'tags'].forEach(function(key) {
+            var arr = p[key];
+            if (arr && arr.length > 0) {
+                hasTags = true;
+                arr.forEach(function(t) {
+                    var tagSpan = document.createElement('span');
+                    tagSpan.className = key === 'topics' ? 'kb-tag topic' :
+                                        key === 'clients' ? 'kb-tag client' :
+                                        key === 'people' ? 'kb-tag person' : 'kb-tag';
+                    tagSpan.textContent = t;
+                    tagsDiv.appendChild(tagSpan);
+                });
+            }
+        });
+
+        if (hasTags) el.appendChild(tagsDiv);
+    }
+
+    function renderInteractionDetail(data) {
+        const conversation = data.conversation || data;
+        const messages = data.messages || [];
+
+        document.getElementById('modalTitle').textContent = (conversation.summary || conversation.display || 'Interaction').slice(0, 80);
+
+        const metaEl = document.getElementById('modalMeta');
+        metaEl.textContent = '';
+        metaEl.insertAdjacentHTML('beforeend',
+            '<span>' + formatTimestamp(conversation.timestamp) + '</span>' +
+            '<span>' + messages.length + ' messages</span>' +
+            '<span>' + formatNumber(conversation.total_tokens) + ' tokens</span>' +
+            '<span>' + shortenModel(conversation.model) + '</span>' +
+            '<span class="modal-session-id" data-full-id="' + (conversation.session_id || '') + '" onclick="copySessionId(this); event.stopPropagation();" title="Click to copy: ' + (conversation.session_id || '') + '">ID: ' + shortenSessionId(conversation.session_id || '') + '</span>'
+        );
+
+        if (!messages || messages.length === 0) {
+            document.getElementById('modalBody').textContent = '';
+            document.getElementById('modalBody').insertAdjacentHTML('beforeend', '<div class="empty-state"><h3>No messages in this interaction</h3></div>');
+            return;
+        }
+
+        let html = '';
+
+        // Breadcrumb if child conversation
+        if (conversation.parent_session_id && conversation.parent_conversation) {
+            const parentSummary = conversation.parent_conversation.summary || conversation.parent_conversation.display || 'Parent';
+            html += '<nav class="breadcrumb"><a href="#" onclick="openInteraction(\'' + conversation.parent_session_id + '\', ' + (conversation.project_id || 'null') + '); return false;">\u2190 ' + escapeHtml(parentSummary.slice(0, 60)) + '</a><span> / Current</span></nav>';
+        }
+
+        // Render messages
+        messages.forEach(function(msg, idx) {
+            const contentItems = parseMessageContent(msg.content);
+            const nextMsg = messages[idx + 1];
+            let itemsHtml = '';
+
+            if (contentItems && contentItems.length > 0) {
+                contentItems.forEach(function(item) {
+                    if (item.type === 'text' && item.text) {
+                        itemsHtml += '<div class="message-text">' + escapeHtml(item.text) + '</div>';
+                    } else if (item.type === 'thinking' && item.thinking) {
+                        itemsHtml += renderThinking(item.thinking);
+                    } else if (item.type === 'tool_use') {
+                        itemsHtml += renderToolUse(item, nextMsg);
+                    } else if (item.type === 'tool_result') {
+                        itemsHtml += renderToolResult(item);
+                    }
+                });
+            }
+
+            if (!itemsHtml.trim()) {
+                const rawContent = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+                if (rawContent && rawContent !== '[]' && rawContent !== '""') {
+                    itemsHtml = '<div class="message-text">' + escapeHtml(rawContent) + '</div>';
+                } else {
+                    itemsHtml = '<div class="message-text" style="color: #999; font-style: italic;">(empty message)</div>';
+                }
+            }
+
+            html += '<div class="message ' + msg.type + '"><div class="message-header"><span class="message-role">' + msg.type + '</span>' + (msg.tokens_in || msg.tokens_out ? '<span class="message-tokens">' + (msg.tokens_in || 0) + ' in / ' + (msg.tokens_out || 0) + ' out</span>' : '') + '</div><div class="message-content">' + itemsHtml + '</div></div>';
+        });
+
+        document.getElementById('modalBody').innerHTML = html;
+    }
+
+    // ===== MODAL EVENT HANDLERS =====
+    document.getElementById('modalClose').addEventListener('click', function() {
+        document.getElementById('modalOverlay').classList.remove('active');
+    });
+
+    document.getElementById('modalOverlay').addEventListener('click', function(e) {
+        if (e.target === document.getElementById('modalOverlay')) {
+            document.getElementById('modalOverlay').classList.remove('active');
+        }
+    });
+
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+            document.getElementById('modalOverlay').classList.remove('active');
+        }
+    });
+
+    // ===== COPY SESSION ID =====
+    function copySessionId(element) {
+        const fullId = element.dataset.fullId;
+        navigator.clipboard.writeText(fullId).then(() => {
+            const original = element.textContent;
+            element.textContent = 'Copied';
+            element.style.background = 'rgba(0, 200, 0, 0.2)';
+            element.style.color = 'green';
+            setTimeout(() => {
+                element.textContent = original;
+                element.style.background = '';
+                element.style.color = '';
+            }, 1500);
+        });
+    }
+
+    // ===== INITIAL LOAD =====
+    async function init() {
+        // Set default date inputs to match state (last 7 days)
+        document.getElementById('startDate').value = state.startDate;
+        document.getElementById('endDate').value = state.endDate;
+        await initFilters();
+        await loadConversations();
+
+        // Auto-open conversation if ?session=XXX is in URL (e.g. from KB search results)
+        var urlParams = new URLSearchParams(window.location.search);
+        var sessionParam = urlParams.get('session');
+        if (sessionParam) {
+            openInteraction(sessionParam);
+        }
+    }
+
+    init();
+    </script>
+</body>
+</html>

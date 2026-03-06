@@ -1,0 +1,396 @@
+#!/usr/bin/env python3
+"""
+LocalAgentViewer MCP Server
+
+FastMCP server exposing conversation search (SQL + Qdrant semantic),
+knowledge base indexing, and sync trigger.
+
+Tools (read):
+  - get_conversations: list/search conversations (FTS SQLite)
+  - get_conversation_details: full transcript by session_id
+  - semantic_search: Qdrant vector search on indexed KB
+  - kb_status: check if conversation is indexed
+
+Tools (write, require LAV_API_KEY):
+  - kb_index: index conversation into Qdrant (auto-tag via Haiku or pre-metadata)
+  - kb_remove: remove conversation from Qdrant
+  - kb_update_tags: update tags without re-embedding
+  - sync: trigger data re-parse
+"""
+
+import os
+import sys
+import sqlite3
+from pathlib import Path
+from typing import Optional
+
+# Add project dir to path for imports
+_PROJECT_DIR = Path(__file__).parent
+sys.path.insert(0, str(_PROJECT_DIR))
+
+# Load .env (same pattern as server.py)
+_env_file = _PROJECT_DIR / ".env"
+if _env_file.exists():
+    with open(_env_file) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key.strip(), value.strip())
+
+from fastmcp import FastMCP
+from config import UNIFIED_DB_PATH, QDRANT_DATA_DIR, QDRANT_COLLECTION, QDRANT_URL
+
+# Lazy imports to avoid loading heavy deps at startup
+_kb_store = None
+
+
+def _get_read_connection() -> Optional[sqlite3.Connection]:
+    """Read-only connection to the unified DB."""
+    if not UNIFIED_DB_PATH.exists():
+        return None
+    conn = sqlite3.connect(str(UNIFIED_DB_PATH))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA query_only=ON")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
+def _get_kb_store():
+    """Lazy-init Qdrant vector store (HTTP or file mode)."""
+    global _kb_store
+    if _kb_store is None:
+        from qdrant.store import ConversationVectorStore
+        if QDRANT_URL:
+            _kb_store = ConversationVectorStore(url=QDRANT_URL, collection=QDRANT_COLLECTION)
+        else:
+            QDRANT_DATA_DIR.mkdir(parents=True, exist_ok=True)
+            _kb_store = ConversationVectorStore(data_path=QDRANT_DATA_DIR, collection=QDRANT_COLLECTION)
+        _kb_store.ensure_collection()
+    return _kb_store
+
+
+def _check_api_key(api_key: str) -> bool:
+    """Validate api_key against LAV_API_KEY env var."""
+    expected = os.environ.get("LAV_API_KEY", "")
+    if not expected:
+        return False
+    return api_key == expected
+
+
+# ── MCP Server ──────────────────────────────────────────────
+
+mcp = FastMCP(
+    "local-agent-viewer",
+    instructions=(
+        "Search and explore Claude Code conversation history. "
+        "Supports SQL full-text search, Qdrant semantic search, "
+        "and data sync triggers."
+    ),
+)
+
+
+@mcp.tool()
+def get_conversations(
+    search: Optional[str] = None,
+    project: Optional[str] = None,
+    user: Optional[str] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    limit: int = 20,
+) -> dict:
+    """List conversations with optional filters.
+
+    Args:
+        search: Full-text search in message content
+        project: Filter by project name
+        user: Filter by username
+        start: Start date (YYYY-MM-DD)
+        end: End date (YYYY-MM-DD)
+        limit: Max results (default 20)
+    """
+    from queries import get_conversations_list, run_query
+
+    conn = _get_read_connection()
+    if not conn:
+        return {"error": "No database. Run sync first."}
+
+    try:
+        # Resolve names to IDs
+        project_id = None
+        user_id = None
+        if project:
+            row = run_query(conn, "SELECT id FROM projects WHERE name = ?", [project])
+            if row:
+                project_id = row[0]["id"]
+        if user:
+            row = run_query(conn, "SELECT id FROM users WHERE username = ?", [user])
+            if row:
+                user_id = row[0]["id"]
+
+        data = get_conversations_list(
+            conn,
+            project_id=project_id,
+            user_id=user_id,
+            search=search,
+            start_date=start,
+            end_date=end,
+            limit=limit,
+        )
+        return data
+    finally:
+        conn.close()
+
+
+@mcp.tool()
+def get_conversation_details(session_id: str) -> dict:
+    """Get full conversation transcript by session ID.
+
+    Args:
+        session_id: The conversation session UUID
+    """
+    from queries import get_conversation_detail
+
+    conn = _get_read_connection()
+    if not conn:
+        return {"error": "No database. Run sync first."}
+
+    try:
+        data = get_conversation_detail(conn, session_id)
+        if not data:
+            return {"error": f"Conversation '{session_id}' not found"}
+        return data
+    finally:
+        conn.close()
+
+
+@mcp.tool()
+def semantic_search(
+    query: str,
+    limit: int = 10,
+    classification: Optional[str] = None,
+    tags: Optional[str] = None,
+    project: Optional[str] = None,
+) -> dict:
+    """Semantic search in the indexed knowledge base (Qdrant).
+
+    Args:
+        query: Natural language search query
+        limit: Max results (default 10)
+        classification: Filter by type (development, meeting, analysis, brainstorm, support, learning)
+        tags: Comma-separated tags to filter by
+        project: Filter by project name
+    """
+    try:
+        store = _get_kb_store()
+    except Exception as e:
+        return {"error": f"KB not available: {e}"}
+
+    filters = {}
+    if classification:
+        filters["classification"] = classification
+    if tags:
+        filters["tags"] = [t.strip() for t in tags.split(",")]
+    if project:
+        filters["project"] = project
+
+    results = store.search(query, limit=limit, filters=filters if filters else None)
+    return {
+        "query": query,
+        "results": [
+            {"session_id": r.session_id, "score": r.score, "payload": r.payload}
+            for r in results
+        ],
+        "total": len(results),
+    }
+
+
+@mcp.tool()
+def sync(
+    api_key: str,
+    scope: str = "all",
+    project: Optional[str] = None,
+    source: Optional[str] = None,
+    full_reparse: bool = False,
+) -> dict:
+    """Trigger data sync/re-parse. Requires API key.
+
+    Args:
+        api_key: LAV_API_KEY for authorization
+        scope: Sync scope - "all", "project", or "source"
+        project: Project name (required when scope="project")
+        source: Source type (required when scope="source"): claude_code, codex_cli, cowork_desktop
+        full_reparse: If true, re-parse all files (not just new ones)
+    """
+    if not _check_api_key(api_key):
+        return {"error": "Invalid or missing api_key"}
+
+    # Import sync_data from server module
+    from server import sync_data
+
+    result = sync_data(
+        scope=scope,
+        project=project,
+        source=source,
+        full=full_reparse,
+    )
+    return result
+
+
+@mcp.tool()
+def kb_index(
+    api_key: str,
+    session_id: str,
+    tags: Optional[str] = None,
+    pre_metadata: Optional[str] = None,
+) -> dict:
+    """Index a conversation into the semantic knowledge base (Qdrant).
+
+    Retrieves the conversation from SQLite, generates metadata via Haiku
+    (or uses pre-computed metadata), embeds the content, and stores in Qdrant.
+
+    Args:
+        api_key: LAV_API_KEY for authorization
+        session_id: The conversation session UUID to index
+        tags: Optional comma-separated tags (e.g. "importante,cliente-coop")
+        pre_metadata: Optional JSON string with pre-computed metadata
+            (keys: summary, classification, topics, people, clients).
+            If provided, skips Haiku auto-tagging.
+    """
+    if not _check_api_key(api_key):
+        return {"error": "Invalid or missing api_key"}
+
+    try:
+        store = _get_kb_store()
+    except Exception as e:
+        return {"error": f"KB not available: {e}"}
+
+    # Get conversation from SQLite
+    from queries import get_conversation_detail
+    conn = _get_read_connection()
+    if not conn:
+        return {"error": "No database. Run sync first."}
+
+    try:
+        data = get_conversation_detail(conn, session_id)
+    finally:
+        conn.close()
+
+    if not data:
+        return {"error": f"Conversation '{session_id}' not found in SQLite"}
+
+    conv = data["conversation"]
+    messages = data["messages"]
+
+    # Parse optional inputs
+    import json
+    tag_list = [t.strip() for t in tags.split(",")] if tags else []
+    metadata = json.loads(pre_metadata) if pre_metadata else None
+
+    # Index via ConversationIndexer
+    from qdrant.indexer import ConversationIndexer
+    indexer = ConversationIndexer(store)
+
+    try:
+        payload = indexer.index(
+            session_id=session_id,
+            messages=messages,
+            project=conv.get("project_name", ""),
+            timestamp=conv.get("timestamp", ""),
+            user=conv.get("username", ""),
+            custom_tags=tag_list if tag_list else None,
+            pre_metadata=metadata,
+        )
+    except Exception as e:
+        return {"error": f"Indexing failed: {e}"}
+
+    return {
+        "status": "indexed",
+        "session_id": session_id,
+        "payload": payload,
+    }
+
+
+@mcp.tool()
+def kb_remove(
+    api_key: str,
+    session_id: str,
+) -> dict:
+    """Remove a conversation from the semantic knowledge base (Qdrant).
+
+    Args:
+        api_key: LAV_API_KEY for authorization
+        session_id: The conversation session UUID to remove
+    """
+    if not _check_api_key(api_key):
+        return {"error": "Invalid or missing api_key"}
+
+    try:
+        store = _get_kb_store()
+    except Exception as e:
+        return {"error": f"KB not available: {e}"}
+
+    store.delete(session_id)
+    return {"status": "removed", "session_id": session_id}
+
+
+@mcp.tool()
+def kb_status(
+    session_id: str,
+) -> dict:
+    """Check if a conversation is indexed in the knowledge base.
+
+    Args:
+        session_id: The conversation session UUID to check
+    """
+    try:
+        store = _get_kb_store()
+    except Exception as e:
+        return {"error": f"KB not available: {e}"}
+
+    indexed = store.is_indexed(session_id)
+    payload = store.get(session_id) if indexed else None
+
+    return {
+        "session_id": session_id,
+        "indexed": indexed,
+        "payload": payload,
+    }
+
+
+@mcp.tool()
+def kb_update_tags(
+    api_key: str,
+    session_id: str,
+    tags: str,
+) -> dict:
+    """Update tags on an indexed conversation without re-embedding.
+
+    Args:
+        api_key: LAV_API_KEY for authorization
+        session_id: The conversation session UUID
+        tags: Comma-separated tags (replaces existing tags)
+    """
+    if not _check_api_key(api_key):
+        return {"error": "Invalid or missing api_key"}
+
+    try:
+        store = _get_kb_store()
+    except Exception as e:
+        return {"error": f"KB not available: {e}"}
+
+    if not store.is_indexed(session_id):
+        return {"error": f"Conversation '{session_id}' not indexed. Use kb_index first."}
+
+    tag_list = [t.strip() for t in tags.split(",")]
+    store.update_tags(session_id, tag_list)
+
+    return {
+        "status": "updated",
+        "session_id": session_id,
+        "tags": tag_list,
+    }
+
+
+if __name__ == "__main__":
+    mcp.run()

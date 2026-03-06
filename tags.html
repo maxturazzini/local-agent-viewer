@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tags | LocalAgentViewer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --white: #FFFFFF;
+            --black: #000000;
+            --dodger-blue: #004BFF;
+            --deep-sky-blue: #35C2FF;
+            --yellow: #F9C927;
+            --spring-green: #00D35D;
+            --red: #FF4C53;
+            --orange: #FF7A20;
+            --light-pink: #FF9DCB;
+            --lilla: #6E87FF;
+            --dim-gray: #666666;
+            --dark-gray: #999999;
+            --light-gray: #F2F2F2;
+            --ai-gradient: linear-gradient(135deg, #004BFF 0%, #35C2FF 100%);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--light-gray);
+            min-height: 100vh;
+            color: var(--black);
+            padding: 24px;
+            font-size: 15px;
+            line-height: 1.4;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 24px;
+            padding: 20px 24px;
+            background: var(--white);
+            border-radius: 16px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        }
+
+        .header-left { display: flex; align-items: center; gap: 20px; }
+        .header-title { border-left: 2px solid var(--light-gray); padding-left: 20px; }
+        .header h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 2px; }
+        .header .subtitle { color: var(--dim-gray); font-size: 0.85rem; }
+
+        .main-nav { display: flex; align-items: center; gap: 4px; }
+        .main-nav-link {
+            color: var(--dim-gray); text-decoration: none; font-weight: 600;
+            font-size: 0.9rem; padding: 8px 16px; border-radius: 8px;
+            transition: all 0.2s; cursor: pointer;
+        }
+        .main-nav-link:hover { background: var(--light-gray); color: var(--black); }
+        .main-nav-link.active { background: var(--ai-gradient); color: var(--white); }
+
+        /* Stats bar */
+        .stats-bar {
+            display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap;
+        }
+        .stat-card {
+            background: var(--white); border-radius: 12px; padding: 16px 24px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06); flex: 1; min-width: 150px;
+        }
+        .stat-card .label { font-size: 0.75rem; color: var(--dim-gray); text-transform: uppercase; letter-spacing: 0.5px; }
+        .stat-card .value { font-size: 1.8rem; font-weight: 700; margin-top: 4px; }
+        .stat-card .value.blue { color: var(--dodger-blue); }
+        .stat-card .value.green { color: var(--spring-green); }
+        .stat-card .value.yellow { color: var(--orange); }
+        .stat-card .value.red { color: var(--red); }
+
+        /* Classification / Sensitivity bars */
+        .charts-row {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px;
+        }
+        .chart-card {
+            background: var(--white); border-radius: 12px; padding: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        }
+        .chart-card h3 { font-size: 0.9rem; color: var(--dim-gray); margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .bar-row { display: flex; align-items: center; margin-bottom: 8px; }
+        .bar-label { width: 120px; font-size: 0.8rem; font-weight: 600; }
+        .bar-track { flex: 1; height: 24px; background: var(--light-gray); border-radius: 6px; overflow: hidden; }
+        .bar-fill { height: 100%; border-radius: 6px; display: flex; align-items: center; padding-left: 8px; font-size: 0.7rem; color: white; font-weight: 600; min-width: 30px; transition: width 0.5s; }
+        .bar-count { width: 50px; text-align: right; font-size: 0.8rem; color: var(--dim-gray); margin-left: 8px; }
+
+        /* Classification colors */
+        .cls-development { background: var(--dodger-blue); }
+        .cls-analysis { background: var(--deep-sky-blue); }
+        .cls-support { background: var(--orange); }
+        .cls-meeting { background: var(--yellow); }
+        .cls-brainstorm { background: var(--lilla); }
+        .cls-learning { background: var(--spring-green); }
+
+        /* Sensitivity colors */
+        .sens-public { background: var(--spring-green); }
+        .sens-internal { background: var(--dodger-blue); }
+        .sens-confidential { background: var(--orange); }
+        .sens-restricted { background: var(--red); }
+
+        /* Tag cloud sections */
+        .clouds-grid {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px;
+        }
+        .cloud-card {
+            background: var(--white); border-radius: 12px; padding: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        }
+        .cloud-card h3 {
+            font-size: 0.9rem; color: var(--dim-gray); margin-bottom: 16px;
+            text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .cloud-card h3 .count { font-weight: 400; font-size: 0.75rem; }
+        .tag-cloud { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+        .tag-item {
+            display: inline-block; padding: 4px 10px; border-radius: 12px;
+            font-weight: 500; cursor: pointer; transition: all 0.2s;
+            white-space: nowrap;
+        }
+        .tag-item:hover { transform: scale(1.05); opacity: 0.85; }
+
+        /* Tag colors by category */
+        .tag-topic { background: rgba(0,75,255,0.1); color: var(--dodger-blue); }
+        .tag-person { background: rgba(255,157,203,0.2); color: #c0507a; }
+        .tag-client { background: rgba(249,201,39,0.2); color: #a07500; }
+        .tag-process { background: rgba(110,135,255,0.15); color: var(--lilla); }
+
+        /* Processes as list */
+        .process-list { display: flex; flex-direction: column; gap: 6px; }
+        .process-item {
+            display: flex; align-items: center; gap: 10px;
+            padding: 6px 12px; border-radius: 8px; background: var(--light-gray);
+            font-size: 0.85rem; cursor: pointer; transition: background 0.2s;
+        }
+        .process-item:hover { background: rgba(110,135,255,0.1); }
+        .process-item .process-count {
+            background: var(--lilla); color: white; font-size: 0.7rem;
+            font-weight: 700; padding: 2px 8px; border-radius: 10px; min-width: 28px; text-align: center;
+        }
+        .process-item .process-name { flex: 1; }
+
+        .loading { text-align: center; color: var(--dim-gray); padding: 40px; font-size: 0.9rem; }
+
+        @media (max-width: 768px) {
+            .charts-row, .clouds-grid { grid-template-columns: 1fr; }
+            body { padding: 12px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-left">
+            <div class="header-title">
+                <h1>Tags & Classification</h1>
+                <div class="subtitle" id="subtitleText">Loading...</div>
+            </div>
+        </div>
+        <nav class="main-nav">
+            <a class="main-nav-link" href="dashboard.html">Dashboard</a>
+            <a class="main-nav-link" href="interactions.html">Interactions</a>
+            <a class="main-nav-link active">Tags</a>
+        </nav>
+    </div>
+
+    <div class="stats-bar" id="statsBar">
+        <div class="stat-card"><div class="label">Classified</div><div class="value blue" id="statClassified">-</div></div>
+        <div class="stat-card"><div class="label">Total</div><div class="value" id="statTotal">-</div></div>
+        <div class="stat-card"><div class="label">Coverage</div><div class="value green" id="statCoverage">-</div></div>
+        <div class="stat-card"><div class="label">Unique Topics</div><div class="value yellow" id="statTopics">-</div></div>
+    </div>
+
+    <div class="charts-row">
+        <div class="chart-card">
+            <h3>By Classification</h3>
+            <div id="classificationBars"><div class="loading">Loading...</div></div>
+        </div>
+        <div class="chart-card">
+            <h3>By Sensitivity</h3>
+            <div id="sensitivityBars"><div class="loading">Loading...</div></div>
+        </div>
+    </div>
+
+    <div class="clouds-grid">
+        <div class="cloud-card">
+            <h3>Topics <span class="count" id="topicsCount"></span></h3>
+            <div class="tag-cloud" id="topicsCloud"><div class="loading">Loading...</div></div>
+        </div>
+        <div class="cloud-card">
+            <h3>Clients <span class="count" id="clientsCount"></span></h3>
+            <div class="tag-cloud" id="clientsCloud"><div class="loading">Loading...</div></div>
+        </div>
+        <div class="cloud-card">
+            <h3>People <span class="count" id="peopleCount"></span></h3>
+            <div class="tag-cloud" id="peopleCloud"><div class="loading">Loading...</div></div>
+        </div>
+        <div class="cloud-card">
+            <h3>Processes <span class="count" id="processesCount"></span></h3>
+            <div class="process-list" id="processesCloud"><div class="loading">Loading...</div></div>
+        </div>
+    </div>
+
+    <script>
+    (function() {
+        var API = '';
+
+        function fetchJSON(url) {
+            return fetch(API + url).then(function(r) { return r.json(); });
+        }
+
+        function renderBars(containerId, items, cssPrefix, maxVal) {
+            var el = document.getElementById(containerId);
+            el.textContent = '';
+            if (!items || items.length === 0) {
+                el.textContent = 'No data';
+                return;
+            }
+            var max = maxVal || items[0].count;
+            items.forEach(function(item) {
+                var row = document.createElement('div');
+                row.className = 'bar-row';
+
+                var label = document.createElement('div');
+                label.className = 'bar-label';
+                label.textContent = item.classification || item.data_sensitivity || '';
+
+                var track = document.createElement('div');
+                track.className = 'bar-track';
+
+                var fill = document.createElement('div');
+                fill.className = 'bar-fill ' + cssPrefix + '-' + (item.classification || item.data_sensitivity || '');
+                var pct = max > 0 ? (item.count / max * 100) : 0;
+                fill.style.width = Math.max(pct, 5) + '%';
+
+                var countDiv = document.createElement('div');
+                countDiv.className = 'bar-count';
+                countDiv.textContent = item.count;
+
+                track.appendChild(fill);
+                row.appendChild(label);
+                row.appendChild(track);
+                row.appendChild(countDiv);
+                el.appendChild(row);
+            });
+        }
+
+        function sizeForCount(count, maxCount) {
+            var minSize = 0.7;
+            var maxSize = 1.6;
+            if (maxCount <= 1) return 1;
+            var ratio = Math.log(count + 1) / Math.log(maxCount + 1);
+            return minSize + ratio * (maxSize - minSize);
+        }
+
+        function renderCloud(containerId, items, cssClass) {
+            var el = document.getElementById(containerId);
+            el.textContent = '';
+            if (!items || items.length === 0) {
+                el.textContent = 'No data';
+                return;
+            }
+            var maxCount = items[0].count;
+            items.forEach(function(item) {
+                var tag = document.createElement('span');
+                tag.className = 'tag-item ' + cssClass;
+                tag.textContent = item.name;
+                tag.title = item.count + ' conversations';
+                var size = sizeForCount(item.count, maxCount);
+                tag.style.fontSize = size + 'rem';
+                tag.addEventListener('click', function() {
+                    window.location.href = 'interactions.html?topic=' + encodeURIComponent(item.name);
+                });
+                el.appendChild(tag);
+            });
+        }
+
+        function renderProcesses(containerId, items) {
+            var el = document.getElementById(containerId);
+            el.textContent = '';
+            if (!items || items.length === 0) {
+                el.textContent = 'No data';
+                return;
+            }
+            items.slice(0, 30).forEach(function(item) {
+                var row = document.createElement('div');
+                row.className = 'process-item';
+
+                var countSpan = document.createElement('span');
+                countSpan.className = 'process-count';
+                countSpan.textContent = item.count;
+
+                var nameSpan = document.createElement('span');
+                nameSpan.className = 'process-name';
+                nameSpan.textContent = item.name;
+
+                row.appendChild(countSpan);
+                row.appendChild(nameSpan);
+                el.appendChild(row);
+            });
+        }
+
+        Promise.all([
+            fetchJSON('/api/classifications/stats'),
+            fetchJSON('/api/classifications/tagcloud')
+        ]).then(function(results) {
+            var stats = results[0];
+            var cloud = results[1];
+
+            // Stats bar
+            var classified = stats.total_classified || 0;
+            var total = stats.total_conversations || 0;
+            var coverage = total > 0 ? Math.round(classified / total * 100) : 0;
+            var uniqueTopics = cloud.topics ? cloud.topics.length : 0;
+
+            document.getElementById('statClassified').textContent = classified;
+            document.getElementById('statTotal').textContent = total;
+            document.getElementById('statCoverage').textContent = coverage + '%';
+            document.getElementById('statTopics').textContent = uniqueTopics;
+            document.getElementById('subtitleText').textContent =
+                classified + ' classified out of ' + total + ' conversations';
+
+            // Classification bars
+            renderBars('classificationBars', stats.by_classification, 'cls');
+
+            // Sensitivity bars
+            renderBars('sensitivityBars', stats.by_sensitivity, 'sens');
+
+            // Tag clouds
+            document.getElementById('topicsCount').textContent = '(' + (cloud.topics || []).length + ')';
+            document.getElementById('clientsCount').textContent = '(' + (cloud.clients || []).length + ')';
+            document.getElementById('peopleCount').textContent = '(' + (cloud.people || []).length + ')';
+            document.getElementById('processesCount').textContent = '(' + (cloud.processes || []).length + ')';
+
+            renderCloud('topicsCloud', cloud.topics || [], 'tag-topic');
+            renderCloud('clientsCloud', cloud.clients || [], 'tag-client');
+            renderCloud('peopleCloud', cloud.people || [], 'tag-person');
+            renderProcesses('processesCloud', cloud.processes || []);
+        });
+    })();
+    </script>
+</body>
+</html>

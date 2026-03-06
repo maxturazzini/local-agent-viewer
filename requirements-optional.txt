@@ -1,0 +1,4 @@
+qdrant-client
+openai
+anthropic
+fastmcp
