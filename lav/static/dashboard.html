@@ -1575,20 +1575,7 @@
             </div>
             <div class="settings-section">
                 <h3>About</h3>
-                <div class="settings-info">
-                    <div class="settings-info-row">
-                        <span class="key">Application</span>
-                        <span class="val">LocalAgentViewer</span>
-                    </div>
-                    <div class="settings-info-row">
-                        <span class="key">Version</span>
-                        <span class="val">1.0.0</span>
-                    </div>
-                    <div class="settings-info-row">
-                        <span class="key">Stack</span>
-                        <span class="val">Python + SQLite + Chart.js</span>
-                    </div>
-                </div>
+                <div class="settings-info" id="settingsAbout">Loading...</div>
             </div>
         </div>
     </div>
@@ -2157,6 +2144,32 @@
             }
             dbEl.textContent = '';
             dbEl.insertAdjacentHTML('beforeend', dbHtml || '<div>No data loaded</div>');
+
+            // About info (from /api/health)
+            const aboutEl = document.getElementById('settingsAbout');
+            let aboutHtml = '';
+            try {
+                const health = await apiFetch('/api/health');
+                const formatBytes = (b) => b > 1e9 ? (b/1e9).toFixed(1) + ' GB' : b > 1e6 ? (b/1e6).toFixed(1) + ' MB' : (b/1e3).toFixed(0) + ' KB';
+                aboutHtml += `<div class="settings-info-row"><span class="key">Application</span><span class="val">LocalAgentViewer</span></div>`;
+                aboutHtml += `<div class="settings-info-row"><span class="key">Version</span><span class="val">${health.version || 'unknown'}</span></div>`;
+                aboutHtml += `<div class="settings-info-row"><span class="key">Role</span><span class="val">${health.role || 'unknown'}</span></div>`;
+                aboutHtml += `<div class="settings-info-row"><span class="key">Host</span><span class="val">${health.hostname || 'unknown'}</span></div>`;
+                aboutHtml += `<div class="settings-info-row"><span class="key">Stack</span><span class="val">Python + SQLite + Chart.js</span></div>`;
+                if (health.db_path) {
+                    aboutHtml += `<div class="settings-info-row"><span class="key">DB path</span><span class="val" style="font-size:0.85em;word-break:break-all">${health.db_path}</span></div>`;
+                }
+                if (health.db_size_bytes) {
+                    aboutHtml += `<div class="settings-info-row"><span class="key">DB size</span><span class="val">${formatBytes(health.db_size_bytes)}</span></div>`;
+                }
+                const qdrantVal = health.qdrant_url ? `${health.qdrant_url} (${health.qdrant_status})` : 'Not configured';
+                aboutHtml += `<div class="settings-info-row"><span class="key">Qdrant</span><span class="val">${qdrantVal}</span></div>`;
+                aboutHtml += `<div class="settings-info-row"><span class="key">Author</span><span class="val"><a href="https://aimax.it" target="_blank" style="color:var(--accent)">aimax.it</a></span></div>`;
+            } catch (e) {
+                aboutHtml = '<div>Could not load server info</div>';
+            }
+            aboutEl.textContent = '';
+            aboutEl.insertAdjacentHTML('beforeend', aboutHtml);
         } catch (err) {
             console.error('Failed to load settings data:', err);
         }

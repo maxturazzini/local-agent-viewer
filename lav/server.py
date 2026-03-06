@@ -856,14 +856,26 @@ class APIHandler(SimpleHTTPRequestHandler):
         # ==== AGENT ENDPOINTS (health, info, export) ====
 
         if path == "/api/health":
-            import platform as _platform
+            from lav import __version__
             uptime = (datetime.now() - _server_start_time).total_seconds()
+            qdrant_status = "not configured"
+            if QDRANT_URL:
+                try:
+                    import urllib.request
+                    req = urllib.request.urlopen(f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}", timeout=2)
+                    qdrant_status = "connected"
+                except Exception:
+                    qdrant_status = "unreachable"
             self.send_json({
                 "status": "ok",
                 "hostname": socket.gethostname(),
                 "role": _runtime_config["role"],
                 "uptime": round(uptime, 1),
-                "version": 1,
+                "version": __version__,
+                "db_path": str(UNIFIED_DB_PATH),
+                "db_size_bytes": UNIFIED_DB_PATH.stat().st_size if UNIFIED_DB_PATH.exists() else 0,
+                "qdrant_url": QDRANT_URL or None,
+                "qdrant_status": qdrant_status,
             })
             return
 
