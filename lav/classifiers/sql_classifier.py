@@ -319,7 +319,7 @@ def run(
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
+def _build_parser():
     parser = argparse.ArgumentParser(
         description="SQL-based interaction classifier (gpt-4o-mini)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -355,8 +355,11 @@ Examples:
     parser.add_argument("--dry-run", action="store_true",
         help="Preview without writing to DB")
 
-    args = parser.parse_args()
+    return parser
 
+
+def main():
+    args = _build_parser().parse_args()
     run(
         full=args.full,
         limit=args.limit,
@@ -369,3 +372,7 @@ Examples:
         since=args.since or "",
         model=args.model,
     )
+
+
+if __name__ == "__main__":
+    main()
