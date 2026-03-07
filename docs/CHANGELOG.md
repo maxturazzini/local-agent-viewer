@@ -3,6 +3,7 @@
 ## 0.1.1 — 2026-03-07
 
 Classification prompt & config optimization (LAV-32).
+- Fix OpenAI model cache_read pricing: use 50% of input (was incorrectly 10%, Anthropic formula)
 
 - Reorder JSON schema fields: descriptive first, classification last (implicit chain-of-thought)
 - Rewrite system prompt with disambiguation rules and examples, optimized for small models
