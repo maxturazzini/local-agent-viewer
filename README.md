@@ -130,6 +130,7 @@ The database is created automatically at `~/.local/share/local-agent-viewer/loca
 | `lav-classify` | Classify interactions via gpt-4.1-mini | `OPENAI_API_KEY` |
 | `lav-index` | Index interactions into Qdrant | `QDRANT_URL` |
 | `lav-mcp` | Start MCP server | `fastmcp` |
+| `lav-pricing` | Manage model pricing for cost tracking | — |
 
 ### Parser options
 

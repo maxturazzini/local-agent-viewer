@@ -687,7 +687,7 @@
         /* ===== TOKEN CARDS ===== */
         .token-summary {
             display: grid;
-            grid-template-columns: repeat(5, 1fr);
+            grid-template-columns: repeat(3, 1fr);
             gap: 16px;
             margin-bottom: 24px;
         }
@@ -1144,8 +1144,7 @@
         /* ===== RESPONSIVE ===== */
         @media (max-width: 768px) {
             body { padding: 12px; }
-            .token-summary { grid-template-columns: repeat(2, 1fr); }
-            .token-card.total { grid-column: span 2; }
+            .token-summary { grid-template-columns: 1fr; }
             .chart-row { grid-template-columns: 1fr; }
             .header { flex-direction: column; gap: 16px; }
             .filters-bar { width: 100%; justify-content: center; }
@@ -1351,20 +1350,28 @@
 
     <!-- ===== TOKENS TAB ===== -->
     <div id="tokens" class="tab-content">
+        <!-- Row 1: 3 hero cards -->
         <div class="token-summary" id="tokenSummary"></div>
+
+        <!-- Row 2: Cost KPIs -->
+        <div class="stats-grid" id="costKpis" style="grid-template-columns:repeat(4,1fr);margin-bottom:24px;"></div>
+
+        <!-- Row 3: Charts -->
         <div class="chart-row">
             <div class="chart-container">
                 <div class="chart-title">Token usage by model</div>
                 <canvas id="tokensByModelChart"></canvas>
             </div>
             <div class="chart-container">
-                <div class="chart-title">Token type distribution</div>
-                <canvas id="tokenTypePieChart"></canvas>
+                <div class="chart-title">Cost by model</div>
+                <canvas id="costByModelChart"></canvas>
             </div>
         </div>
+
+        <!-- Row 4: Daily timeline -->
         <div class="chart-container">
             <div class="timeline-header">
-                <div class="chart-title">Token usage over time</div>
+                <div class="chart-title">Tokens &amp; cost over time</div>
                 <div class="granularity-selector" id="tokenGranularitySelector">
                     <button class="granularity-btn active" data-granularity="day">Day</button>
                     <button class="granularity-btn" data-granularity="week">Week</button>
@@ -1372,6 +1379,18 @@
                 </div>
             </div>
             <canvas id="dailyTokensChart"></canvas>
+        </div>
+
+        <!-- Row 5: Token type + source -->
+        <div class="chart-row">
+            <div class="chart-container">
+                <div class="chart-title">Token type distribution</div>
+                <canvas id="tokenTypePieChart"></canvas>
+            </div>
+            <div class="chart-container">
+                <div class="chart-title">Cost type distribution</div>
+                <canvas id="costTypePieChart"></canvas>
+            </div>
         </div>
         <div class="chart-row">
             <div class="chart-container">
@@ -1383,8 +1402,28 @@
                 <canvas id="cacheEfficiencyChart"></canvas>
             </div>
         </div>
+
+        <!-- Row 6: Cost breakdown table -->
         <div class="table-container">
-            <div class="chart-title">Model breakdown</div>
+            <div class="chart-title">Cost breakdown by model</div>
+            <table>
+                <thead><tr>
+                    <th style="text-align:left;">Model</th>
+                    <th>Calls</th>
+                    <th>Input</th>
+                    <th>Output</th>
+                    <th>Cache Write</th>
+                    <th>Cache Read</th>
+                    <th>Total Cost</th>
+                    <th>Avg/Call</th>
+                </tr></thead>
+                <tbody id="costBreakdownTable"></tbody>
+            </table>
+        </div>
+
+        <!-- Row 7: Model token cards -->
+        <div class="table-container">
+            <div class="chart-title">Token breakdown by model</div>
             <div id="modelCards"></div>
         </div>
         <div class="token-footnote">
@@ -2395,24 +2434,71 @@
     }
 
     // ===== TOKENS TAB =====
+    function formatCost(v) { return '$' + (v || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
+
     function renderTokens() {
         const d = state.data;
         const tokens = d.tokens || {};
+        const totals = tokens.totals || {};
+        const byModel = tokens.by_model || [];
+        const totalCost = tokens.cost_usd || 0;
+        const dailyData = tokens.daily || [];
+        const numDays = dailyData.length || 1;
+        const numSessions = d.total_interactions || 1;
 
-        // Summary cards
+        // ── Row 1: 3 hero cards ──
         const summaryEl = document.getElementById('tokenSummary');
         summaryEl.textContent = '';
+        const drillGrid = 'display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;margin-top:10px;font-size:0.78rem;';
+        const drillLabel = 'color:#999;';
+        const drillVal = 'font-weight:600;text-align:right;';
         summaryEl.insertAdjacentHTML('beforeend', `
-            <div class="token-card input"><div class="value">${formatNumber(tokens.input || 0)}</div><div class="label">Input</div></div>
-            <div class="token-card output"><div class="value">${formatNumber(tokens.output || 0)}</div><div class="label">Output</div></div>
-            <div class="token-card cache-create"><div class="value">${formatNumber(tokens.cache_creation || 0)}</div><div class="label">Cache Create</div></div>
-            <div class="token-card cache-read"><div class="value">${formatNumber(tokens.cache_read || 0)}</div><div class="label">Cache Read</div></div>
-            <div class="token-card total"><div class="value">${formatNumber(tokens.total || 0)}</div><div class="label">Total Tokens</div></div>
+            <div class="token-card total">
+                <div class="value">${formatNumber(tokens.total || 0)}</div>
+                <div class="label">Total Tokens</div>
+                <div style="${drillGrid}">
+                    <span style="${drillLabel}">Input</span><span style="${drillVal}color:#004BFF;">${formatNumber(tokens.input || 0)}</span>
+                    <span style="${drillLabel}">Output</span><span style="${drillVal}color:#6E87FF;">${formatNumber(tokens.output || 0)}</span>
+                    <span style="${drillLabel}">Cache Write</span><span style="${drillVal}color:#FF7A20;">${formatNumber(tokens.cache_creation || 0)}</span>
+                    <span style="${drillLabel}">Cache Read</span><span style="${drillVal}color:#00D35D;">${formatNumber(tokens.cache_read || 0)}</span>
+                </div>
+            </div>
+            <div class="token-card" style="border-color:#00D35D; background: linear-gradient(135deg, rgba(0,211,93,0.06) 0%, rgba(0,211,93,0.02) 100%);">
+                <div class="value" style="color:#00D35D; font-size:1.8rem;">${formatCost(totalCost)}</div>
+                <div class="label" style="font-weight:700;">Total Cost</div>
+                <div style="${drillGrid}">
+                    <span style="${drillLabel}">Input</span><span style="${drillVal}color:#004BFF;">${formatCost(totals.cost_input)}</span>
+                    <span style="${drillLabel}">Output</span><span style="${drillVal}color:#6E87FF;">${formatCost(totals.cost_output)}</span>
+                    <span style="${drillLabel}">Cache Write</span><span style="${drillVal}color:#FF7A20;">${formatCost(totals.cost_cache_write)}</span>
+                    <span style="${drillLabel}">Cache Read</span><span style="${drillVal}color:#00D35D;">${formatCost(totals.cost_cache_read)}</span>
+                </div>
+            </div>
+            <div class="token-card" style="border-color:#35C2FF;">
+                <div class="value" style="color:#35C2FF; font-size:1.8rem;">${((tokens.cache_read || 0) / ((tokens.input || 0) + (tokens.cache_read || 0) + (tokens.cache_creation || 0) || 1) * 100).toFixed(1)}%</div>
+                <div class="label" style="font-weight:700;">Cache Hit Rate</div>
+                <div style="${drillGrid}">
+                    <span style="${drillLabel}">Avg/day</span><span style="${drillVal}color:#00D35D;">${formatCost(totalCost / numDays)}</span>
+                    <span style="${drillLabel}">Avg/session</span><span style="${drillVal}color:#00D35D;">${formatCost(totalCost / numSessions)}</span>
+                    <span style="${drillLabel}">Avg/call</span><span style="${drillVal}color:#00D35D;">${formatCost(totalCost / (totals.total_calls || 1))}</span>
+                    <span style="${drillLabel}">API calls</span><span style="${drillVal}">${formatNumber(totals.total_calls || 0)}</span>
+                </div>
+            </div>
         `);
 
-        // Token by model
+        // ── Row 2: Cost KPIs ──
+        const kpisEl = document.getElementById('costKpis');
+        kpisEl.textContent = '';
+        const mostExpensive = byModel.reduce((max, m) => (m.cost_usd || 0) > (max.cost_usd || 0) ? m : max, {model:'-',cost_usd:0});
+        const avgPerCall = totalCost / (totals.total_calls || 1);
+        kpisEl.insertAdjacentHTML('beforeend', `
+            <div class="stat-card"><div class="number" style="color:#00D35D;">${formatCost(totalCost / numDays)}</div><div class="label">Avg Cost/Day</div></div>
+            <div class="stat-card"><div class="number" style="color:#00D35D;">${formatCost(totalCost / numSessions)}</div><div class="label">Avg Cost/Session</div></div>
+            <div class="stat-card"><div class="number" style="color:#00D35D;">${formatCost(avgPerCall)}</div><div class="label">Avg Cost/API Call</div></div>
+            <div class="stat-card"><div class="number" style="color:#FF7A20;font-size:0.95rem;">${mostExpensive.model.replace('claude-','').replace('openai-','')}</div><div class="label">Most Expensive Model</div><div style="color:#00D35D;font-weight:700;font-size:0.85rem;margin-top:2px;">${formatCost(mostExpensive.cost_usd)}</div></div>
+        `);
+
+        // ── Token usage by model (bar chart) ──
         destroyChart('tokensByModel');
-        const byModel = tokens.by_model || [];
         if (byModel.length > 0) {
             state.charts.tokensByModel = new Chart(
                 document.getElementById('tokensByModelChart').getContext('2d'),
@@ -2422,7 +2508,7 @@
                         labels: byModel.map(m => m.model),
                         datasets: [{
                             label: 'Tokens',
-                            data: byModel.map(m => m.total || ((m.input_tokens||0) + (m.output_tokens||0) + (m.cache_creation||0) + (m.cache_read||0))),
+                            data: byModel.map(m => (m.input_tokens||0) + (m.output_tokens||0) + (m.cache_creation||0) + (m.cache_read||0)),
                             backgroundColor: byModel.map((_, i) => brandColor(i)),
                             borderRadius: 6
                         }]
@@ -2436,7 +2522,33 @@
             );
         }
 
-        // Token type pie
+        // ── Cost by model (stacked bar) ──
+        destroyChart('costByModel');
+        if (byModel.length > 0) {
+            state.charts.costByModel = new Chart(
+                document.getElementById('costByModelChart').getContext('2d'),
+                {
+                    type: 'bar',
+                    data: {
+                        labels: byModel.map(m => m.model),
+                        datasets: [
+                            { label: 'Input', data: byModel.map(m => m.cost_input || 0), backgroundColor: '#004BFF' },
+                            { label: 'Output', data: byModel.map(m => m.cost_output || 0), backgroundColor: '#6E87FF' },
+                            { label: 'Cache Write', data: byModel.map(m => m.cost_cache_write || 0), backgroundColor: '#FF7A20' },
+                            { label: 'Cache Read', data: byModel.map(m => m.cost_cache_read || 0), backgroundColor: '#00D35D' },
+                        ]
+                    },
+                    options: {
+                        indexAxis: 'y',
+                        responsive: true,
+                        plugins: { legend: { position: 'top' } },
+                        scales: { x: { stacked: true, ticks: { callback: v => '$' + v } }, y: { stacked: true } }
+                    }
+                }
+            );
+        }
+
+        // ── Token type pie ──
         destroyChart('tokenTypePie');
         if (tokens.total > 0) {
             state.charts.tokenTypePie = new Chart(
@@ -2444,23 +2556,46 @@
                 {
                     type: 'doughnut',
                     data: {
-                        labels: ['Input', 'Output', 'Cache Create', 'Cache Read'],
+                        labels: ['Input', 'Output', 'Cache Write', 'Cache Read'],
                         datasets: [{
                             data: [tokens.input || 0, tokens.output || 0, tokens.cache_creation || 0, tokens.cache_read || 0],
                             backgroundColor: ['#004BFF', '#6E87FF', '#FF7A20', '#00D35D']
                         }]
                     },
+                    options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
+                }
+            );
+        }
+
+        // ── Cost type pie ──
+        destroyChart('costTypePie');
+        if (totalCost > 0) {
+            state.charts.costTypePie = new Chart(
+                document.getElementById('costTypePieChart').getContext('2d'),
+                {
+                    type: 'doughnut',
+                    data: {
+                        labels: ['Input', 'Output', 'Cache Write', 'Cache Read'],
+                        datasets: [{
+                            data: [totals.cost_input || 0, totals.cost_output || 0, totals.cost_cache_write || 0, totals.cost_cache_read || 0],
+                            backgroundColor: ['#004BFF', '#6E87FF', '#FF7A20', '#00D35D']
+                        }]
+                    },
                     options: {
                         responsive: true,
-                        plugins: { legend: { position: 'bottom' } }
+                        plugins: {
+                            legend: { position: 'bottom' },
+                            tooltip: { callbacks: { label: ctx => ctx.label + ': $' + ctx.raw.toFixed(2) } }
+                        }
                     }
                 }
             );
         }
 
-        // Daily tokens
+        // ── Daily tokens + cost timeline ──
         const granularity = document.querySelector('#tokenGranularitySelector .granularity-btn.active')?.dataset.granularity || 'day';
-        const dailyTokens = aggregateTimeline(tokens.daily || [], granularity, d => (d.input_tokens||0) + (d.output_tokens||0) + (d.cache_creation||0) + (d.cache_read||0));
+        const dailyTokens = aggregateTimeline(dailyData, granularity, d => (d.input_tokens||0) + (d.output_tokens||0) + (d.cache_creation||0) + (d.cache_read||0));
+        const dailyCost = aggregateTimeline(dailyData, granularity, d => d.cost_usd || 0);
 
         destroyChart('dailyTokens');
         state.charts.dailyTokens = new Chart(
@@ -2474,23 +2609,34 @@
                         data: dailyTokens.map(t => t.value),
                         borderColor: '#004BFF',
                         backgroundColor: 'rgba(0, 75, 255, 0.1)',
-                        fill: true,
-                        tension: 0.3
+                        fill: true, tension: 0.3, yAxisID: 'y'
+                    }, {
+                        label: 'Cost ($)',
+                        data: dailyCost.map(t => t.value),
+                        borderColor: '#00D35D',
+                        backgroundColor: 'rgba(0, 211, 93, 0.08)',
+                        fill: false, tension: 0.3, yAxisID: 'y1',
+                        borderDash: [5, 3]
                     }]
                 },
                 options: {
                     responsive: true,
-                    plugins: { legend: { display: false } },
-                    scales: { y: { beginAtZero: true } }
+                    plugins: { legend: { display: true, position: 'top' } },
+                    scales: {
+                        y: { beginAtZero: true, position: 'left', title: { display: true, text: 'Tokens' } },
+                        y1: { beginAtZero: true, position: 'right', grid: { drawOnChartArea: false },
+                            title: { display: true, text: 'Cost ($)' },
+                            ticks: { callback: v => '$' + v.toFixed(0) }
+                        }
+                    }
                 }
             }
         );
 
-        // Tokens by source
+        // ── Tokens by source ──
         destroyChart('tokensBySource');
         const bySource = (tokens.by_source && tokens.by_source.length > 0)
-            ? tokens.by_source
-            : (state.data.clients || {}).tokens || [];
+            ? tokens.by_source : (state.data.clients || {}).tokens || [];
         if (bySource.length > 0) {
             state.charts.tokensBySource = new Chart(
                 document.getElementById('tokensBySourceChart').getContext('2d'),
@@ -2503,41 +2649,72 @@
                             backgroundColor: bySource.map((_, i) => brandColor(i))
                         }]
                     },
-                    options: {
-                        responsive: true,
-                        plugins: { legend: { position: 'bottom' } }
-                    }
+                    options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
                 }
             );
         }
 
-        // Cache efficiency
+        // ── Cache efficiency (fixed formula) ──
         destroyChart('cacheEfficiency');
         if (tokens.total > 0) {
-            const cachePercent = ((tokens.cache_read || 0) / (tokens.input || 1)) * 100;
+            const totalInput = (tokens.input || 0) + (tokens.cache_read || 0) + (tokens.cache_creation || 0);
+            const cachePercent = totalInput > 0 ? ((tokens.cache_read || 0) / totalInput * 100) : 0;
             state.charts.cacheEfficiency = new Chart(
                 document.getElementById('cacheEfficiencyChart').getContext('2d'),
                 {
                     type: 'doughnut',
                     data: {
-                        labels: ['From cache', 'Direct input'],
+                        labels: ['Cache Read', 'Cache Write', 'Uncached Input'],
                         datasets: [{
-                            data: [tokens.cache_read || 0, (tokens.input || 0) - (tokens.cache_read || 0)],
-                            backgroundColor: ['#00D35D', '#F2F2F2']
+                            data: [tokens.cache_read || 0, tokens.cache_creation || 0, tokens.input || 0],
+                            backgroundColor: ['#00D35D', '#FF7A20', '#004BFF']
                         }]
                     },
                     options: {
                         responsive: true,
                         plugins: {
                             legend: { position: 'bottom' },
-                            title: { display: true, text: `${cachePercent.toFixed(1)}% cache hit rate` }
+                            title: { display: true, text: `${cachePercent.toFixed(1)}% of input served from cache` }
                         }
                     }
                 }
             );
         }
 
-        // Model cards
+        // ── Cost breakdown table ──
+        const tbodyEl = document.getElementById('costBreakdownTable');
+        tbodyEl.textContent = '';
+        byModel.forEach(m => {
+            const avgCall = (m.cost_usd || 0) / (m.calls || 1);
+            const tr = document.createElement('tr');
+            tr.insertAdjacentHTML('beforeend', `
+                <td style="font-weight:600;color:var(--dodger-blue);text-align:left;">${m.model}</td>
+                <td style="text-align:center;">${formatNumber(m.calls || 0)}</td>
+                <td style="text-align:center;">${formatCost(m.cost_input)}</td>
+                <td style="text-align:center;">${formatCost(m.cost_output)}</td>
+                <td style="text-align:center;">${formatCost(m.cost_cache_write)}</td>
+                <td style="text-align:center;">${formatCost(m.cost_cache_read)}</td>
+                <td style="text-align:center;font-weight:700;color:#00D35D;">${formatCost(m.cost_usd)}</td>
+                <td style="text-align:center;color:#666;">${formatCost(avgCall)}</td>
+            `);
+            tbodyEl.appendChild(tr);
+        });
+        // Totals row
+        const totalAvgCall = totalCost / (totals.total_calls || 1);
+        tbodyEl.insertAdjacentHTML('beforeend', `
+            <tr style="font-weight:700;border-top:2px solid var(--dodger-blue);">
+                <td style="text-align:left;">TOTAL</td>
+                <td style="text-align:center;">${formatNumber(totals.total_calls || 0)}</td>
+                <td style="text-align:center;">${formatCost(totals.cost_input)}</td>
+                <td style="text-align:center;">${formatCost(totals.cost_output)}</td>
+                <td style="text-align:center;">${formatCost(totals.cost_cache_write)}</td>
+                <td style="text-align:center;">${formatCost(totals.cost_cache_read)}</td>
+                <td style="text-align:center;color:#00D35D;">${formatCost(totalCost)}</td>
+                <td style="text-align:center;color:#666;">${formatCost(totalAvgCall)}</td>
+            </tr>
+        `);
+
+        // ── Model token cards ──
         const modelCardsEl = document.getElementById('modelCards');
         modelCardsEl.textContent = '';
         byModel.forEach(m => {
@@ -2547,8 +2724,10 @@
                 <div class="model-name">${m.model}</div>
                 <div class="model-stats">
                     <div class="model-stat"><div class="value">${formatNumber((m.input_tokens||0) + (m.output_tokens||0) + (m.cache_creation||0) + (m.cache_read||0))}</div><div class="label">Total</div></div>
-                    <div class="model-stat"><div class="value">${formatNumber(m.input_tokens || m.input || 0)}</div><div class="label">Input</div></div>
-                    <div class="model-stat"><div class="value">${formatNumber(m.output_tokens || m.output || 0)}</div><div class="label">Output</div></div>
+                    <div class="model-stat"><div class="value">${formatNumber(m.input_tokens || 0)}</div><div class="label">Input</div></div>
+                    <div class="model-stat"><div class="value">${formatNumber(m.output_tokens || 0)}</div><div class="label">Output</div></div>
+                    <div class="model-stat"><div class="value">${formatNumber(m.cache_creation || 0)}</div><div class="label">Cache Write</div></div>
+                    <div class="model-stat"><div class="value">${formatNumber(m.cache_read || 0)}</div><div class="label">Cache Read</div></div>
                     <div class="model-stat"><div class="value">${formatNumber(m.calls || 0)}</div><div class="label">Calls</div></div>
                 </div>
             `);

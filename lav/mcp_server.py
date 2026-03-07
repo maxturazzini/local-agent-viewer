@@ -408,5 +408,93 @@ def kb_update_tags(
     }
 
 
+@mcp.tool()
+def manage_pricing(
+    action: str,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    input_price_per_mtok: Optional[float] = None,
+    output_price_per_mtok: Optional[float] = None,
+    cache_write_price_per_mtok: float = 0,
+    cache_read_price_per_mtok: float = 0,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> dict:
+    """Manage model pricing data for cost tracking.
+
+    Args:
+        action: "list" (read), "add" (write), or "lookup" (returns prompt for web search)
+        api_key: LAV_READ_API_KEY for list/lookup, LAV_API_KEY for add
+        model: Model name (required for add and lookup)
+        provider: Provider name (anthropic, openai, etc.)
+        input_price_per_mtok: Input price per 1M tokens (required for add)
+        output_price_per_mtok: Output price per 1M tokens (required for add)
+        cache_write_price_per_mtok: Cache write price per 1M tokens (default 0)
+        cache_read_price_per_mtok: Cache read price per 1M tokens (default 0)
+        from_date: Start date YYYY-MM-DD (required for add)
+        to_date: End date YYYY-MM-DD, exclusive (optional, NULL = current)
+        notes: Optional notes
+    """
+    if action == "list":
+        if not _check_read_api_key(api_key):
+            return {"error": "Invalid or missing api_key (LAV_READ_API_KEY)"}
+        conn = _get_read_connection()
+        if not conn:
+            return {"error": "No database. Run sync first."}
+        try:
+            from lav.pricing import get_pricing
+            return {"pricing": get_pricing(conn, model=model)}
+        finally:
+            conn.close()
+
+    elif action == "add":
+        if not _check_api_key(api_key):
+            return {"error": "Invalid or missing api_key"}
+        if not model or input_price_per_mtok is None or output_price_per_mtok is None or not from_date:
+            return {"error": "model, input_price_per_mtok, output_price_per_mtok, and from_date are required"}
+        conn = sqlite3.connect(str(UNIFIED_DB_PATH))
+        conn.execute("PRAGMA busy_timeout=5000")
+        try:
+            from lav.pricing import upsert_pricing
+            upsert_pricing(
+                conn, model=model, input_price=input_price_per_mtok,
+                output_price=output_price_per_mtok, from_date=from_date,
+                provider=provider, cache_write=cache_write_price_per_mtok,
+                cache_read=cache_read_price_per_mtok, to_date=to_date,
+                notes=notes,
+            )
+            return {"status": "added", "model": model, "from_date": from_date}
+        finally:
+            conn.close()
+
+    elif action == "lookup":
+        if not _check_read_api_key(api_key):
+            return {"error": "Invalid or missing api_key (LAV_READ_API_KEY)"}
+        if not model:
+            return {"error": "model is required for lookup"}
+        provider_str = f" ({provider})" if provider else ""
+        prompt = (
+            f'Search the web for the current API pricing of model "{model}"{provider_str}.\n'
+            f"Find the official pricing page for the provider.\n"
+            f"Extract these values in USD per million tokens:\n"
+            f"- Input token price\n"
+            f"- Output token price\n"
+            f"- Cached input price (if available, otherwise 0)\n"
+            f"- Cache write price (if available, otherwise 0)\n\n"
+            f"Return ONLY a JSON object:\n"
+            f'{{"input_price_per_mtok": X, "output_price_per_mtok": X, '
+            f'"cache_write_price_per_mtok": X, "cache_read_price_per_mtok": X}}\n\n'
+            f"Provider pricing pages:\n"
+            f"- Anthropic: https://docs.anthropic.com/en/docs/about-claude/pricing\n"
+            f"- OpenAI: https://platform.openai.com/docs/pricing"
+        )
+        return {"lookup_prompt": prompt, "model": model, "provider": provider}
+
+    else:
+        return {"error": f"Unknown action '{action}'. Use 'list', 'add', or 'lookup'."}
+
+
 if __name__ == "__main__":
     mcp.run()

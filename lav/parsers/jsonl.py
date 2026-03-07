@@ -318,6 +318,22 @@ CREATE TABLE IF NOT EXISTS interaction_metadata (
 CREATE INDEX IF NOT EXISTS idx_intmeta_classification ON interaction_metadata(classification);
 CREATE INDEX IF NOT EXISTS idx_intmeta_sensitivity ON interaction_metadata(data_sensitivity);
 CREATE INDEX IF NOT EXISTS idx_intmeta_project ON interaction_metadata(project_id);
+
+-- Model pricing (costs calculated at query time via JOIN)
+CREATE TABLE IF NOT EXISTS model_pricing (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    model TEXT NOT NULL,
+    provider TEXT,
+    input_price_per_mtok REAL NOT NULL,
+    output_price_per_mtok REAL NOT NULL,
+    cache_write_price_per_mtok REAL DEFAULT 0,
+    cache_read_price_per_mtok REAL DEFAULT 0,
+    from_date TEXT NOT NULL,
+    to_date TEXT,
+    notes TEXT,
+    UNIQUE(model, from_date)
+);
+CREATE INDEX IF NOT EXISTS idx_pricing_model_date ON model_pricing(model, from_date);
 """
 
 PRAGMAS = """
@@ -400,6 +416,9 @@ def init_db(db_path: Path = UNIFIED_DB_PATH) -> sqlite3.Connection:
     conn.executescript(PRAGMAS)
     conn.executescript(SCHEMA)
     conn.commit()
+    # Seed default model pricing
+    from lav.pricing import seed_default_pricing
+    seed_default_pricing(conn)
     # Migrate existing DBs that lack host_id in parse_state
     try:
         _migrate_parse_state(conn)

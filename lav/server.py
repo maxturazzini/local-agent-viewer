@@ -24,6 +24,7 @@ from typing import Optional
 from urllib.parse import urlparse, parse_qs, unquote
 
 from lav import PACKAGE_DIR
+from lav import config
 from lav.config import (
     UNIFIED_DB_PATH,
     QDRANT_DATA_DIR,
@@ -264,7 +265,7 @@ def pull_from_agents(conn, agents_config: list, agent_filter: str = None, full: 
 # ===========================================================================
 
 def _auto_classify_new(conv_ids: set = None) -> int:
-    """Classify new interactions using OpenAI gpt-4.1-mini.
+    """Classify new interactions using the configured OpenAI-compatible model.
 
     Called automatically after sync with the set of (session_id, project_id)
     tuples that were added during this sync. Only classifies those.
@@ -313,9 +314,12 @@ def _auto_classify_new(conv_ids: set = None) -> int:
         import openai
         from lav.classifiers.openai_classifier import classify_interaction
 
-        client = openai.OpenAI(api_key=api_key)
+        client_kwargs = {"api_key": api_key}
+        if config.CLASSIFY_BASE_URL:
+            client_kwargs["base_url"] = config.CLASSIFY_BASE_URL
+        client = openai.OpenAI(**client_kwargs)
         write_conn = init_db(UNIFIED_DB_PATH)
-        model = "gpt-4.1-mini"
+        model = config.CLASSIFY_MODEL
         classified = 0
 
         for conv in candidates:
@@ -689,6 +693,7 @@ class APIHandler(SimpleHTTPRequestHandler):
                     "cache_creation": token_totals.get("cache_creation", 0),
                     "cache_read": token_totals.get("cache_read", 0),
                     "total": total_tokens,
+                    "cost_usd": token_totals.get("cost_usd") or 0,
                     "by_model": tokens_data.get("by_model", []),
                     "daily": tokens_data.get("daily", []),
                     "by_source": tokens_data.get("by_source", []),
@@ -708,6 +713,7 @@ class APIHandler(SimpleHTTPRequestHandler):
                     # Top-level summaries
                     "total_interactions": conv_row[0] if conv_row else 0,
                     "total_tokens": total_tokens,
+                    "total_cost": token_totals.get("cost_usd") or 0,
                     "total_messages": msg_row[0] if msg_row else 0,
                     "total_file_ops": files_data.get("totals", {}).get("total_ops", 0),
                     "total_bash": bash_data.get("totals", {}).get("total_commands", 0),
@@ -726,6 +732,23 @@ class APIHandler(SimpleHTTPRequestHandler):
                     "searches": searches_data,
                     "clients": get_client_stats(conn, **filter_kwargs),
                 }
+                self.send_json(data)
+            finally:
+                conn.close()
+            return
+
+        # ==== PRICING ====
+
+        if path == "/api/pricing":
+            conn = get_read_connection()
+            if not conn:
+                self.send_json([])
+                return
+            try:
+                from lav.pricing import get_pricing
+                model = params.get("model", [None])[0]
+                show_all = params.get("all", ["0"])[0] == "1"
+                data = get_pricing(conn, model=model, active_only=not show_all)
                 self.send_json(data)
             finally:
                 conn.close()
