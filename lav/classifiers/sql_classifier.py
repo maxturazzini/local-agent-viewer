@@ -26,6 +26,7 @@ from datetime import datetime
 from pathlib import Path
 
 import lav  # noqa: F401 — triggers .env loading
+from lav import config
 from lav.config import UNIFIED_DB_PATH
 
 
@@ -192,8 +193,9 @@ def run(
     username: str = "",
     min_messages: int = 0,
     since: str = "",
-    model: str = "gpt-4.1-mini",
+    model: str = "",
 ):
+    model = model or config.CLASSIFY_MODEL
     print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] sql_classifier START")
     print(f"  DB: {UNIFIED_DB_PATH}")
     print(f"  Model: {model}")
@@ -244,7 +246,10 @@ def run(
     openai_client = None
     if not dry_run:
         import openai
-        openai_client = openai.OpenAI(api_key=api_key)
+        client_kwargs = {"api_key": api_key}
+        if config.CLASSIFY_BASE_URL:
+            client_kwargs["base_url"] = config.CLASSIFY_BASE_URL
+        openai_client = openai.OpenAI(**client_kwargs)
 
     from lav.classifiers.openai_classifier import classify_interaction
 
@@ -321,7 +326,7 @@ def run(
 
 def _build_parser():
     parser = argparse.ArgumentParser(
-        description="SQL-based interaction classifier (gpt-4o-mini)",
+        description="SQL-based interaction classifier",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -350,8 +355,8 @@ Examples:
         help="Only classify from this date onward")
     parser.add_argument("--limit", type=int, default=0, metavar="N",
         help="Process at most N interactions (0 = no limit)")
-    parser.add_argument("--model", default="gpt-4.1-mini",
-        help="OpenAI model (default: gpt-4o-mini)")
+    parser.add_argument("--model", default="",
+        help=f"OpenAI model (default: {config.CLASSIFY_MODEL})")
     parser.add_argument("--dry-run", action="store_true",
         help="Preview without writing to DB")
 
