@@ -28,14 +28,14 @@ lav-mcp                       # MCP server (needs fastmcp)
 
 Server at http://localhost:8764 — dashboard.html, interactions.html, tags.html.
 
-**No test suite exists.** Manual testing via the running server and CLI commands.
+**No unit test suite.** Manual testing via the running server and CLI commands. Classification model evals in `tests/evals/` (`eval_classify.py`), reports in `tests/evals/results/`.
 
 ## Architecture
 
 ### Three-layer data pipeline
 
 1. **Parse → SQLite** (`lav/parsers/`) — raw interactions, tokens, files, tools, costs
-2. **Classify → `interaction_metadata`** (`lav/classifiers/`) — AI classification via gpt-4.1-mini (optional)
+2. **Classify → `interaction_metadata`** (`lav/classifiers/`) — AI classification via configurable model (OpenAI, Ollama, vLLM, any OpenAI-compatible endpoint) (optional)
 3. **Index → Qdrant** (`lav/qdrant/`) — vector embeddings for semantic search (optional)
 
 Each layer is independent. The core works with just layer 1.
@@ -82,9 +82,20 @@ Vanilla HTML/JS/CSS + Chart.js CDN. Three pages: dashboard (6 sub-tabs), interac
 - `lav/__init__.py` must be imported before `lav.config` (enforced by import order in server.py)
 - Version lives in `pyproject.toml` only, read via `importlib.metadata` in `lav/__init__.__version__`
 
+**Classification env vars** (all optional, in `.env`):
+- `LAV_CLASSIFY_MODEL` — model name (default: `gpt-4.1-mini`)
+- `LAV_CLASSIFY_BASE_URL` — OpenAI-compatible endpoint for Ollama/vLLM/Azure (empty = OpenAI default). When set, falls back to `json_object` mode instead of strict `json_schema`.
+- `LAV_CLASSIFY_SYSTEM_PROMPT` — custom prompt: inline text or file path (empty = built-in)
+- `LAV_CLASSIFY_MAX_CHARS` — max chars of interaction text sent to the model (default: `12000`)
+- `LAV_CLASSIFY_LANGUAGE` — language for summary/abstract/process output (default: `en`)
+
 ### Key conventions
 
-- **`internal_docs/`** is gitignored — private notes and TODO, not shipped
+- **Jira workflow**: transition tasks to In Progress when starting, Done **only after end-to-end testing**. Never close before verifying.
+- **Jira conversation references**: when completing work on a Jira ticket, add a comment with: (1) summary of decisions made, (2) key results (e.g. eval metrics), (3) Claude Code session ID for traceability.
+- **Completion checklist**: code tested e2e → CLAUDE.md updated (if env/architecture changed) → README updated (if user-facing) → .env.example updated (if new env vars) → ask user about commit
+- **`internal_docs/`** is gitignored — private notes, not shipped
+- **Jira project `LAV`** on aimaxplayground.atlassian.net tracks all TODO/backlog (epics + tasks). No local TODO files — use Jira as single source of truth
 - **Sentinel values**: `parse_state` uses `project_id=-1` and `source=''` (never NULL)
 - **Per-project commits** in parsers for crash resilience
 - **`conversation_id`** in `chatgpt.py` is OpenAI's external field name — not a bug, don't rename

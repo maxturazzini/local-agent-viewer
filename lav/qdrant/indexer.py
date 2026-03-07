@@ -12,6 +12,7 @@ import re
 
 import anthropic
 
+from lav import config
 from .store import InteractionVectorStore
 
 
@@ -98,14 +99,8 @@ def generate_tags(text: str, api_key: Optional[str] = None) -> Dict[str, Any]:
 class InteractionIndexer:
     """Pipeline: messages -> payload -> embedding -> Qdrant."""
 
-    VALID_CLASSIFICATIONS = {
-        "development", "meeting", "analysis",
-        "brainstorm", "support", "learning"
-    }
-
-    VALID_SENSITIVITIES = {
-        "public", "internal", "confidential", "restricted"
-    }
+    VALID_CLASSIFICATIONS = set(config.CLASSIFICATIONS)
+    VALID_SENSITIVITIES = set(config.SENSITIVITIES)
 
     def __init__(
         self,

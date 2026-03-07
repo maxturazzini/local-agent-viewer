@@ -77,6 +77,24 @@ EMBEDDING_VECTOR_SIZE = 1536
 
 TAGGING_MODEL = "claude-haiku-4-5-20251001"
 
+# ===========================================================================
+# CLASSIFICATION (configurable via .env)
+# ===========================================================================
+
+CLASSIFY_MODEL = os.getenv("LAV_CLASSIFY_MODEL", "gpt-4.1-mini")
+CLASSIFY_BASE_URL = os.getenv("LAV_CLASSIFY_BASE_URL", "")
+
+# System prompt: empty = built-in default; file path = read from file; otherwise inline text
+_classify_prompt_val = os.getenv("LAV_CLASSIFY_SYSTEM_PROMPT", "")
+if _classify_prompt_val and os.path.isfile(_classify_prompt_val):
+    with open(_classify_prompt_val, encoding="utf-8") as _f:
+        CLASSIFY_SYSTEM_PROMPT = _f.read()
+else:
+    CLASSIFY_SYSTEM_PROMPT = _classify_prompt_val
+
+CLASSIFY_MAX_CHARS = int(os.getenv("LAV_CLASSIFY_MAX_CHARS", "12000"))
+CLASSIFY_LANGUAGE = os.getenv("LAV_CLASSIFY_LANGUAGE", "en")
+
 CLASSIFICATIONS = [
     "development",
     "meeting",
@@ -84,6 +102,13 @@ CLASSIFICATIONS = [
     "brainstorm",
     "support",
     "learning",
+]
+
+SENSITIVITIES = [
+    "public",
+    "internal",
+    "confidential",
+    "restricted",
 ]
 
 
