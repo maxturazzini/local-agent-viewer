@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.1 — 2026-03-07
+
+Classification prompt & config optimization (LAV-32).
+
+- Reorder JSON schema fields: descriptive first, classification last (implicit chain-of-thought)
+- Rewrite system prompt with disambiguation rules and examples, optimized for small models
+- Filter tool_result noise from classification input
+- Centralize CLASSIFICATIONS and SENSITIVITIES enums in config.py
+- New env vars: `LAV_CLASSIFY_MAX_CHARS` (default 12000), `LAV_CLASSIFY_LANGUAGE` (default en)
+- Raise max_tokens from 500 to 2000
+- Add classification eval framework (`tests/evals/`)
+
 ## 0.1.0 — 2026-03-06
 
 Initial public release.

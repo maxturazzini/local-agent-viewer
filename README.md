@@ -99,6 +99,11 @@ OPENAI_API_KEY=sk-...            # AI classification (lav-classify)
 ANTHROPIC_API_KEY=sk-ant-...     # Qdrant KB embedding (lav-index)
 QDRANT_URL=http://localhost:6333 # Qdrant server URL
 CHATGPT_EXPORT_PATH=             # Path to ChatGPT conversations.json
+
+# Classification config (optional — defaults work with OpenAI)
+# LAV_CLASSIFY_MODEL=gpt-4.1-mini
+# LAV_CLASSIFY_BASE_URL=http://localhost:11434/v1  # Ollama, vLLM, Azure, etc.
+# LAV_CLASSIFY_SYSTEM_PROMPT=/path/to/prompt.txt   # or inline text
 ```
 
 ## Quick Start
@@ -209,6 +214,20 @@ lav-classify --dry-run    # preview
 ```
 
 Also runs automatically after each sync when `OPENAI_API_KEY` is set.
+
+**Configuration** — all optional, set in `.env`:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LAV_CLASSIFY_MODEL` | `gpt-4.1-mini` | Model name (any OpenAI-compatible model) |
+| `LAV_CLASSIFY_BASE_URL` | *(OpenAI default)* | API endpoint — e.g. `http://localhost:11434/v1` for Ollama |
+| `LAV_CLASSIFY_SYSTEM_PROMPT` | *(built-in)* | Custom system prompt: inline text or path to a `.txt` file |
+| `LAV_CLASSIFY_MAX_CHARS` | `12000` | Max chars of interaction text sent to the model |
+| `LAV_CLASSIFY_LANGUAGE` | `en` | Language for summary/abstract/process fields (enum fields stay English) |
+
+The `--model` CLI flag overrides `LAV_CLASSIFY_MODEL` for a single run.
+
+> **Note on small models:** The built-in prompt is optimized for small local models (phi4-mini, etc.). Avoid uppercase/NOT-heavy custom prompts — some small models enter degenerate repetition loops. See `tests/evals/` for model comparison reports.
 
 ### MCP Server
 Expose your analytics to AI tools via the [Model Context Protocol](https://modelcontextprotocol.io). This lets Claude Code, Claude Desktop, or any MCP-compatible client query your interaction history, search the knowledge base, and trigger syncs — all through natural language.
@@ -480,6 +499,10 @@ local-agent-viewer/
 │   └── tags.html                  # Tag cloud + stats
 ├── scripts/
 │   └── migrate.py                 # Migration from claude-parser
+├── tests/
+│   └── evals/
+│       ├── eval_classify.py       # Classification model eval (multi-model comparison)
+│       └── results/               # Eval reports (markdown)
 ├── config.agent.example.json      # Example config for agent machines
 ├── config.collector.example.json  # Example config for collector machine
 ├── pyproject.toml                 # Package config + CLI entry points
