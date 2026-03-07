@@ -24,6 +24,9 @@ lav-server                    # start server on :8764
 lav-classify                  # AI classification (needs OPENAI_API_KEY)
 lav-index                     # Qdrant vector indexing
 lav-mcp                       # MCP server (needs fastmcp)
+lav-pricing list              # list model pricing
+lav-pricing add --model X ... # add/update pricing entry
+lav-pricing seed              # insert default pricing data
 ```
 
 Server at http://localhost:8764 — dashboard.html, interactions.html, tags.html.
@@ -52,6 +55,8 @@ Single SQLite DB at `~/.local/share/local-agent-viewer/local_agent_viewer.db`.
 
 Composite PK: `interactions(session_id, project_id)`. Append-only — records are never deleted.
 
+**Cost tracking**: `model_pricing` table stores per-model prices with temporal validity (`from_date`/`to_date`). Costs are calculated at query time via LEFT JOIN — never materialized. Table is seeded automatically by `init_db()`. CLI: `lav-pricing`. MCP tool: `manage_pricing`. API: `/api/pricing`.
+
 ### Server (`lav/server.py`)
 
 ThreadingHTTPServer with role gating:
@@ -69,7 +74,7 @@ Code is shared (git). Runtime config is per-machine at `~/.local/share/local-age
 
 ### MCP Server (`lav/mcp_server.py`)
 
-FastMCP server with 8 tools. Read tools use `LAV_READ_API_KEY` (optional). Write tools require `LAV_API_KEY`.
+FastMCP server with 9 tools (8 original + `manage_pricing`). Read tools use `LAV_READ_API_KEY` (optional). Write tools require `LAV_API_KEY`.
 
 ### Frontend (`lav/static/`)
 
@@ -91,9 +96,14 @@ Vanilla HTML/JS/CSS + Chart.js CDN. Three pages: dashboard (6 sub-tabs), interac
 
 ### Key conventions
 
-- **Jira workflow**: transition tasks to In Progress when starting, Done **only after end-to-end testing**. Never close before verifying.
-- **Jira conversation references**: when completing work on a Jira ticket, add a comment with: (1) summary of decisions made, (2) key results (e.g. eval metrics), (3) Claude Code session ID for traceability.
-- **Completion checklist**: code tested e2e → CLAUDE.md updated (if env/architecture changed) → README updated (if user-facing) → .env.example updated (if new env vars) → ask user about commit
+- **Development workflow**:
+  1. Pick Jira ticket → transition to **In Progress**
+  2. **Plan**: propose approach and ask user for approval before coding
+  3. Develop → test e2e (manual — no test suite)
+  4. Update docs: CLAUDE.md (if env/architecture changed) → README (if user-facing) → .env.example (if new env vars) → `docs/CHANGELOG.md` (always — add entry under current version)
+  5. Ask user about commit → commit with ticket ref (e.g. `LAV-32: ...`)
+  6. Add Jira comment: decisions made, key results, Claude Code session ID
+  7. Transition to **Done** (only after all above)
 - **`internal_docs/`** is gitignored — private notes, not shipped
 - **Jira project `LAV`** on aimaxplayground.atlassian.net tracks all TODO/backlog (epics + tasks). No local TODO files — use Jira as single source of truth
 - **Sentinel values**: `parse_state` uses `project_id=-1` and `source=''` (never NULL)
