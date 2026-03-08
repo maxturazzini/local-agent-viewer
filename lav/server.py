@@ -243,8 +243,13 @@ def pull_from_agents(conn, agents_config: list, agent_filter: str = None, full: 
                     package.get("host", {}),
                     package.get("user", {}),
                 )
+                imported_timestamps = [
+                    s.get("interaction", {}).get("timestamp", "")
+                    for s in package.get("sessions", [])
+                ]
+                latest_ts = max((t for t in imported_timestamps if t), default=None)
                 set_parse_state(conn, f"last_pull:{name}",
-                                datetime.now().isoformat(),
+                                latest_ts or datetime.now().isoformat(),
                                 project_id=-1, source="remote", host_id=-1)
                 conn.commit()
                 print(f"[pull] Agent '{name}' OK — {stats}")
@@ -267,17 +272,14 @@ def pull_from_agents(conn, agents_config: list, agent_filter: str = None, full: 
 def _auto_classify_new(conv_ids: set = None) -> int:
     """Classify new interactions using the configured OpenAI-compatible model.
 
-    Called automatically after sync with the set of (session_id, project_id)
-    tuples that were added during this sync. Only classifies those.
+    If conv_ids is provided, only those sessions are candidates.
+    If conv_ids is None, sweeps ALL unclassified sessions in the DB.
     Skips silently if OPENAI_API_KEY is not set.
     """
     import os
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         print("[classify] Skipped — OPENAI_API_KEY not set")
-        return 0
-
-    if not conv_ids:
         return 0
 
     try:
@@ -287,22 +289,33 @@ def _auto_classify_new(conv_ids: set = None) -> int:
         read_conn.execute("PRAGMA busy_timeout=5000")
         read_conn.execute("PRAGMA query_only=ON")
 
-        # Filter to only unclassified ones with >= 2 messages
-        placeholders = ",".join(["(?,?)"] * len(conv_ids))
-        flat_params = []
-        for sid, pid in conv_ids:
-            flat_params.extend([sid, pid])
-
-        candidates = read_conn.execute(f"""
-            SELECT c.session_id, c.project_id, c.message_count
-            FROM interactions c
-            LEFT JOIN interaction_metadata cm
-                ON cm.session_id = c.session_id AND cm.project_id = c.project_id
-            WHERE cm.session_id IS NULL
-              AND c.message_count >= 2
-              AND (c.session_id, c.project_id) IN ({placeholders})
-            ORDER BY c.timestamp DESC
-        """, flat_params).fetchall()
+        if conv_ids:
+            # Filter to provided sessions that are unclassified with >= 2 messages
+            placeholders = ",".join(["(?,?)"] * len(conv_ids))
+            flat_params = []
+            for sid, pid in conv_ids:
+                flat_params.extend([sid, pid])
+            candidates = read_conn.execute(f"""
+                SELECT c.session_id, c.project_id, c.message_count
+                FROM interactions c
+                LEFT JOIN interaction_metadata cm
+                    ON cm.session_id = c.session_id AND cm.project_id = c.project_id
+                WHERE cm.session_id IS NULL
+                  AND c.message_count >= 2
+                  AND (c.session_id, c.project_id) IN ({placeholders})
+                ORDER BY c.timestamp DESC
+            """, flat_params).fetchall()
+        else:
+            # Sweep all unclassified sessions with >= 2 messages
+            candidates = read_conn.execute("""
+                SELECT c.session_id, c.project_id, c.message_count
+                FROM interactions c
+                LEFT JOIN interaction_metadata cm
+                    ON cm.session_id = c.session_id AND cm.project_id = c.project_id
+                WHERE cm.session_id IS NULL
+                  AND c.message_count >= 2
+                ORDER BY c.timestamp DESC
+            """).fetchall()
 
         if not candidates:
             read_conn.close()
@@ -497,8 +510,9 @@ def sync_data(scope: str, project: str = None, user: str = None,
             new_conv_ids = _post_sync_ids - _pre_sync_ids
             conn.close()
 
-            # Auto-classify only newly synced interactions
+            # Classify newly synced interactions, then sweep any remaining unclassified
             classify_count = _auto_classify_new(conv_ids=new_conv_ids) if new_conv_ids else 0
+            classify_count += _auto_classify_new(conv_ids=None)
 
             _sync_status["running"] = False
             _sync_status["progress"] = "completed"
