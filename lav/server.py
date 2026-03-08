@@ -248,9 +248,14 @@ def pull_from_agents(conn, agents_config: list, agent_filter: str = None, full: 
                     for s in package.get("sessions", [])
                 ]
                 latest_ts = max((t for t in imported_timestamps if t), default=None)
-                set_parse_state(conn, f"last_pull:{name}",
-                                latest_ts or datetime.now().isoformat(),
-                                project_id=-1, source="remote", host_id=-1)
+                # Only advance cursor when sessions were actually imported.
+                # When nothing arrives, keep the cursor where it was so the
+                # next pull retries from the same point (avoids skipping sessions
+                # that arrive on the agent after the pull window opens).
+                if latest_ts:
+                    set_parse_state(conn, f"last_pull:{name}",
+                                    latest_ts,
+                                    project_id=-1, source="remote", host_id=-1)
                 conn.commit()
                 print(f"[pull] Agent '{name}' OK — {stats}")
                 results[name] = {"status": "ok", "url": url, "since": since, **stats}
