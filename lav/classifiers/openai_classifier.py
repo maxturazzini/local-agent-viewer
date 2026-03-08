@@ -266,13 +266,13 @@ def classify_interaction(
         # Embed a concrete JSON sample in the user message — models follow
         # by-example much more reliably than schema/format instructions.
         sample_json = (
-            '{"summary": "User debugged a Python import error", '
+            '{"classification": "support", '
+            '"data_sensitivity": "internal", '
+            '"summary": "User debugged a Python import error", '
             '"abstract": "User encountered a ModuleNotFoundError. The fix was reinstalling the package.", '
             '"process": "debug python dependency", '
             '"topics": ["python", "import", "debugging"], '
             '"people": [], "clients": [], '
-            '"classification": "support", '
-            '"data_sensitivity": "internal", '
             '"sensitive_data_types": []}'
         )
         user_content = (
