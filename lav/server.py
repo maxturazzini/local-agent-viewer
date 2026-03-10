@@ -101,6 +101,11 @@ _sync_status = {
     "started": None,
     "last_completed": None,
 }
+_classify_status = {
+    "running": False,
+    "last_completed": None,
+    "last_count": 0,
+}
 
 
 def get_kb_store(require_openai: bool = True):
@@ -515,10 +520,7 @@ def sync_data(scope: str, project: str = None, user: str = None,
             new_conv_ids = _post_sync_ids - _pre_sync_ids
             conn.close()
 
-            # Classify newly synced interactions, then sweep any remaining unclassified
-            classify_count = _auto_classify_new(conv_ids=new_conv_ids) if new_conv_ids else 0
-            classify_count += _auto_classify_new(conv_ids=None)
-
+            # Mark sync as completed BEFORE classification so new syncs aren't blocked
             _sync_status["running"] = False
             _sync_status["progress"] = "completed"
             _sync_status["last_completed"] = datetime.now().isoformat()
@@ -530,8 +532,29 @@ def sync_data(scope: str, project: str = None, user: str = None,
             }
             if pull_results:
                 response["pull"] = pull_results
-            if classify_count:
-                response["classified"] = classify_count
+
+            # Run classification in background thread (non-blocking)
+            import threading
+            def _bg_classify(conv_ids):
+                global _classify_status
+                try:
+                    _classify_status["running"] = True
+                    count = _auto_classify_new(conv_ids=conv_ids) if conv_ids else 0
+                    count += _auto_classify_new(conv_ids=None)
+                    _classify_status["running"] = False
+                    _classify_status["last_completed"] = datetime.now().isoformat()
+                    _classify_status["last_count"] = count
+                    print(f"[classify] Background classification done: {count}")
+                except Exception as e:
+                    _classify_status["running"] = False
+                    print(f"[classify] Background classification error: {e}")
+
+            threading.Thread(
+                target=_bg_classify,
+                args=(new_conv_ids if new_conv_ids else None,),
+                daemon=True,
+            ).start()
+
             return response
 
         except Exception as e:
