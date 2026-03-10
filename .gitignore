@@ -8,3 +8,7 @@ __pycache__/
 *.db-shm
 .DS_Store
 internal_docs/
+.vscode/
+build/
+*.egg-info/
+test-results/
