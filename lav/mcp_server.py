@@ -496,5 +496,9 @@ def manage_pricing(
         return {"error": f"Unknown action '{action}'. Use 'list', 'add', or 'lookup'."}
 
 
-if __name__ == "__main__":
+def main():
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()
