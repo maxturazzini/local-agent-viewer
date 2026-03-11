@@ -954,7 +954,7 @@
 
     function buildQueryParams() {
         const params = new URLSearchParams();
-        if (state.projectId) params.set('project', state.projectId);
+        if (state.project) params.set('project', state.project);
         if (state.user) params.set('user', state.user);
         if (state.host) params.set('host', state.host);
         if (state.source) params.set('client', state.source);

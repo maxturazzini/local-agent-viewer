@@ -1228,6 +1228,8 @@ def get_tagcloud_data(conn, project_id=None, user_id=None, host_id=None,
             else:
                 items = []
             for item in items:
+                if not isinstance(item, str):
+                    continue
                 item = item.strip()
                 if item:
                     counters[field][item] = counters[field].get(item, 0) + 1
