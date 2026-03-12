@@ -897,7 +897,7 @@
         user: null,
         host: null,
         source: null,
-        startDate: (() => { const d = new Date(); d.setDate(d.getDate() - 7); return d.toISOString().split('T')[0]; })(),
+        startDate: (() => { const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().split('T')[0]; })(),
         endDate: new Date().toISOString().split('T')[0],
         search: '',
         offset: 0,
@@ -1171,7 +1171,7 @@
         state.search = '';
         const now = new Date();
         const start = new Date(now);
-        start.setDate(start.getDate() - 7);
+        start.setDate(start.getDate() - 30);
         state.startDate = start.toISOString().split('T')[0];
         state.endDate = now.toISOString().split('T')[0];
         document.getElementById('searchInput').value = '';

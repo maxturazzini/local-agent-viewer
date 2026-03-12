@@ -699,10 +699,16 @@ def get_interactions_list(conn, project_id=None, user_id=None, host_id=None,
     join = _join_session_sources('c')
 
     if search:
-        # If search looks like a UUID/session_id, match directly
+        # If search looks like a UUID/session_id, match directly and drop date
+        # filters so the result is always found regardless of date range.
         import re
         if re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-', search, re.IGNORECASE):
             extra = "c.session_id = ?"
+            # Rebuild filters without date constraints
+            where, params = build_filters(
+                project_id=project_id, user_id=user_id, host_id=host_id,
+                client=client_source, table_alias='c'
+            )
         else:
             extra = """c.session_id IN (
                 SELECT DISTINCT m.session_id FROM messages m
