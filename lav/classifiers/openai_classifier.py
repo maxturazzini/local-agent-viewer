@@ -1,11 +1,14 @@
 """
-OpenAI-based interaction classifier using Structured Outputs.
+Shared classification utilities and dispatcher.
 
-Schema identical to Qdrant KB for 1:1 comparison, plus `process` field.
+Schema, sanitization, JSON parsing, message preparation are shared across
+both classification backends (openai_strict, ollama_compat).
+The classify_interaction() dispatcher routes to the correct backend.
 """
 
 import json
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List
 
 from lav import config
 
@@ -66,65 +69,6 @@ CLASSIFICATION_SCHEMA = {
     "additionalProperties": False,
 }
 
-_LANGUAGE_INSTRUCTION = ""
-if config.CLASSIFY_LANGUAGE and config.CLASSIFY_LANGUAGE != "en":
-    _LANGUAGE_INSTRUCTION = f"""
-Write summary, abstract, and process in {config.CLASSIFY_LANGUAGE}. All other fields (topics, people, clients, classification, data_sensitivity, sensitive_data_types) must stay in English."""
-
-SYSTEM_PROMPT = f"""You classify user-AI interactions into structured JSON metadata. All fields are required.
-
-Fields (output in this order):
-1. summary: 1 sentence describing what the user did or asked
-2. abstract: 2-3 sentences with context, problem, decisions
-3. process: concrete workflow name (e.g. "debug deploy pipeline"), empty string if unclear
-4. topics: 1-5 specific keywords (e.g. "Azure architecture", "sales pipeline"), avoid generic terms
-5. people: third-party names mentioned (exclude the user and the assistant), empty array if none
-6. clients: companies or clients mentioned, empty array if none
-7. classification: one value from the list below
-8. data_sensitivity: one value from the list below
-9. sensitive_data_types: relevant types from the list below, empty array if data_sensitivity is "public"
-
-## classification — based on what the user DOES in the conversation
-
-- development: actively writing, editing, or committing code
-- analysis: reviewing, researching, evaluating, comparing data or options
-- brainstorm: generating ideas, planning strategy, creating content (blogs, presentations)
-- meeting: meetings, calls, scheduling, role-play conversations, sales simulations
-- support: fixing something broken, debugging errors, troubleshooting
-- learning: studying, tutorials, asking how something works
-
-Important: reviewing or discussing code/architecture without editing it = analysis, writing new code = development.
-
-Examples: review a technical spec → analysis | plan courses to sell → brainstorm | analyze a transcript → analysis | write a function → development | simulate a sales call → meeting
-
-## data_sensitivity
-- public: generic discussion, no names, no internal details
-- internal: internal work, architecture, tools
-- confidential: client data, strategies, pricing
-- restricted: credentials, tokens, API keys, financial data
-
-Rule: if people is non-empty, data_sensitivity must be at least "internal".
-
-## sensitive_data_types (when applicable)
-credentials, api_keys, financial, personal_data, client_strategy, pricing, contracts, internal_architecture, employee_data{_LANGUAGE_INSTRUCTION}"""
-
-# Appended to system prompt when using non-OpenAI endpoints (no json_schema support)
-JSON_SCHEMA_INSTRUCTION = """
-
-You MUST respond with ONLY a valid JSON object (no markdown, no explanation, no ```json blocks).
-Use exactly this structure:
-{
-  "summary": "string",
-  "abstract": "string",
-  "process": "string",
-  "topics": ["string"],
-  "people": ["string"],
-  "clients": ["string"],
-  "classification": "development|meeting|analysis|brainstorm|support|learning",
-  "data_sensitivity": "public|internal|confidential|restricted",
-  "sensitive_data_types": ["string"]
-}"""
-
 VALID_CLASSIFICATIONS = set(config.CLASSIFICATIONS)
 VALID_SENSITIVITIES = set(config.SENSITIVITIES)
 
@@ -178,7 +122,6 @@ def _parse_json_response(content: str) -> dict:
             lines = lines[:-1]
         text = "\n".join(lines)
     # Strip thinking tags (Qwen, DeepSeek)
-    import re
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     # Find first { to last }
     start = text.find("{")
@@ -228,76 +171,27 @@ def prepare_messages_for_classification(messages: List[Dict]) -> str:
     return text[:config.CLASSIFY_MAX_CHARS]
 
 
+def _resolve_backend() -> str:
+    """Resolve which backend to use based on config."""
+    backend = config.CLASSIFY_BACKEND
+    if backend == "auto":
+        return "ollama" if config.CLASSIFY_BASE_URL else "openai"
+    return backend
+
+
 def classify_interaction(
     messages: List[Dict],
     openai_client,
     model: str = "",
 ) -> Dict[str, Any]:
-    """Classify an interaction using OpenAI or any OpenAI-compatible API.
+    """Classify an interaction, dispatching to the correct backend.
 
-    Uses strict json_schema on OpenAI, falls back to json_object + prompt
-    instructions for other endpoints (Ollama, vLLM, Azure, etc.).
-
-    Returns dict with summary, abstract, process, topics, people, clients,
-    classification, data_sensitivity, sensitive_data_types.
+    Backend is determined by LAV_CLASSIFY_BACKEND (auto/openai/ollama).
+    When auto: uses openai if no BASE_URL, ollama otherwise.
     """
-    model = model or config.CLASSIFY_MODEL
-    system_prompt = config.CLASSIFY_SYSTEM_PROMPT or SYSTEM_PROMPT
-    use_strict = not config.CLASSIFY_BASE_URL  # strict json_schema only on OpenAI
-
-    text = prepare_messages_for_classification(messages)
-
-    if not text.strip():
-        result = dict(_EMPTY_RESULT)
-        result["summary"] = "(empty interaction)"
-        return result
-
-    if use_strict:
-        response_format = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "interaction_metadata",
-                "strict": True,
-                "schema": CLASSIFICATION_SCHEMA,
-            },
-        }
+    backend = _resolve_backend()
+    if backend == "openai":
+        from lav.classifiers.openai_strict import classify
     else:
-        # Non-OpenAI endpoints (Ollama, etc.) often ignore response_format.
-        # Embed a concrete JSON sample in the user message — models follow
-        # by-example much more reliably than schema/format instructions.
-        sample_json = (
-            '{"classification": "support", '
-            '"data_sensitivity": "internal", '
-            '"summary": "User debugged a Python import error", '
-            '"abstract": "User encountered a ModuleNotFoundError. The fix was reinstalling the package.", '
-            '"process": "debug python dependency", '
-            '"topics": ["python", "import", "debugging"], '
-            '"people": [], "clients": [], '
-            '"sensitive_data_types": []}'
-        )
-        user_content = (
-            f"Classify this interaction and return ONLY a JSON object (no markdown, no explanation).\n\n"
-            f"Interaction:\n{text}\n\n"
-            f"Return JSON exactly like this example:\n{sample_json}\n\n"
-            f"Your JSON:"
-        )
-        response = openai_client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": user_content}],
-            max_tokens=2000,
-        )
-        raw = _parse_json_response(response.choices[0].message.content)
-        return _sanitize_result(raw)
-
-    response = openai_client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Classify this interaction:\n\n{text}"},
-        ],
-        response_format=response_format,
-        max_tokens=2000,
-    )
-
-    raw = _parse_json_response(response.choices[0].message.content)
-    return _sanitize_result(raw)
+        from lav.classifiers.ollama_compat import classify
+    return classify(messages, openai_client, model)

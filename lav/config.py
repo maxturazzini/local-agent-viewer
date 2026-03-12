@@ -92,6 +92,7 @@ if _classify_prompt_val and os.path.isfile(_classify_prompt_val):
 else:
     CLASSIFY_SYSTEM_PROMPT = _classify_prompt_val
 
+CLASSIFY_BACKEND = os.getenv("LAV_CLASSIFY_BACKEND", "auto")  # auto, openai, ollama
 CLASSIFY_MAX_CHARS = int(os.getenv("LAV_CLASSIFY_MAX_CHARS", "12000"))
 CLASSIFY_LANGUAGE = os.getenv("LAV_CLASSIFY_LANGUAGE", "en")
 
@@ -102,6 +103,8 @@ CLASSIFICATIONS = [
     "brainstorm",
     "support",
     "learning",
+    "marketing",
+    "operations",
 ]
 
 SENSITIVITIES = [

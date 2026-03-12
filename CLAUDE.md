@@ -88,8 +88,9 @@ Vanilla HTML/JS/CSS + Chart.js CDN. Three pages: dashboard (6 sub-tabs), interac
 - Version lives in `pyproject.toml` only, read via `importlib.metadata` in `lav/__init__.__version__`
 
 **Classification env vars** (all optional, in `.env`):
+- `LAV_CLASSIFY_BACKEND` — `auto` (default), `openai`, `ollama`. Auto: openai when no BASE_URL, ollama otherwise.
 - `LAV_CLASSIFY_MODEL` — model name (default: `gpt-4.1-mini`)
-- `LAV_CLASSIFY_BASE_URL` — OpenAI-compatible endpoint for Ollama/vLLM/Azure (empty = OpenAI default). When set, falls back to `json_object` mode instead of strict `json_schema`.
+- `LAV_CLASSIFY_BASE_URL` — OpenAI-compatible endpoint for Ollama/vLLM/Azure (empty = OpenAI default)
 - `LAV_CLASSIFY_SYSTEM_PROMPT` — custom prompt: inline text or file path (empty = built-in)
 - `LAV_CLASSIFY_MAX_CHARS` — max chars of interaction text sent to the model (default: `12000`)
 - `LAV_CLASSIFY_LANGUAGE` — language for summary/abstract/process output (default: `en`)

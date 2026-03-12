@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.2 — 2026-03-12
+
+Separate OpenAI and Ollama classification backends + new categories.
+- Split `openai_classifier.py` into shared module + dispatcher, `openai_strict.py` (OpenAI json_schema), `ollama_compat.py` (example-based prompting)
+- New env var `LAV_CLASSIFY_BACKEND` (auto/openai/ollama) — auto preserves existing behavior
+- New classification categories: `marketing` (sales, campaigns, outreach) and `operations` (admin, finance, HR, non-code workflows)
+- Fix: Ollama path now sends system prompt and language instruction (was missing)
+- Fix: Ollama path always uses `max_tokens` (local endpoints don't support `max_completion_tokens`)
+- Fix: OpenAI path can now be used even when `CLASSIFY_BASE_URL` is set (via explicit `CLASSIFY_BACKEND=openai`)
+- Recommended model: `gpt-4.1-mini` — best quality/cost ratio for classification (gpt-5-nano returns incomplete JSON on longer interactions)
+
 ## 0.1.1 — 2026-03-07
 
 Classification prompt & config optimization (LAV-32).
