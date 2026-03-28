@@ -32,8 +32,12 @@ CLAUDE_DESKTOP_SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "
 # Source directory for Codex sessions
 CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 
-# Cowork / Claude Desktop local-agent-mode sessions (JSONL audit logs)
-COWORK_SESSIONS_DIR = CLAUDE_DESKTOP_SUPPORT_DIR / "local-agent-mode-sessions"
+# Cowork / Claude Desktop sessions (JSONL audit logs)
+# Pre-v1.1.4498: "local-agent-mode-sessions", post-v1.1.4498: "claude-code-sessions"
+COWORK_SESSIONS_DIRS_DEFAULT = [
+    CLAUDE_DESKTOP_SUPPORT_DIR / "local-agent-mode-sessions",
+    CLAUDE_DESKTOP_SUPPORT_DIR / "claude-code-sessions",
+]
 
 # ===========================================================================
 # TOOL CLASSIFICATION
@@ -297,6 +301,6 @@ def get_cowork_sessions_dirs(
             (settings.get("sources") or {}).get("cowork_sessions_dirs")
         )
         if not dirs:
-            dirs = [COWORK_SESSIONS_DIR]
+            dirs = list(COWORK_SESSIONS_DIRS_DEFAULT)
 
     return [d for d in dirs if d.exists() and d.is_dir()]
