@@ -737,6 +737,45 @@
             text-decoration: none;
         }
 
+        /* ===== COLUMN TOGGLE ===== */
+        .col-toggle-wrapper {
+            position: relative;
+            display: inline-block;
+        }
+
+        .col-toggle-dropdown {
+            display: none;
+            position: absolute;
+            right: 0;
+            top: 100%;
+            background: var(--white);
+            border-radius: 8px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+            padding: 8px 0;
+            z-index: 100;
+            min-width: 180px;
+            margin-top: 4px;
+        }
+
+        .col-toggle-dropdown.open { display: block; }
+
+        .col-toggle-dropdown label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px;
+            cursor: pointer;
+            font-size: 0.82rem;
+            color: var(--black);
+            white-space: nowrap;
+        }
+
+        .col-toggle-dropdown label:hover { background: var(--light-gray); }
+
+        .col-toggle-dropdown input[type="checkbox"] {
+            accent-color: var(--dodger-blue);
+        }
+
         /* ===== RESPONSIVE ===== */
         @media (max-width: 900px) {
             .interaction-header { display: none; }
@@ -822,6 +861,10 @@
         </div>
         <button class="btn" id="searchBtn">Search</button>
         <button class="btn btn-secondary" id="clearBtn">Clear</button>
+        <div class="col-toggle-wrapper">
+            <button class="btn btn-secondary" id="colToggleBtn">Columns</button>
+            <div class="col-toggle-dropdown" id="colToggleDropdown"></div>
+        </div>
     </div>
 
     <!-- ===== STATS BAR ===== -->
@@ -838,19 +881,19 @@
 
     <!-- ===== INTERACTIONS LIST ===== -->
     <div class="interactions-container">
-        <div class="interaction-header">
-            <div>Timestamp</div>
-            <div>Summary</div>
-            <div>Project</div>
-            <div>User</div>
-            <div>Host</div>
-            <div>Source</div>
-            <div>Class</div>
-            <div>Sens</div>
-            <div>Tokens</div>
-            <div>Cost</div>
-            <div>Messages</div>
-            <div>Session</div>
+        <div class="interaction-header" id="interactionHeader">
+            <div data-col="timestamp">Timestamp</div>
+            <div data-col="summary">Summary</div>
+            <div data-col="project">Project</div>
+            <div data-col="user">User</div>
+            <div data-col="host">Host</div>
+            <div data-col="source">Source</div>
+            <div data-col="class">Class</div>
+            <div data-col="sens">Sens</div>
+            <div data-col="tokens">Tokens</div>
+            <div data-col="cost">Cost</div>
+            <div data-col="messages">Messages</div>
+            <div data-col="session">Session</div>
         </div>
         <div id="interactionsList">
             <div class="loading">Loading interactions</div>
@@ -889,6 +932,84 @@
         ? window.location.origin
         : 'http://localhost:8764';
     const LIMIT = 25;
+
+    // ===== COLUMN VISIBILITY =====
+    const COLUMNS = [
+        { key: 'timestamp', label: 'Timestamp', width: '140px' },
+        { key: 'summary',   label: 'Summary',   width: '1fr' },
+        { key: 'project',   label: 'Project',   width: '100px' },
+        { key: 'user',      label: 'User',      width: '100px' },
+        { key: 'host',      label: 'Host',       width: '90px' },
+        { key: 'source',    label: 'Source',     width: '100px' },
+        { key: 'class',     label: 'Class',      width: '90px' },
+        { key: 'sens',      label: 'Sensitivity', width: '90px' },
+        { key: 'tokens',    label: 'Tokens',     width: '80px' },
+        { key: 'cost',      label: 'Cost',       width: '70px' },
+        { key: 'messages',  label: 'Messages',   width: '90px' },
+        { key: 'session',   label: 'Session',    width: '100px' }
+    ];
+    const COL_STORAGE_KEY = 'lav-visible-columns';
+
+    function getVisibleColumns() {
+        try {
+            const saved = localStorage.getItem(COL_STORAGE_KEY);
+            if (saved) return JSON.parse(saved);
+        } catch(e) {}
+        return COLUMNS.map(c => c.key);
+    }
+
+    function saveVisibleColumns(keys) {
+        localStorage.setItem(COL_STORAGE_KEY, JSON.stringify(keys));
+    }
+
+    let visibleColumns = getVisibleColumns();
+
+    function applyColumnVisibility() {
+        const gridCols = COLUMNS
+            .filter(c => visibleColumns.includes(c.key))
+            .map(c => c.width)
+            .join(' ');
+        document.querySelectorAll('.interaction-header, .interaction-item').forEach(el => {
+            el.style.gridTemplateColumns = gridCols;
+        });
+        document.querySelectorAll('[data-col]').forEach(el => {
+            el.style.display = visibleColumns.includes(el.dataset.col) ? '' : 'none';
+        });
+    }
+
+    function initColumnToggle() {
+        const dropdown = document.getElementById('colToggleDropdown');
+        dropdown.innerHTML = COLUMNS.map(col => {
+            const checked = visibleColumns.includes(col.key) ? 'checked' : '';
+            return `<label><input type="checkbox" value="${col.key}" ${checked}> ${col.label}</label>`;
+        }).join('');
+        dropdown.querySelectorAll('input').forEach(cb => {
+            cb.addEventListener('change', () => {
+                if (cb.checked) {
+                    if (!visibleColumns.includes(cb.value)) visibleColumns.push(cb.value);
+                } else {
+                    visibleColumns = visibleColumns.filter(k => k !== cb.value);
+                    if (visibleColumns.length === 0) {
+                        cb.checked = true;
+                        visibleColumns.push(cb.value);
+                        return;
+                    }
+                }
+                saveVisibleColumns(visibleColumns);
+                applyColumnVisibility();
+            });
+        });
+        document.getElementById('colToggleBtn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            dropdown.classList.toggle('open');
+        });
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.col-toggle-wrapper')) {
+                dropdown.classList.remove('open');
+            }
+        });
+        applyColumnVisibility();
+    }
 
     // ===== STATE =====
     const state = {
@@ -1252,20 +1373,20 @@
                     : '<span style="color:#ccc">-</span>';
 
                 row.insertAdjacentHTML('beforeend', `
-                    <div class="conv-timestamp">${formatTimestamp(conv.timestamp)}</div>
-                    <div class="conv-summary-cell">
+                    <div class="conv-timestamp" data-col="timestamp">${formatTimestamp(conv.timestamp)}</div>
+                    <div class="conv-summary-cell" data-col="summary">
                         <span class="conv-display" title="${conv.display || conv.summary || ''}">${conv.display || conv.summary || '(no summary)'}</span>
                     </div>
-                    <div class="conv-project"><span class="badge badge-project" style="background: ${conv.project ? getProjectColor(conv.project) : '#999'};" data-project="${conv.project || ''}" title="Filter by ${conv.project || ''}">${conv.project || '-'}</span></div>
-                    <div class="conv-user">${conv.username || '-'}</div>
-                    <div class="conv-host">${hostShort || '-'}</div>
-                    <div class="conv-source">${sourceLabel || '-'}</div>
-                    <div class="conv-classification">${clsBadge}</div>
-                    <div class="conv-sensitivity">${sensBadge}</div>
-                    <div class="conv-tokens">${formatNumber(conv.total_tokens)}</div>
-                    <div class="conv-cost" style="font-size:0.82rem;color:var(--spring-green);font-weight:600;">$${(conv.cost_usd || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
-                    <div class="conv-messages">${conv.message_count || 0} msgs</div>
-                    <div><span class="conv-session-id" data-full-id="${conv.session_id}" onclick="event.stopPropagation(); copySessionId(this);">${conv.session_id.substring(0, 8)}</span></div>
+                    <div class="conv-project" data-col="project"><span class="badge badge-project" style="background: ${conv.project ? getProjectColor(conv.project) : '#999'};" data-project="${conv.project || ''}" title="Filter by ${conv.project || ''}">${conv.project || '-'}</span></div>
+                    <div class="conv-user" data-col="user">${conv.username || '-'}</div>
+                    <div class="conv-host" data-col="host">${hostShort || '-'}</div>
+                    <div class="conv-source" data-col="source">${sourceLabel || '-'}</div>
+                    <div class="conv-classification" data-col="class">${clsBadge}</div>
+                    <div class="conv-sensitivity" data-col="sens">${sensBadge}</div>
+                    <div class="conv-tokens" data-col="tokens">${formatNumber(conv.total_tokens)}</div>
+                    <div class="conv-cost" data-col="cost" style="font-size:0.82rem;color:var(--spring-green);font-weight:600;">$${(conv.cost_usd || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                    <div class="conv-messages" data-col="messages">${conv.message_count || 0} msgs</div>
+                    <div data-col="session"><span class="conv-session-id" data-full-id="${conv.session_id}" onclick="event.stopPropagation(); copySessionId(this);">${conv.session_id.substring(0, 8)}</span></div>
                 `);
 
                 row.addEventListener('click', (e) => {
@@ -1285,6 +1406,8 @@
 
                 listEl.appendChild(row);
             });
+
+            applyColumnVisibility();
 
             // Pagination
             const paginationEl = document.getElementById('pagination');
@@ -1638,6 +1761,7 @@
         // Set default date inputs to match state (last 7 days)
         document.getElementById('startDate').value = state.startDate;
         document.getElementById('endDate').value = state.endDate;
+        initColumnToggle();
         await initFilters();
         await loadInteractions();
 

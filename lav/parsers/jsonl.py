@@ -564,10 +564,55 @@ def set_parse_state(conn: sqlite3.Connection, key: str, value: str, project_id: 
 # ===========================================================================
 
 def extract_project_name(project_path: Path) -> str:
-    """Extract a clean project name from a Claude projects directory path."""
+    """Extract a clean project name from a Claude projects directory path.
+
+    Claude projects encode the full working directory path by replacing both
+    '/' and '_' with '-', e.g. /Users/max/my_code/twin-peaks →
+    -Users-max-my-code-twin-peaks.  We try to reconstruct the original path
+    via greedy filesystem matching so hyphenated project names are preserved.
+    Falls back to the last meaningful segment when the path can't be fully
+    resolved (e.g. cloud-storage paths with lossy encoding).
+    """
     name = project_path.name
-    parts = name.split('-')
-    meaningful = [p for p in parts if p and p not in ('Users', getpass.getuser(), 'Library', 'CloudStorage')]
+
+    # Real filesystem path (e.g. cwd from Codex/Cowork) — last component is the name
+    if not name.startswith('-'):
+        return name
+
+    parts = [p for p in name.split('-') if p]
+    if not parts:
+        return name
+
+    # Greedily match filesystem directories from left to right.
+    # For each candidate span we try the original (hyphens) and an underscore
+    # variant, since '_' is also encoded as '-' by Claude Code.
+    current = Path('/')
+    i = 0
+    while i < len(parts):
+        matched = False
+        for j in range(i + 1, min(i + 7, len(parts) + 1)):
+            segment = '-'.join(parts[i:j])
+            for variant in (segment, segment.replace('-', '_')):
+                candidate = current / variant
+                if candidate.is_dir():
+                    current = candidate
+                    i = j
+                    matched = True
+                    break
+            if matched:
+                break
+        if not matched:
+            break
+
+    if i >= len(parts):
+        # All segments resolved — last directory is the project
+        return current.name
+
+    # Fallback: filesystem couldn't resolve the full path (cloud storage,
+    # unmounted volumes, etc.).  Use the old heuristic — filter known path
+    # components and take the last meaningful segment.
+    meaningful = [p for p in parts if p and p not in
+                  ('Users', getpass.getuser(), 'Library', 'CloudStorage')]
     if meaningful:
         return meaningful[-1]
     return name
@@ -1367,9 +1412,28 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
     session_agent_info = {}
 
     jsonl_files = sorted(project_dir.rglob("*.jsonl"))
+
+    # mtime optimization: skip files not modified since last parse
+    files_skipped_mtime = 0
+    last_ts_epoch = None
+    if last_ts and not full_reparse:
+        try:
+            ts = last_ts.replace("Z", "+00:00")
+            last_ts_epoch = datetime.fromisoformat(ts).timestamp()
+        except (ValueError, OSError):
+            last_ts_epoch = None
+
     print(f"  Found {len(jsonl_files)} interaction files")
 
     for jsonl_file in jsonl_files:
+        if last_ts_epoch is not None:
+            try:
+                if jsonl_file.stat().st_mtime <= last_ts_epoch:
+                    files_skipped_mtime += 1
+                    continue
+            except OSError:
+                pass  # file disappeared, let downstream handle it
+
         files_processed += 1
 
         is_agent_file = jsonl_file.name.startswith("agent-")
@@ -1461,7 +1525,8 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
         "interactions_updated": len(sessions_updated),
     }
 
-    print(f"  Processed: {messages_processed} messages, {tool_calls_processed} tool calls, {len(sessions_updated)} interactions")
+    mtime_msg = f" (skipped {files_skipped_mtime} by mtime)" if files_skipped_mtime else ""
+    print(f"  Processed: {files_processed} files{mtime_msg}, {messages_processed} messages, {tool_calls_processed} tool calls, {len(sessions_updated)} interactions")
     return stats
 
 
@@ -1744,12 +1809,17 @@ def parse_cowork_sessions(
                                     return extract_project_name(Path(token))
         return None
 
+    max_audit_ts = ""
+
     for audit_path in audit_files:
         for event in parse_jsonl_file(audit_path):
             msg_type = event.get("type", "")
             audit_ts = event.get("_audit_timestamp") or ""
             if not audit_ts:
                 continue
+
+            if audit_ts > max_audit_ts:
+                max_audit_ts = audit_ts
 
             raw_sid = event.get("session_id", "")
             sid = format_cowork_session_id(raw_sid)
@@ -1818,15 +1888,15 @@ def parse_cowork_sessions(
 
         conn.commit()
 
-    # Update parse state for all cowork projects
-    now_ts = datetime.now().isoformat()
-    for sid, pname in session_project.items():
-        pid = get_or_create_project(conn, pname)
-        set_parse_state(conn, "last_parsed", now_ts, pid, SOURCE_COWORK_DESKTOP, host_id)
-    if default_project_name not in session_project.values():
-        pid = get_or_create_project(conn, default_project_name)
-        set_parse_state(conn, "last_parsed", now_ts, pid, SOURCE_COWORK_DESKTOP, host_id)
-    conn.commit()
+    # Update parse state for all cowork projects (use max observed audit_ts, not now())
+    if max_audit_ts:
+        for sid, pname in session_project.items():
+            pid = get_or_create_project(conn, pname)
+            set_parse_state(conn, "last_parsed", max_audit_ts, pid, SOURCE_COWORK_DESKTOP, host_id)
+        if default_project_name not in session_project.values():
+            pid = get_or_create_project(conn, default_project_name)
+            set_parse_state(conn, "last_parsed", max_audit_ts, pid, SOURCE_COWORK_DESKTOP, host_id)
+        conn.commit()
 
     all_stats.append({
         "source": "cowork_desktop",
@@ -1840,6 +1910,32 @@ def parse_cowork_sessions(
 # ===========================================================================
 # MAIN
 # ===========================================================================
+
+def _launch_background_classify():
+    """Launch lav-classify as a detached background process after parsing.
+
+    Non-blocking: the subprocess runs independently so lav-parse exits immediately.
+    Skips silently if OPENAI_API_KEY is not set or lav-classify is not installed.
+    """
+    import os
+    if not os.getenv("OPENAI_API_KEY"):
+        print("[classify] Skipped — OPENAI_API_KEY not set")
+        return
+
+    import subprocess
+    import sys
+    try:
+        # Use the same Python interpreter to ensure correct venv
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "lav.classifiers.sql_classifier"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,  # detach from parent process
+        )
+        print(f"[classify] Background classification started (PID {proc.pid})")
+    except Exception as e:
+        print(f"[classify] Could not launch background classification: {e}")
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -1922,6 +2018,9 @@ def main():
         print(f"Total tool calls: {total_tools}")
 
     conn.close()
+
+    # Run classification in background (non-blocking async subprocess)
+    _launch_background_classify()
 
     # Notify collector to pull from this agent (if configured)
     notify_collector(load_runtime_config())
