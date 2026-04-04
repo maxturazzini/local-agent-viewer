@@ -124,6 +124,7 @@ The database is created automatically at `~/.local/share/local-agent-viewer/loca
 
 | Command | Description | Requires |
 |---------|-------------|----------|
+| `lav` | **Unified CLI** — query, search, KB management, sync, pricing | — |
 | `lav-parse` | Parse JSONL interactions (Claude Code, Codex, Desktop) | — |
 | `lav-parse-chatgpt` | Parse ChatGPT export | `CHATGPT_EXPORT_PATH` |
 | `lav-server` | Start the web server | — |
@@ -131,6 +132,39 @@ The database is created automatically at `~/.local/share/local-agent-viewer/loca
 | `lav-index` | Index interactions into Qdrant | `QDRANT_URL` |
 | `lav-mcp` | Start MCP server | `fastmcp` |
 | `lav-pricing` | Manage model pricing for cost tracking | — |
+
+### Unified CLI (`lav`)
+
+The `lav` command provides direct access to queries, KB management, sync, and pricing — no server or MCP required.
+
+```bash
+# Search interactions (SQLite FTS5)
+lav search "newsletter pipeline"
+lav search "newsletter" --project miniMe --limit 5 --start 2026-03-01
+
+# Show full transcript
+lav show <session_id>
+
+# Semantic search (Qdrant KB)
+lav kb search "how does the blog publisher work"
+lav kb search "debugging MCP" --classification development
+
+# KB management
+lav kb status <session_id>
+lav kb index <session_id> --tags "blog,newsletter"
+lav kb remove <session_id>
+lav kb tags <session_id> --set "new,tags"
+
+# Sync & pricing
+lav sync
+lav sync --scope project --project miniMe --full
+lav pricing list
+lav pricing add --model gpt-5.4 --input 2.0 --output 8.0 --from-date 2026-04-01
+```
+
+**Output formats**: JSON (default, for piping/scripting), `--format table` (human-readable), `--format brief` (one line per result).
+
+**Auth**: write operations (`sync`, `kb index/remove/tags`, `pricing add`) require `LAV_API_KEY` env var. Read operations are open by default, or gated by `LAV_READ_API_KEY` if set.
 
 ### Parser options
 
@@ -480,6 +514,7 @@ Anti-duplicate on pull: `INSERT OR IGNORE` on composite PKs ensures idempotent i
 local-agent-viewer/
 ├── lav/                           # Main package
 │   ├── __init__.py
+│   ├── cli.py                     # Unified CLI (lav command)
 │   ├── config.py                  # Paths, ports, runtime config
 │   ├── queries.py                 # SQL queries with 4D filters
 │   ├── server.py                  # HTTP server with role-based gating

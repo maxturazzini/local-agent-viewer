@@ -19,6 +19,7 @@ include = ["lav*"]
 lav = ["static/**/*"]
 
 [project.scripts]
+lav = "lav.cli:main"
 lav-server = "lav.server:main"
 lav-parse = "lav.parsers.jsonl:main"
 lav-parse-chatgpt = "lav.parsers.chatgpt:main"

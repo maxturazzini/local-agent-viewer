@@ -20,11 +20,25 @@ lav-parse --full              # full reparse
 lav-parse-chatgpt             # parse ChatGPT export
 lav-server                    # start server on :8764
 
-# Optional features
+# Unified CLI — query & KB management (zero extra deps)
+lav search "query"            # FTS5 full-text search
+lav search "query" --project miniMe --limit 5 --format brief
+lav show <session_id>         # full interaction transcript
+lav kb search "semantic query" # Qdrant vector search
+lav kb status <session_id>    # check if indexed
+lav kb index <session_id> --tags "tag1,tag2"
+lav kb remove <session_id>
+lav kb tags <session_id> --set "new,tags"
+lav sync                      # trigger sync (needs LAV_API_KEY)
+lav sync --scope project --project miniMe
+lav pricing list              # list active pricing
+lav pricing add --model X --input 5.0 --output 25.0 --from-date 2026-01-01
+
+# Specialized CLIs (still available)
 lav-classify                  # AI classification (needs OPENAI_API_KEY)
 lav-index                     # Qdrant vector indexing
 lav-mcp                       # MCP server (needs fastmcp)
-lav-pricing list              # list model pricing
+lav-pricing list              # list model pricing (standalone)
 lav-pricing add --model X ... # add/update pricing entry
 lav-pricing seed              # insert default pricing data
 ```
@@ -32,6 +46,17 @@ lav-pricing seed              # insert default pricing data
 Server at http://localhost:8764 — dashboard.html, interactions.html, tags.html.
 
 **No unit test suite.** Manual testing via the running server and CLI commands. Classification model evals in `tests/evals/` (`eval_classify.py`), reports in `tests/evals/results/`.
+
+### CLI output formats
+
+`lav` defaults to JSON on stdout (for piping to `jq` or Claude Code Bash calls). Human-friendly alternatives:
+- `--format table` — ASCII table
+- `--format brief` — one line per result (session_id, project, summary)
+
+### CLI auth
+
+- **Read operations** (`search`, `show`, `kb search`, `kb status`, `pricing list`): require `LAV_READ_API_KEY` env var only if it's set on server side. If not set, access is open.
+- **Write operations** (`sync`, `kb index`, `kb remove`, `kb tags`, `pricing add`): require `LAV_API_KEY` env var.
 
 ## Architecture
 
@@ -72,9 +97,13 @@ Code is shared (git). Runtime config is per-machine at `~/.local/share/local-age
 
 **Data flow**: agent parses locally → notifies collector via POST → collector pulls via `/api/export`. Push-triggered pull, NOT periodic polling.
 
+### Unified CLI (`lav/cli.py`)
+
+argparse-based CLI (zero deps) exposing the same operations as the MCP server: `search`, `show`, `kb {search,status,index,remove,tags}`, `sync`, `pricing {list,add}`. Reuses `queries.py`, `pricing.py`, `qdrant/store.py`, `qdrant/indexer.py`, `server.sync_data()`. Copies DB connection and lazy Qdrant init patterns from `mcp_server.py`.
+
 ### MCP Server (`lav/mcp_server.py`)
 
-FastMCP server with 9 tools (8 original + `manage_pricing`). Read tools use `LAV_READ_API_KEY` (optional). Write tools require `LAV_API_KEY`.
+FastMCP server with 9 tools (8 original + `manage_pricing`). Read tools use `LAV_READ_API_KEY` (optional). Write tools require `LAV_API_KEY`. The `lav` CLI is a faster alternative for terminal/Bash usage (no JSON-RPC overhead).
 
 ### Frontend (`lav/static/`)
 

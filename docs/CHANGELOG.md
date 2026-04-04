@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.3 — 2026-04-05
+
+Unified `lav` CLI for query and KB management.
+- New `lav/cli.py` with argparse — zero extra dependencies
+- Subcommands: `search`, `show`, `kb search|status|index|remove|tags`, `sync`, `pricing list|add`
+- Entry point `lav` registered in pyproject.toml
+- Output formats: `--format json` (default, for piping/Claude Code), `table`, `brief`
+- Auth: reads `LAV_API_KEY` / `LAV_READ_API_KEY` from env (same as MCP server)
+- Reuses existing `queries.py`, `pricing.py`, `qdrant/store.py`, `qdrant/indexer.py`, `server.sync_data()`
+
 ## 0.1.2 — 2026-03-12
 
 Separate OpenAI and Ollama classification backends + new categories.
