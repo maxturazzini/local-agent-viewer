@@ -82,6 +82,11 @@ from lav.queries import (
     get_interaction_metadata,
     get_classification_stats,
     get_tagcloud_data,
+    get_session_cost_profile,
+    get_work_pattern_stats,
+    get_task_type_costs,
+    get_efficiency_metrics,
+    generate_insights,
 )
 
 # Runtime config (agent/collector roles)
@@ -779,6 +784,41 @@ class APIHandler(SimpleHTTPRequestHandler):
                 conn.close()
             return
 
+        # ==== COST INTELLIGENCE ====
+
+        if path == "/api/cost-intelligence":
+            conn = get_read_connection()
+            if not conn:
+                self.send_json({"error": "No database"})
+                return
+            try:
+                ids = resolve_ids(conn, params)
+                start_date = params.get("start", [None])[0]
+                end_date = params.get("end", [None])[0]
+                client_source = params.get("client", [None])[0]
+                filter_kwargs = {
+                    "project_id": ids["project_id"],
+                    "user_id": ids["user_id"],
+                    "host_id": ids["host_id"],
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "client_source": client_source,
+                }
+                work_patterns = get_work_pattern_stats(conn, **filter_kwargs)
+                task_types = get_task_type_costs(conn, **filter_kwargs)
+                eff = get_efficiency_metrics(conn, **filter_kwargs)
+                insights = generate_insights(work_patterns, task_types, eff)
+                self.send_json({
+                    "work_patterns": work_patterns,
+                    "task_type_costs": task_types,
+                    "efficiency": eff,
+                    "insights": insights,
+                    "alpha": True,
+                })
+            finally:
+                conn.close()
+            return
+
         # ==== PRICING ====
 
         if path == "/api/pricing":
@@ -862,6 +902,8 @@ class APIHandler(SimpleHTTPRequestHandler):
                 if not data:
                     self.send_error(404, f"Interaction '{session_id}' not found")
                     return
+                data["cost_profile"] = get_session_cost_profile(
+                    conn, session_id, project_id=ids.get("project_id"))
                 self.send_json(data)
             finally:
                 conn.close()

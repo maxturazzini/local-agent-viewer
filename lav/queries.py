@@ -1253,6 +1253,562 @@ def get_tagcloud_data(conn, project_id=None, user_id=None, host_id=None,
     return result
 
 
+# ===========================================================================
+# COST INTELLIGENCE
+# ===========================================================================
+
+_COST_EXPR = """ROUND(
+    COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
+    + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
+    + COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0
+    + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
+, 6)"""
+
+_PRICE_JOIN = """LEFT JOIN model_pricing mp
+    ON mp.model = tu.model
+    AND tu.timestamp >= mp.from_date
+    AND (mp.to_date IS NULL OR tu.timestamp < mp.to_date)"""
+
+
+def get_session_cost_profile(conn, session_id, project_id=None):
+    """Per-session cost analysis: summary, timeline, and phases."""
+    pid_clause = "AND tu.project_id = ?" if project_id is not None else ""
+    pid_params = [session_id, project_id] if project_id is not None else [session_id]
+
+    rows = run_query(conn, f"""
+        SELECT
+            tu.timestamp,
+            tu.model,
+            COALESCE(tu.input_tokens, 0) as input_tokens,
+            COALESCE(tu.output_tokens, 0) as output_tokens,
+            COALESCE(tu.cache_creation_tokens, 0) as cache_creation_tokens,
+            COALESCE(tu.cache_read_tokens, 0) as cache_read_tokens,
+            {_COST_EXPR} as cost_usd
+        FROM token_usage tu
+        {_PRICE_JOIN}
+        WHERE tu.session_id = ? {pid_clause}
+        ORDER BY tu.timestamp ASC
+    """, pid_params)
+
+    if not rows:
+        return None
+
+    # Build timeline with cumulative cost
+    cumulative = 0.0
+    timeline = []
+    total_input = total_output = total_cache_write = total_cache_read = 0
+    total_cost = 0.0
+    models = set()
+
+    for r in rows:
+        cost = r["cost_usd"] or 0.0
+        cumulative += cost
+        total_cost += cost
+        total_input += r["input_tokens"]
+        total_output += r["output_tokens"]
+        total_cache_write += r["cache_creation_tokens"]
+        total_cache_read += r["cache_read_tokens"]
+        models.add(r["model"])
+        timeline.append({
+            "timestamp": r["timestamp"],
+            "model": r["model"],
+            "input_tokens": r["input_tokens"],
+            "output_tokens": r["output_tokens"],
+            "cache_creation_tokens": r["cache_creation_tokens"],
+            "cache_read_tokens": r["cache_read_tokens"],
+            "cost_usd": round(cost, 6),
+            "cumulative_cost": round(cumulative, 4),
+        })
+
+    # Duration
+    first_ts = rows[0]["timestamp"] or ""
+    last_ts = rows[-1]["timestamp"] or ""
+    duration_minutes = 0
+    if first_ts and last_ts and len(rows) > 1:
+        from datetime import datetime
+        try:
+            fmt = "%Y-%m-%dT%H:%M:%S" if "T" in first_ts else "%Y-%m-%d %H:%M:%S"
+            t0 = datetime.strptime(first_ts[:19], fmt)
+            t1 = datetime.strptime(last_ts[:19], fmt)
+            duration_minutes = round((t1 - t0).total_seconds() / 60, 1)
+        except (ValueError, TypeError):
+            pass
+
+    # Phases: split into thirds
+    n = len(timeline)
+    third = max(n // 3, 1)
+    slices = [timeline[:third], timeline[third:2*third], timeline[2*third:]]
+    phase_names = ["early", "mid", "late"]
+    phases = {}
+    for name, sl in zip(phase_names, slices):
+        phase_cost = sum(t["cost_usd"] for t in sl)
+        phases[name] = {
+            "cost": round(phase_cost, 4),
+            "pct": round(phase_cost / total_cost * 100, 1) if total_cost > 0 else 0,
+        }
+
+    return {
+        "summary": {
+            "cost_usd": round(total_cost, 4),
+            "duration_minutes": duration_minutes,
+            "api_calls": len(rows),
+            "models": sorted(models),
+            "tokens": {
+                "input": total_input,
+                "output": total_output,
+                "cache_creation": total_cache_write,
+                "cache_read": total_cache_read,
+            },
+        },
+        "timeline": timeline,
+        "phases": phases,
+    }
+
+
+def get_work_pattern_stats(conn, project_id=None, user_id=None, host_id=None,
+                           start_date=None, end_date=None, client_source=None):
+    """Behavioral analysis: hourly, daily, complexity, session-length patterns."""
+    where, params = build_filters(
+        project_id=project_id, user_id=user_id, host_id=host_id,
+        start=start_date, end=end_date, client=client_source, table_alias='tu'
+    )
+    join = _join_session_sources('tu')
+
+    # By hour of day
+    by_hour = run_query(conn, f"""
+        SELECT
+            CAST(strftime('%H', tu.timestamp) AS INTEGER) as hour,
+            COUNT(DISTINCT tu.session_id || '-' || tu.project_id) as session_count,
+            ROUND(SUM({_COST_EXPR}), 4) as total_cost,
+            ROUND(AVG({_COST_EXPR}), 4) as avg_cost,
+            SUM(COALESCE(tu.input_tokens, 0) + COALESCE(tu.output_tokens, 0)
+                + COALESCE(tu.cache_creation_tokens, 0) + COALESCE(tu.cache_read_tokens, 0)) as total_tokens
+        FROM token_usage tu
+        {join}
+        {_PRICE_JOIN}
+        {where}
+        GROUP BY strftime('%H', tu.timestamp)
+        ORDER BY hour
+    """, params if params else None)
+
+    # By day of week
+    day_names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+    by_day_raw = run_query(conn, f"""
+        SELECT
+            CAST(strftime('%w', tu.timestamp) AS INTEGER) as day,
+            COUNT(DISTINCT tu.session_id || '-' || tu.project_id) as session_count,
+            ROUND(SUM({_COST_EXPR}), 4) as total_cost,
+            ROUND(AVG({_COST_EXPR}), 4) as avg_cost
+        FROM token_usage tu
+        {join}
+        {_PRICE_JOIN}
+        {where}
+        GROUP BY strftime('%w', tu.timestamp)
+        ORDER BY day
+    """, params if params else None)
+
+    by_day_of_week = []
+    for r in by_day_raw:
+        d = r["day"]
+        by_day_of_week.append({
+            "day": d,
+            "day_name": day_names[d] if 0 <= d <= 6 else str(d),
+            "session_count": r["session_count"],
+            "total_cost": r["total_cost"],
+            "avg_cost": r["avg_cost"],
+        })
+
+    # By complexity bucket (API calls per session)
+    # Need filter on interactions table for project/user/host, token_usage for calls
+    i_where, i_params = build_filters(
+        project_id=project_id, user_id=user_id, host_id=host_id,
+        start=start_date, end=end_date, client=client_source, table_alias='c'
+    )
+    i_join = _join_session_sources('c')
+
+    by_complexity = run_query(conn, f"""
+        SELECT
+            bucket,
+            COUNT(*) as count,
+            ROUND(AVG(session_cost), 4) as avg_cost,
+            ROUND(AVG(cache_hit_rate), 1) as avg_cache_hit_rate,
+            ROUND(SUM(session_cost), 4) as total_cost
+        FROM (
+            SELECT
+                c.session_id,
+                c.project_id,
+                COUNT(tu.rowid) as api_calls,
+                CASE
+                    WHEN COUNT(tu.rowid) < 10 THEN 'quick'
+                    WHEN COUNT(tu.rowid) < 50 THEN 'medium'
+                    ELSE 'deep'
+                END as bucket,
+                ROUND(SUM(
+                    COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
+                    + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
+                    + COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0
+                    + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
+                ), 4) as session_cost,
+                CASE WHEN SUM(COALESCE(tu.input_tokens, 0) + COALESCE(tu.cache_read_tokens, 0) + COALESCE(tu.cache_creation_tokens, 0)) > 0
+                    THEN ROUND(SUM(COALESCE(tu.cache_read_tokens, 0)) * 100.0
+                        / SUM(COALESCE(tu.input_tokens, 0) + COALESCE(tu.cache_read_tokens, 0) + COALESCE(tu.cache_creation_tokens, 0)), 1)
+                    ELSE 0
+                END as cache_hit_rate
+            FROM interactions c
+            {i_join}
+            JOIN token_usage tu ON tu.session_id = c.session_id AND tu.project_id = c.project_id
+            {_PRICE_JOIN}
+            {i_where}
+            GROUP BY c.session_id, c.project_id
+        )
+        GROUP BY bucket
+        ORDER BY CASE bucket WHEN 'quick' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END
+    """, i_params if i_params else None)
+
+    # By session length (message count bins)
+    by_session_length = run_query(conn, f"""
+        SELECT
+            bin_label as range,
+            COUNT(*) as count,
+            ROUND(AVG(session_cost), 4) as avg_cost
+        FROM (
+            SELECT
+                session_id,
+                project_id,
+                msg_count,
+                CASE
+                    WHEN msg_count BETWEEN 1 AND 5 THEN '1-5'
+                    WHEN msg_count BETWEEN 6 AND 15 THEN '6-15'
+                    WHEN msg_count BETWEEN 16 AND 30 THEN '16-30'
+                    WHEN msg_count BETWEEN 31 AND 60 THEN '31-60'
+                    ELSE '60+'
+                END as bin_label,
+                CASE
+                    WHEN msg_count BETWEEN 1 AND 5 THEN 1
+                    WHEN msg_count BETWEEN 6 AND 15 THEN 2
+                    WHEN msg_count BETWEEN 16 AND 30 THEN 3
+                    WHEN msg_count BETWEEN 31 AND 60 THEN 4
+                    ELSE 5
+                END as bin_order,
+                session_cost
+            FROM (
+                SELECT
+                    c.session_id,
+                    c.project_id,
+                    (SELECT COUNT(*) FROM messages m WHERE m.session_id = c.session_id AND m.project_id = c.project_id) as msg_count,
+                    COALESCE((
+                        SELECT ROUND(SUM(
+                            COALESCE(tu2.input_tokens, 0) * COALESCE(mp2.input_price_per_mtok, 0) / 1000000.0
+                            + COALESCE(tu2.output_tokens, 0) * COALESCE(mp2.output_price_per_mtok, 0) / 1000000.0
+                            + COALESCE(tu2.cache_creation_tokens, 0) * COALESCE(mp2.cache_write_price_per_mtok, 0) / 1000000.0
+                            + COALESCE(tu2.cache_read_tokens, 0) * COALESCE(mp2.cache_read_price_per_mtok, 0) / 1000000.0
+                        ), 4)
+                        FROM token_usage tu2
+                        LEFT JOIN model_pricing mp2 ON mp2.model = tu2.model
+                            AND tu2.timestamp >= mp2.from_date
+                            AND (mp2.to_date IS NULL OR tu2.timestamp < mp2.to_date)
+                        WHERE tu2.session_id = c.session_id AND tu2.project_id = c.project_id
+                    ), 0) as session_cost
+                FROM interactions c
+                {i_join}
+                {i_where}
+            ) sub
+            WHERE msg_count > 0
+        )
+        GROUP BY bin_label
+        ORDER BY bin_order
+    """, i_params if i_params else None)
+
+    return {
+        "by_hour": by_hour,
+        "by_day_of_week": by_day_of_week,
+        "by_complexity_bucket": by_complexity,
+        "by_session_length": by_session_length,
+    }
+
+
+def get_task_type_costs(conn, project_id=None, user_id=None, host_id=None,
+                        start_date=None, end_date=None, client_source=None):
+    """Classification-enriched cost analysis by task type."""
+    i_where, i_params = build_filters(
+        project_id=project_id, user_id=user_id, host_id=host_id,
+        start=start_date, end=end_date, client=client_source, table_alias='c'
+    )
+    i_join = _join_session_sources('c')
+
+    # Count total and classified sessions
+    counts = run_query(conn, f"""
+        SELECT
+            COUNT(*) as total,
+            SUM(CASE WHEN cm.session_id IS NOT NULL THEN 1 ELSE 0 END) as classified
+        FROM interactions c
+        {i_join}
+        LEFT JOIN interaction_metadata cm ON cm.session_id = c.session_id AND cm.project_id = c.project_id
+        {i_where}
+    """, i_params if i_params else None)[0]
+
+    total = counts["total"] or 0
+    classified = counts["classified"] or 0
+    has_classification = classified > 0
+
+    data = []
+    if has_classification:
+        data = run_query(conn, f"""
+            SELECT
+                COALESCE(cm.task_type, 'unclassified') as task_type,
+                COUNT(DISTINCT c.session_id || '-' || c.project_id) as session_count,
+                ROUND(AVG(session_cost), 4) as avg_cost,
+                ROUND(SUM(session_cost), 4) as total_cost,
+                ROUND(AVG(session_tokens), 0) as avg_tokens
+            FROM (
+                SELECT
+                    c.session_id,
+                    c.project_id,
+                    COALESCE((
+                        SELECT ROUND(SUM(
+                            COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
+                            + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
+                            + COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0
+                            + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
+                        ), 4)
+                        FROM token_usage tu
+                        LEFT JOIN model_pricing mp ON mp.model = tu.model
+                            AND tu.timestamp >= mp.from_date
+                            AND (mp.to_date IS NULL OR tu.timestamp < mp.to_date)
+                        WHERE tu.session_id = c.session_id AND tu.project_id = c.project_id
+                    ), 0) as session_cost,
+                    COALESCE((
+                        SELECT SUM(COALESCE(tu.input_tokens, 0) + COALESCE(tu.output_tokens, 0))
+                        FROM token_usage tu
+                        WHERE tu.session_id = c.session_id AND tu.project_id = c.project_id
+                    ), 0) as session_tokens
+                FROM interactions c
+                {i_join}
+                {i_where}
+            ) c
+            LEFT JOIN interaction_metadata cm ON cm.session_id = c.session_id AND cm.project_id = c.project_id
+            GROUP BY COALESCE(cm.task_type, 'unclassified')
+            ORDER BY total_cost DESC
+        """, i_params if i_params else None)
+
+    return {
+        "data": data,
+        "classified_ratio": f"{classified}/{total}",
+        "has_classification": has_classification,
+    }
+
+
+def get_efficiency_metrics(conn, project_id=None, user_id=None, host_id=None,
+                           start_date=None, end_date=None, client_source=None):
+    """Cost efficiency trends: cache, cost-per-call, model, source comparison."""
+    where, params = build_filters(
+        project_id=project_id, user_id=user_id, host_id=host_id,
+        start=start_date, end=end_date, client=client_source, table_alias='tu'
+    )
+    join = _join_session_sources('tu')
+
+    # Daily cache trend
+    cache_trend = run_query(conn, f"""
+        SELECT
+            DATE(tu.timestamp) as date,
+            CASE WHEN SUM(COALESCE(tu.input_tokens, 0) + COALESCE(tu.cache_read_tokens, 0) + COALESCE(tu.cache_creation_tokens, 0)) > 0
+                THEN ROUND(SUM(COALESCE(tu.cache_read_tokens, 0)) * 100.0
+                    / SUM(COALESCE(tu.input_tokens, 0) + COALESCE(tu.cache_read_tokens, 0) + COALESCE(tu.cache_creation_tokens, 0)), 1)
+                ELSE 0
+            END as cache_hit_rate
+        FROM token_usage tu
+        {join}
+        {where}
+        GROUP BY DATE(tu.timestamp)
+        ORDER BY date
+    """, params if params else None)
+
+    # Daily cost per call trend
+    cost_per_call_trend = run_query(conn, f"""
+        SELECT
+            DATE(tu.timestamp) as date,
+            ROUND(SUM(
+                COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
+                + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
+                + COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0
+                + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
+            ) / NULLIF(COUNT(*), 0), 4) as avg_cost_per_call
+        FROM token_usage tu
+        {join}
+        {_PRICE_JOIN}
+        {where}
+        GROUP BY DATE(tu.timestamp)
+        ORDER BY date
+    """, params if params else None)
+
+    # Model efficiency (per-session averages)
+    i_where, i_params = build_filters(
+        project_id=project_id, user_id=user_id, host_id=host_id,
+        start=start_date, end=end_date, client=client_source, table_alias='c'
+    )
+    i_join = _join_session_sources('c')
+
+    model_efficiency = run_query(conn, f"""
+        SELECT
+            model,
+            ROUND(AVG(session_cost), 4) as avg_cost_per_session,
+            ROUND(AVG(session_tokens), 0) as avg_tokens_per_session,
+            COUNT(*) as session_count
+        FROM (
+            SELECT
+                tu.model,
+                c.session_id,
+                c.project_id,
+                ROUND(SUM(
+                    COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
+                    + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
+                    + COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0
+                    + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
+                ), 4) as session_cost,
+                SUM(COALESCE(tu.input_tokens, 0) + COALESCE(tu.output_tokens, 0)) as session_tokens
+            FROM interactions c
+            {i_join}
+            JOIN token_usage tu ON tu.session_id = c.session_id AND tu.project_id = c.project_id
+            {_PRICE_JOIN}
+            {i_where}
+            GROUP BY tu.model, c.session_id, c.project_id
+        )
+        GROUP BY model
+        ORDER BY session_count DESC
+    """, i_params if i_params else None)
+
+    # Source comparison (only if >1 source)
+    source_comparison = run_query(conn, f"""
+        SELECT
+            COALESCE(ss.source, 'unknown') as source,
+            ROUND(AVG(session_cost), 4) as avg_cost_per_session,
+            COUNT(*) as session_count,
+            ROUND(AVG(cache_hit_rate), 1) as avg_cache_hit_rate
+        FROM (
+            SELECT
+                c.session_id,
+                c.project_id,
+                ROUND(SUM(
+                    COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
+                    + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
+                    + COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0
+                    + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
+                ), 4) as session_cost,
+                CASE WHEN SUM(COALESCE(tu.input_tokens, 0) + COALESCE(tu.cache_read_tokens, 0) + COALESCE(tu.cache_creation_tokens, 0)) > 0
+                    THEN ROUND(SUM(COALESCE(tu.cache_read_tokens, 0)) * 100.0
+                        / SUM(COALESCE(tu.input_tokens, 0) + COALESCE(tu.cache_read_tokens, 0) + COALESCE(tu.cache_creation_tokens, 0)), 1)
+                    ELSE 0
+                END as cache_hit_rate
+            FROM interactions c
+            LEFT JOIN session_sources ss ON ss.session_id = c.session_id AND ss.project_id = c.project_id
+            JOIN token_usage tu ON tu.session_id = c.session_id AND tu.project_id = c.project_id
+            {_PRICE_JOIN}
+            {i_where.replace("ss.source", "ss2.source") if False else i_where}
+            GROUP BY c.session_id, c.project_id
+        ) sub
+        LEFT JOIN session_sources ss ON ss.session_id = sub.session_id AND ss.project_id = sub.project_id
+        GROUP BY COALESCE(ss.source, 'unknown')
+        ORDER BY session_count DESC
+    """, i_params if i_params else None)
+
+    # Only return source_comparison if >1 source
+    if len(source_comparison) <= 1:
+        source_comparison = []
+
+    return {
+        "cache_trend": cache_trend,
+        "cost_per_call_trend": cost_per_call_trend,
+        "model_efficiency": model_efficiency,
+        "source_comparison": source_comparison,
+    }
+
+
+def generate_insights(work_patterns, task_type_costs, efficiency):
+    """Generate 6-8 human-readable insight strings from aggregate data."""
+    insights = []
+
+    # 1. Expensive hour
+    by_hour = work_patterns.get("by_hour", [])
+    if by_hour:
+        avg_hourly_cost = sum(h["total_cost"] or 0 for h in by_hour) / max(len(by_hour), 1)
+        most_expensive = max(by_hour, key=lambda h: h["total_cost"] or 0)
+        if avg_hourly_cost > 0 and (most_expensive["total_cost"] or 0) > avg_hourly_cost * 1.5:
+            ratio = round((most_expensive["total_cost"] or 0) / avg_hourly_cost, 1)
+            insights.append(f"Your most expensive hour is {most_expensive['hour']}:00 — {ratio}x your hourly average")
+
+    # 2. Deep session cost
+    by_complexity = work_patterns.get("by_complexity_bucket", [])
+    quick = next((b for b in by_complexity if b["bucket"] == "quick"), None)
+    deep = next((b for b in by_complexity if b["bucket"] == "deep"), None)
+    if quick and deep and (quick["avg_cost"] or 0) > 0 and (deep["count"] or 0) > 0:
+        ratio = round((deep["avg_cost"] or 0) / (quick["avg_cost"] or 1), 1)
+        if ratio > 2:
+            insights.append(f"Deep sessions (50+ calls) cost {ratio}x more than quick tasks on average")
+
+    # 3. Cache trend
+    cache_trend = efficiency.get("cache_trend", [])
+    if len(cache_trend) >= 7:
+        recent = cache_trend[-7:]
+        older = cache_trend[:7]
+        recent_avg = sum(d["cache_hit_rate"] or 0 for d in recent) / len(recent)
+        older_avg = sum(d["cache_hit_rate"] or 0 for d in older) / len(older)
+        if older_avg > 0:
+            delta = recent_avg - older_avg
+            if abs(delta) > 5:
+                direction = "improved" if delta > 0 else "declined"
+                insights.append(f"Cache hit rate {direction} from {round(older_avg)}% to {round(recent_avg)}% over the period")
+
+    # 4. Source comparison
+    source_comp = efficiency.get("source_comparison", [])
+    if len(source_comp) >= 2:
+        sorted_sources = sorted(source_comp, key=lambda s: s["avg_cost_per_session"] or 0)
+        cheapest = sorted_sources[0]
+        most_exp = sorted_sources[-1]
+        if (most_exp["avg_cost_per_session"] or 0) > 0:
+            pct_diff = round(((most_exp["avg_cost_per_session"] or 0) - (cheapest["avg_cost_per_session"] or 0))
+                             / (most_exp["avg_cost_per_session"] or 1) * 100)
+            if pct_diff > 15:
+                insights.append(f"{cheapest['source']} sessions cost {pct_diff}% less than {most_exp['source']} on average")
+
+    # 5. Cost per call trend
+    cpc_trend = efficiency.get("cost_per_call_trend", [])
+    if len(cpc_trend) >= 14:
+        recent_half = cpc_trend[len(cpc_trend)//2:]
+        older_half = cpc_trend[:len(cpc_trend)//2]
+        recent_avg = sum(d["avg_cost_per_call"] or 0 for d in recent_half) / len(recent_half)
+        older_avg = sum(d["avg_cost_per_call"] or 0 for d in older_half) / len(older_half)
+        if older_avg > 0:
+            pct_change = round((recent_avg - older_avg) / older_avg * 100)
+            if abs(pct_change) > 10:
+                direction = "increased" if pct_change > 0 else "decreased"
+                insights.append(f"Your cost per API call has {direction} {abs(pct_change)}% in the recent period")
+
+    # 6. Token type dominance (from model efficiency data)
+    model_eff = efficiency.get("model_efficiency", [])
+    # We don't have per-type breakdown in model_efficiency, skip if no data
+
+    # 7. Day-of-week outlier
+    by_day = work_patterns.get("by_day_of_week", [])
+    if by_day:
+        avg_daily = sum(d["total_cost"] or 0 for d in by_day) / max(len(by_day), 1)
+        most_exp_day = max(by_day, key=lambda d: d["total_cost"] or 0)
+        if avg_daily > 0 and (most_exp_day["total_cost"] or 0) > avg_daily * 1.5:
+            ratio = round((most_exp_day["total_cost"] or 0) / avg_daily, 1)
+            insights.append(f"{most_exp_day['day_name']} is your most expensive day — {ratio}x your daily average")
+
+    # 8. Complexity sweet spot (best cache hit rate bucket)
+    if len(by_complexity) >= 2:
+        best_cache = max(by_complexity, key=lambda b: b["avg_cache_hit_rate"] or 0)
+        if (best_cache["avg_cache_hit_rate"] or 0) > 30:
+            bucket_ranges = {"quick": "<10", "medium": "10-50", "deep": "50+"}
+            insights.append(
+                f"{best_cache['bucket'].title()} sessions ({bucket_ranges.get(best_cache['bucket'], '')} API calls) "
+                f"have the best cache hit rate ({round(best_cache['avg_cache_hit_rate'])}%) — sweet spot for cost efficiency"
+            )
+
+    return insights[:8]
+
+
 def export_sessions(conn, since_ts: str, limit: int = 1000) -> list:
     """Export sessions with all related data since a timestamp.
 

@@ -1312,6 +1312,7 @@
         <div class="tab" data-tab="timeline">Timeline</div>
         <div class="tab" data-tab="users">Users</div>
         <div class="tab" data-tab="kb" style="background: linear-gradient(135deg, rgba(0,211,93,0.1), rgba(0,75,255,0.1));">Knowledge Base</div>
+        <div class="tab" data-tab="costintel">Cost Intelligence</div>
     </div>
 
     <!-- ===== OVERVIEW TAB ===== -->
@@ -1665,6 +1666,76 @@
                 <div class="chart-title">By Classification</div>
                 <canvas id="kbClassificationChart"></canvas>
             </div>
+        </div>
+    </div>
+
+    <!-- ===== COST INTELLIGENCE TAB ===== -->
+    <div id="costintel" class="tab-content">
+        <div id="ciAlphaBanner" style="background: var(--white); border: 1px solid var(--dodger-blue); border-radius: 12px; padding: 14px 20px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 2px 8px rgba(0,0,0,0.06);">
+            <span style="color: var(--dim-gray); font-size: 0.85rem;">
+                <strong style="color: var(--dodger-blue);">Cost Intelligence (Alpha)</strong> — This analysis uses heuristics to identify work patterns. Run <code style="background: var(--light-gray); padding: 2px 6px; border-radius: 4px;">lav-classify</code> for deeper task-type breakdowns.
+            </span>
+            <button onclick="this.parentElement.style.display='none'" style="background: none; border: none; color: var(--dim-gray); cursor: pointer; font-size: 1.1rem; padding: 0 4px;">&times;</button>
+        </div>
+
+        <div class="ci-loading loading">Loading cost intelligence</div>
+
+        <!-- Work Patterns -->
+        <div class="ci-content">
+            <div class="chart-title">Work Patterns</div>
+            <div class="chart-row">
+                <div class="chart-container">
+                    <div class="chart-title">Cost by Hour of Day</div>
+                    <canvas id="ciHourChart"></canvas>
+                </div>
+                <div class="chart-container">
+                    <div class="chart-title">Cost by Day of Week</div>
+                    <canvas id="ciDayChart"></canvas>
+                </div>
+            </div>
+            <div class="stats-grid" id="ciComplexityCards"></div>
+            <div class="chart-container">
+                <div class="chart-title">Cost by Session Length (Messages)</div>
+                <canvas id="ciSessionLengthChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Task Type Costs -->
+        <div id="ciTaskTypeSection" class="ci-content" style="display: none;">
+            <div class="chart-title">Task Type Costs</div>
+            <div id="ciTaskTypeNote" style="color: var(--dim-gray); font-size: 0.8rem; margin-bottom: 8px;"></div>
+            <div class="chart-container">
+                <canvas id="ciTaskTypeChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Efficiency Metrics -->
+        <div class="ci-content">
+            <div class="chart-title">Efficiency Metrics</div>
+            <div class="chart-row">
+                <div class="chart-container">
+                    <div class="chart-title">Cache Hit Rate Trend</div>
+                    <canvas id="ciCacheTrendChart"></canvas>
+                </div>
+                <div class="chart-container">
+                    <div class="chart-title">Cost per API Call Trend</div>
+                    <canvas id="ciCostPerCallChart"></canvas>
+                </div>
+            </div>
+            <div class="chart-container">
+                <div class="chart-title">Model Efficiency</div>
+                <div id="ciModelTable"></div>
+            </div>
+            <div id="ciSourceSection" class="chart-container" style="display: none;">
+                <div class="chart-title">Source Comparison</div>
+                <canvas id="ciSourceChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Key Insights -->
+        <div id="ciInsightsPanel" class="ci-content chart-container" style="display: none;">
+            <div class="chart-title" style="color: var(--dodger-blue);">Key Insights</div>
+            <ul id="ciInsightsList" style="list-style: none; padding: 0; margin: 0;"></ul>
         </div>
     </div>
 
@@ -2265,6 +2336,7 @@
 
     function loadTabData(tabId) {
         if (tabId === 'kb') { loadKBStats(); return; }
+        if (tabId === 'costintel') { renderCostIntelligence(); return; }
         if (!state.data) return;
         switch (tabId) {
             case 'overview': renderOverview(); break;
@@ -2273,6 +2345,270 @@
             case 'tools': renderTools(); break;
             case 'timeline': renderTimeline(); break;
             case 'users': renderUsers(); break;
+        }
+    }
+
+    // ===== COST INTELLIGENCE TAB =====
+    async function renderCostIntelligence() {
+        const ciCharts = ['ciHourChart', 'ciDayChart', 'ciSessionLengthChart', 'ciTaskTypeChart', 'ciCacheTrendChart', 'ciCostPerCallChart', 'ciSourceChart'];
+        ciCharts.forEach(k => destroyChart(k));
+
+        // Show loading spinner
+        const container = document.getElementById('costintel');
+        const loadingEl = container.querySelector('.ci-loading');
+        const contentEls = container.querySelectorAll('.ci-content');
+        if (loadingEl) loadingEl.style.display = 'block';
+        contentEls.forEach(el => el.style.display = 'none');
+
+        try {
+            const d = await apiFetch('/api/cost-intelligence');
+
+            // Hide loading, show content
+            if (loadingEl) loadingEl.style.display = 'none';
+            contentEls.forEach(el => el.style.display = '');
+
+            // --- Work Patterns: Hour chart ---
+            const byHour = d.work_patterns?.by_hour || [];
+            if (byHour.length > 0) {
+                const hours = Array.from({length: 24}, (_, i) => i);
+                const hourMap = Object.fromEntries(byHour.map(h => [h.hour, h]));
+                const hourCosts = hours.map(h => (hourMap[h]?.total_cost || 0));
+                state.charts.ciHourChart = new Chart(document.getElementById('ciHourChart').getContext('2d'), {
+                    type: 'bar',
+                    data: {
+                        labels: hours.map(h => h + ':00'),
+                        datasets: [{
+                            label: 'Total Cost ($)',
+                            data: hourCosts,
+                            backgroundColor: '#004BFF',
+                            borderRadius: 6,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            y: { beginAtZero: true, title: { display: true, text: 'Cost ($)' } },
+                            x: { ticks: { maxRotation: 0 } }
+                        }
+                    }
+                });
+            }
+
+            // --- Work Patterns: Day of week chart ---
+            const byDay = d.work_patterns?.by_day_of_week || [];
+            if (byDay.length > 0) {
+                const dayOrder = [1, 2, 3, 4, 5, 6, 0];
+                const dayMap = Object.fromEntries(byDay.map(d => [d.day, d]));
+                const ordered = dayOrder.map(i => dayMap[i] || { day_name: ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][i], total_cost: 0, session_count: 0 });
+                state.charts.ciDayChart = new Chart(document.getElementById('ciDayChart').getContext('2d'), {
+                    type: 'bar',
+                    data: {
+                        labels: ordered.map(d => d.day_name),
+                        datasets: [{
+                            label: 'Total Cost ($)',
+                            data: ordered.map(d => d.total_cost || 0),
+                            backgroundColor: '#00D35D',
+                            borderRadius: 6,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: { legend: { display: false } },
+                        scales: { y: { beginAtZero: true, title: { display: true, text: 'Cost ($)' } } }
+                    }
+                });
+            }
+
+            // --- Complexity bucket cards ---
+            const buckets = d.work_patterns?.by_complexity_bucket || [];
+            const cardsEl = document.getElementById('ciComplexityCards');
+            cardsEl.textContent = '';
+            buckets.forEach((b, i) => {
+                const bucketLabels = { quick: 'Quick (<10 calls)', medium: 'Medium (10-50)', deep: 'Deep (50+)' };
+                cardsEl.insertAdjacentHTML('beforeend', `
+                    <div class="stat-card">
+                        <div class="number">${b.count || 0}</div>
+                        <div class="label">${bucketLabels[b.bucket] || b.bucket}</div>
+                        <div style="margin-top: 6px; font-size: 0.75rem; color: var(--dim-gray);">
+                            Avg $${(b.avg_cost || 0).toFixed(2)} &middot; Cache ${(b.avg_cache_hit_rate || 0).toFixed(0)}%
+                        </div>
+                    </div>
+                `);
+            });
+
+            // --- Session length chart ---
+            const byLen = d.work_patterns?.by_session_length || [];
+            if (byLen.length > 0) {
+                state.charts.ciSessionLengthChart = new Chart(document.getElementById('ciSessionLengthChart').getContext('2d'), {
+                    type: 'bar',
+                    data: {
+                        labels: byLen.map(b => b.range + ' msgs'),
+                        datasets: [{
+                            label: 'Avg Cost ($)',
+                            data: byLen.map(b => b.avg_cost || 0),
+                            backgroundColor: byLen.map((_, i) => brandColor(i)),
+                            borderRadius: 6,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: { legend: { display: false } },
+                        scales: { y: { beginAtZero: true, title: { display: true, text: 'Avg Cost ($)' } } }
+                    }
+                });
+            }
+
+            // --- Task Type Costs ---
+            const ttSection = document.getElementById('ciTaskTypeSection');
+            const ttData = d.task_type_costs?.data || [];
+            if (d.task_type_costs?.has_classification && ttData.length > 0) {
+                ttSection.style.display = 'block';
+                const noteEl = document.getElementById('ciTaskTypeNote');
+                const ratio = d.task_type_costs.classified_ratio || '';
+                const parts = ratio.split('/');
+                if (parts.length === 2 && parseInt(parts[0]) / parseInt(parts[1]) < 0.5) {
+                    noteEl.textContent = `Based on ${parts[0]} of ${parts[1]} sessions — classify more for accuracy.`;
+                } else {
+                    noteEl.textContent = '';
+                }
+                state.charts.ciTaskTypeChart = new Chart(document.getElementById('ciTaskTypeChart').getContext('2d'), {
+                    type: 'bar',
+                    data: {
+                        labels: ttData.map(t => t.task_type),
+                        datasets: [{
+                            label: 'Avg Cost ($)',
+                            data: ttData.map(t => t.avg_cost || 0),
+                            backgroundColor: ttData.map((_, i) => brandColor(i)),
+                            borderRadius: 6,
+                        }]
+                    },
+                    options: {
+                        indexAxis: 'y',
+                        responsive: true,
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: { callbacks: { afterLabel: (ctx) => `${ttData[ctx.dataIndex].session_count} sessions` } }
+                        },
+                        scales: { x: { beginAtZero: true, title: { display: true, text: 'Avg Cost ($)' } } }
+                    }
+                });
+            } else {
+                ttSection.style.display = 'none';
+            }
+
+            // --- Cache trend ---
+            const cacheTrend = d.efficiency?.cache_trend || [];
+            if (cacheTrend.length > 0) {
+                state.charts.ciCacheTrendChart = new Chart(document.getElementById('ciCacheTrendChart').getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: cacheTrend.map(c => c.date),
+                        datasets: [{
+                            label: 'Cache Hit Rate (%)',
+                            data: cacheTrend.map(c => c.cache_hit_rate || 0),
+                            borderColor: '#00D35D',
+                            backgroundColor: 'rgba(0, 211, 93, 0.08)',
+                            fill: true, tension: 0.3,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            y: { beginAtZero: true, max: 100, title: { display: true, text: '%' } },
+                            x: { ticks: { maxTicksLimit: 10 } }
+                        }
+                    }
+                });
+            }
+
+            // --- Cost per call trend ---
+            const cpcTrend = d.efficiency?.cost_per_call_trend || [];
+            if (cpcTrend.length > 0) {
+                state.charts.ciCostPerCallChart = new Chart(document.getElementById('ciCostPerCallChart').getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: cpcTrend.map(c => c.date),
+                        datasets: [{
+                            label: 'Avg Cost/Call ($)',
+                            data: cpcTrend.map(c => c.avg_cost_per_call || 0),
+                            borderColor: '#004BFF',
+                            backgroundColor: 'rgba(0, 75, 255, 0.08)',
+                            fill: true, tension: 0.3,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            y: { beginAtZero: true, title: { display: true, text: '$' }, ticks: { callback: v => '$' + v.toFixed(2) } },
+                            x: { ticks: { maxTicksLimit: 10 } }
+                        }
+                    }
+                });
+            }
+
+            // --- Model efficiency table ---
+            const models = d.efficiency?.model_efficiency || [];
+            const tableEl = document.getElementById('ciModelTable');
+            tableEl.textContent = '';
+            if (models.length > 0) {
+                let tbl = '<table style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">';
+                tbl += '<thead><tr style="border-bottom: 1px solid var(--light-gray);"><th style="text-align: left; padding: 8px;">Model</th><th style="text-align: right; padding: 8px;">Avg Cost/Session</th><th style="text-align: right; padding: 8px;">Avg Tokens/Session</th><th style="text-align: right; padding: 8px;">Sessions</th></tr></thead><tbody>';
+                models.forEach(m => {
+                    tbl += `<tr style="border-bottom: 1px solid var(--light-gray);"><td style="padding: 8px;">${m.model}</td><td style="text-align: right; padding: 8px; color: var(--spring-green);">$${(m.avg_cost_per_session || 0).toFixed(2)}</td><td style="text-align: right; padding: 8px;">${formatNumber(m.avg_tokens_per_session || 0)}</td><td style="text-align: right; padding: 8px;">${m.session_count || 0}</td></tr>`;
+                });
+                tbl += '</tbody></table>';
+                tableEl.insertAdjacentHTML('beforeend', tbl);
+            }
+
+            // --- Source comparison ---
+            const sources = d.efficiency?.source_comparison || [];
+            const srcSection = document.getElementById('ciSourceSection');
+            if (sources.length > 1) {
+                srcSection.style.display = 'block';
+                state.charts.ciSourceChart = new Chart(document.getElementById('ciSourceChart').getContext('2d'), {
+                    type: 'bar',
+                    data: {
+                        labels: sources.map(s => s.source),
+                        datasets: [{
+                            label: 'Avg Cost/Session ($)',
+                            data: sources.map(s => s.avg_cost_per_session || 0),
+                            backgroundColor: sources.map((_, i) => brandColor(i)),
+                            borderRadius: 6,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: { legend: { display: false } },
+                        scales: { y: { beginAtZero: true, title: { display: true, text: '$' } } }
+                    }
+                });
+            } else {
+                srcSection.style.display = 'none';
+            }
+
+            // --- Insights ---
+            const insights = d.insights || [];
+            const insightsPanel = document.getElementById('ciInsightsPanel');
+            const insightsList = document.getElementById('ciInsightsList');
+            insightsList.textContent = '';
+            if (insights.length > 0) {
+                insightsPanel.style.display = 'block';
+                insights.forEach(text => {
+                    const li = document.createElement('li');
+                    li.style.cssText = 'padding: 8px 0; border-bottom: 1px solid var(--light-gray); font-size: 0.9rem;';
+                    li.textContent = text;
+                    insightsList.appendChild(li);
+                });
+            } else {
+                insightsPanel.style.display = 'none';
+            }
+
+        } catch (err) {
+            console.error('Failed to load cost intelligence:', err);
+            if (loadingEl) loadingEl.textContent = 'Failed to load cost intelligence data';
         }
     }
 

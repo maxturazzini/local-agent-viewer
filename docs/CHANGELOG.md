@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.4 — 2026-04-07
+
+Cost Intelligence (Alpha) — work-pattern-based token cost analysis.
+- New dashboard tab "Cost Intelligence" with work patterns (hour/day/complexity), task-type costs (if classified), efficiency metrics (cache trend, cost-per-call, model/source comparison), and auto-generated key insights
+- New "Cost" tab in interaction detail modal with summary cards, cumulative cost timeline chart, and message-level detail table with phase indicators
+- 4 new query functions in `queries.py`: `get_session_cost_profile`, `get_work_pattern_stats`, `get_task_type_costs`, `get_efficiency_metrics`, plus `generate_insights` heuristic engine
+- New `GET /api/cost-intelligence` endpoint with standard 4D filtering
+- Enriched `GET /api/interaction/<id>` with `cost_profile` field
+- No new tables, no new dependencies, no schema changes
+
 ## 0.1.3 — 2026-04-05
 
 Unified `lav` CLI for query and KB management.

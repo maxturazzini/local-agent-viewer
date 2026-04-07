@@ -7,6 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         /* AI, MAX Brand Guidelines */
         :root {
@@ -920,9 +921,14 @@
                 <button class="modal-close" id="modalClose">&times;</button>
             </div>
             <div class="kb-enrichment" id="kbEnrichment" style="display:none;"></div>
-            <div class="modal-body" id="modalBody">
+            <div class="modal-tabs" style="display: flex; gap: 0; border-bottom: 1px solid var(--light-gray); margin: 0 -24px; padding: 0 24px;">
+                <button class="modal-tab active" data-modal-tab="transcript" style="padding: 10px 20px; background: none; border: none; border-bottom: 2px solid var(--dodger-blue); color: var(--black); font-family: inherit; font-size: 0.85rem; font-weight: 600; cursor: pointer;">Transcript</button>
+                <button class="modal-tab" data-modal-tab="cost" style="padding: 10px 20px; background: none; border: none; border-bottom: 2px solid transparent; color: var(--dim-gray); font-family: inherit; font-size: 0.85rem; font-weight: 600; cursor: pointer;">Cost</button>
+            </div>
+            <div class="modal-body" id="modalBody" data-modal-panel="transcript">
                 <div class="loading">Loading transcript</div>
             </div>
+            <div class="modal-body" id="costProfileBody" data-modal-panel="cost" style="display: none;"></div>
         </div>
     </div>
 
@@ -1524,8 +1530,19 @@
     async function openInteraction(sessionId, projectId) {
         document.getElementById('modalOverlay').classList.add('active');
         document.getElementById('modalBody').textContent = '';
+        document.getElementById('costProfileBody').textContent = '';
         document.getElementById('kbEnrichment').style.display = 'none';
         document.getElementById('kbEnrichment').textContent = '';
+        // Reset to Transcript tab
+        document.querySelectorAll('.modal-tab').forEach(function(t) {
+            var isTranscript = t.dataset.modalTab === 'transcript';
+            t.classList.toggle('active', isTranscript);
+            t.style.borderBottomColor = isTranscript ? '#004BFF' : 'transparent';
+            t.style.color = isTranscript ? '#000000' : '#666666';
+        });
+        document.getElementById('modalBody').style.display = '';
+        document.getElementById('costProfileBody').style.display = 'none';
+
         var loadingDiv = document.createElement('div');
         loadingDiv.className = 'loading';
         loadingDiv.textContent = 'Loading transcript';
@@ -1542,6 +1559,7 @@
             var sqlMeta = results[2];
             renderInteractionDetail(data);
             renderKbEnrichment(kbData, sqlMeta);
+            renderCostProfile(data.cost_profile);
         } catch (err) {
             console.error('Failed to load interaction:', err);
             document.getElementById('modalBody').textContent = '';
@@ -1739,6 +1757,137 @@
             document.getElementById('modalOverlay').classList.remove('active');
         }
     });
+
+    // ===== MODAL TAB SWITCHING =====
+    document.querySelectorAll('.modal-tab').forEach(function(tab) {
+        tab.addEventListener('click', function() {
+            document.querySelectorAll('.modal-tab').forEach(function(t) {
+                t.classList.remove('active');
+                t.style.borderBottomColor = 'transparent';
+                t.style.color = '#666666';
+            });
+            tab.classList.add('active');
+            tab.style.borderBottomColor = '#004BFF';
+            tab.style.color = '#000000';
+            var target = tab.dataset.modalTab;
+            document.querySelectorAll('[data-modal-panel]').forEach(function(p) {
+                p.style.display = p.dataset.modalPanel === target ? '' : 'none';
+            });
+        });
+    });
+
+    var _costProfileChart = null;
+
+    function renderCostProfile(costProfile) {
+        var el = document.getElementById('costProfileBody');
+        el.textContent = '';
+
+        if (!costProfile) {
+            el.insertAdjacentHTML('beforeend', '<div class="empty-state"><h3>No token data available for this session</h3></div>');
+            return;
+        }
+
+        var s = costProfile.summary;
+        var avgPerCall = s.api_calls > 0 ? (s.cost_usd / s.api_calls).toFixed(4) : '0';
+
+        // Summary cards
+        el.insertAdjacentHTML('beforeend',
+            '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 20px;">' +
+            '<div style="background: #FFFFFF; border-radius: 12px; padding: 16px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.06);"><div style="font-size: 1.4rem; font-weight: 700; color: #00D35D;">$' + (s.cost_usd || 0).toFixed(2) + '</div><div style="font-size: 0.75rem; color: #666; text-transform: uppercase; letter-spacing: 0.5px;">Total Cost</div></div>' +
+            '<div style="background: #FFFFFF; border-radius: 12px; padding: 16px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.06);"><div style="font-size: 1.4rem; font-weight: 700; color: #004BFF;">' + (s.duration_minutes || 0) + 'm</div><div style="font-size: 0.75rem; color: #666; text-transform: uppercase; letter-spacing: 0.5px;">Duration</div></div>' +
+            '<div style="background: #FFFFFF; border-radius: 12px; padding: 16px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.06);"><div style="font-size: 1.4rem; font-weight: 700; color: #004BFF;">' + (s.api_calls || 0) + '</div><div style="font-size: 0.75rem; color: #666; text-transform: uppercase; letter-spacing: 0.5px;">API Calls</div></div>' +
+            '<div style="background: #FFFFFF; border-radius: 12px; padding: 16px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.06);"><div style="font-size: 1.4rem; font-weight: 700; color: #000;">' + (s.models || []).join(', ') + '</div><div style="font-size: 0.75rem; color: #666; text-transform: uppercase; letter-spacing: 0.5px;">Model(s)</div></div>' +
+            '<div style="background: #FFFFFF; border-radius: 12px; padding: 16px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.06);"><div style="font-size: 1.4rem; font-weight: 700; color: #004BFF;">$' + avgPerCall + '</div><div style="font-size: 0.75rem; color: #666; text-transform: uppercase; letter-spacing: 0.5px;">Avg Cost/Call</div></div>' +
+            '</div>'
+        );
+
+        // Cumulative cost chart
+        var timeline = costProfile.timeline || [];
+        if (timeline.length > 0) {
+            var canvasWrap = document.createElement('div');
+            canvasWrap.style.cssText = 'background: #FFFFFF; border-radius: 16px; padding: 24px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.06);';
+            canvasWrap.insertAdjacentHTML('beforeend', '<div style="font-size: 1rem; font-weight: 700; margin-bottom: 16px;">Cumulative Cost Timeline</div>');
+            var canvas = document.createElement('canvas');
+            canvas.id = 'costTimelineChart';
+            canvasWrap.appendChild(canvas);
+            el.appendChild(canvasWrap);
+
+            if (_costProfileChart) { _costProfileChart.destroy(); _costProfileChart = null; }
+            var models = [...new Set(timeline.map(function(t) { return t.model; }))];
+            var multiModel = models.length > 1;
+            var modelColors = { };
+            var palette = ['#004BFF', '#00D35D', '#FF7A20', '#FF4C53', '#6E87FF', '#F9C927'];
+            models.forEach(function(m, i) { modelColors[m] = palette[i % palette.length]; });
+
+            _costProfileChart = new Chart(canvas.getContext('2d'), {
+                type: 'line',
+                data: {
+                    labels: timeline.map(function(t, i) { return '#' + (i + 1); }),
+                    datasets: [{
+                        label: 'Cumulative Cost ($)',
+                        data: timeline.map(function(t) { return t.cumulative_cost; }),
+                        borderColor: '#00D35D',
+                        backgroundColor: 'rgba(0, 211, 93, 0.08)',
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: timeline.length > 50 ? 0 : 3,
+                        pointBackgroundColor: multiModel ? timeline.map(function(t) { return modelColors[t.model] || '#004BFF'; }) : '#00D35D',
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                title: function(ctx) { var idx = ctx[0].dataIndex; return timeline[idx].timestamp; },
+                                afterLabel: function(ctx) { var t = timeline[ctx.dataIndex]; return t.model + ' | Cost: $' + (t.cost_usd || 0).toFixed(4); }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: { beginAtZero: true, title: { display: true, text: 'Cumulative $' } },
+                        x: { ticks: { maxTicksLimit: 15 } }
+                    }
+                }
+            });
+        }
+
+        // Message-level detail table
+        if (timeline.length > 0) {
+            var phases = costProfile.phases || {};
+            var third = Math.max(Math.floor(timeline.length / 3), 1);
+            var phaseColors = { early: '#004BFF', mid: '#FF7A20', late: '#00D35D' };
+
+            var tblHtml = '<div style="background: #FFFFFF; border-radius: 16px; padding: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); overflow-x: auto;">';
+            tblHtml += '<div style="font-size: 1rem; font-weight: 700; margin-bottom: 16px;">Message-Level Detail';
+            if (phases.early) tblHtml += ' <span style="font-size: 0.75rem; color: #666; font-weight: 400;">(Phases: <span style="color: #004BFF;">early ' + phases.early.pct + '%</span> / <span style="color: #FF7A20;">mid ' + phases.mid.pct + '%</span> / <span style="color: #00D35D;">late ' + phases.late.pct + '%</span>)</span>';
+            tblHtml += '</div>';
+            tblHtml += '<table style="width: 100%; border-collapse: collapse; font-size: 0.78rem;">';
+            tblHtml += '<thead><tr style="border-bottom: 1px solid #F2F2F2; color: #666;">';
+            tblHtml += '<th style="padding: 6px; text-align: left;">#</th><th style="padding: 6px; text-align: left;">Timestamp</th><th style="padding: 6px; text-align: left;">Model</th><th style="padding: 6px; text-align: right;">Input</th><th style="padding: 6px; text-align: right;">Output</th><th style="padding: 6px; text-align: right;">Cache Write</th><th style="padding: 6px; text-align: right;">Cache Read</th><th style="padding: 6px; text-align: right;">Cost</th><th style="padding: 6px; text-align: right;">Cumulative</th>';
+            tblHtml += '</tr></thead><tbody>';
+
+            timeline.forEach(function(t, i) {
+                var phase = i < third ? 'early' : (i < 2 * third ? 'mid' : 'late');
+                var bColor = phaseColors[phase];
+                tblHtml += '<tr style="border-bottom: 1px solid #F2F2F2; border-left: 3px solid ' + bColor + ';">';
+                tblHtml += '<td style="padding: 6px; color: #999;">' + (i + 1) + '</td>';
+                tblHtml += '<td style="padding: 6px; color: #666; font-size: 0.72rem;">' + (t.timestamp || '').replace('T', ' ').slice(0, 19) + '</td>';
+                tblHtml += '<td style="padding: 6px;">' + (t.model || '').replace(/^claude-/, '').slice(0, 20) + '</td>';
+                tblHtml += '<td style="padding: 6px; text-align: right; color: #666;">' + (t.input_tokens || 0).toLocaleString() + '</td>';
+                tblHtml += '<td style="padding: 6px; text-align: right; color: #666;">' + (t.output_tokens || 0).toLocaleString() + '</td>';
+                tblHtml += '<td style="padding: 6px; text-align: right; color: #666;">' + (t.cache_creation_tokens || 0).toLocaleString() + '</td>';
+                tblHtml += '<td style="padding: 6px; text-align: right; color: #666;">' + (t.cache_read_tokens || 0).toLocaleString() + '</td>';
+                tblHtml += '<td style="padding: 6px; text-align: right; color: #00D35D;">$' + (t.cost_usd || 0).toFixed(4) + '</td>';
+                tblHtml += '<td style="padding: 6px; text-align: right; font-weight: 600;">$' + (t.cumulative_cost || 0).toFixed(4) + '</td>';
+                tblHtml += '</tr>';
+            });
+
+            tblHtml += '</tbody></table></div>';
+            el.insertAdjacentHTML('beforeend', tblHtml);
+        }
+    }
 
     // ===== COPY SESSION ID =====
     function copySessionId(element) {
