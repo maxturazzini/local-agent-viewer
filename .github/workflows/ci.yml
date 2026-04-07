@@ -34,7 +34,6 @@ jobs:
         run: |
           lav --help
           lav-parse --help
-          lav-server --help
           lav-pricing --help
 
       - name: Parse into empty DB (smoke test)
