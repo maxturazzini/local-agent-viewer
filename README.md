@@ -8,6 +8,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/maxturazzini/local-agent-viewer/actions/workflows/ci.yml"><img src="https://github.com/maxturazzini/local-agent-viewer/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
   <img src="https://img.shields.io/badge/python-3.9+-3776AB.svg?logo=python&logoColor=white" alt="Python 3.9+" />
   <img src="https://img.shields.io/badge/dependencies-zero_(stdlib_only)-brightgreen.svg" alt="Zero dependencies" />
@@ -95,10 +96,14 @@ cp .env.example .env
 
 ```env
 # Only needed for optional features — core works without any of these
-OPENAI_API_KEY=sk-...            # AI classification (lav-classify)
-ANTHROPIC_API_KEY=sk-ant-...     # Qdrant KB embedding (lav-index)
-QDRANT_URL=http://localhost:6333 # Qdrant server URL
+OPENAI_API_KEY=sk-...            # AI classification (lav-classify) + embeddings (lav-index)
+ANTHROPIC_API_KEY=sk-ant-...     # Qdrant KB auto-tagging via Haiku
+QDRANT_URL=http://localhost:6333 # Remote Qdrant server (omit for local file storage)
 CHATGPT_EXPORT_PATH=             # Path to ChatGPT conversations.json
+
+# Auth for CLI (lav) and MCP server (lav-mcp)
+# LAV_API_KEY=your-secret-key        # Required for write operations (sync, kb index, pricing add)
+# LAV_READ_API_KEY=your-read-key     # Optional — if set, read operations require this key
 
 # Classification config (optional — defaults work with OpenAI)
 # LAV_CLASSIFY_MODEL=gpt-4.1-mini
@@ -129,7 +134,7 @@ The database is created automatically at `~/.local/share/local-agent-viewer/loca
 | `lav-parse-chatgpt` | Parse ChatGPT export | `CHATGPT_EXPORT_PATH` |
 | `lav-server` | Start the web server | — |
 | `lav-classify` | Classify interactions via gpt-4.1-mini | `OPENAI_API_KEY` |
-| `lav-index` | Index interactions into Qdrant | `QDRANT_URL` |
+| `lav-index` | Index interactions into Qdrant | `qdrant-client`, `openai` |
 | `lav-mcp` | Start MCP server | `fastmcp` |
 | `lav-pricing` | Manage model pricing for cost tracking | — |
 
@@ -284,6 +289,7 @@ lav-mcp
 | `kb_index` | `LAV_API_KEY` | Index an interaction into Qdrant (auto-tag or pre-metadata) |
 | `kb_remove` | `LAV_API_KEY` | Remove an interaction from Qdrant |
 | `kb_update_tags` | `LAV_API_KEY` | Update tags without re-embedding |
+| `manage_pricing` | `LAV_READ_API_KEY` / `LAV_API_KEY` | List, add, or lookup model pricing |
 
 **Claude Code configuration** (`~/.claude/claude_code_config.json`):
 ```json
@@ -517,6 +523,7 @@ local-agent-viewer/
 │   ├── cli.py                     # Unified CLI (lav command)
 │   ├── config.py                  # Paths, ports, runtime config
 │   ├── queries.py                 # SQL queries with 4D filters
+│   ├── pricing.py                 # Model pricing management + lav-pricing CLI
 │   ├── server.py                  # HTTP server with role-based gating
 │   ├── mcp_server.py              # FastMCP server for AI tool integration
 │   ├── parsers/
@@ -525,14 +532,14 @@ local-agent-viewer/
 │   ├── classifiers/
 │   │   ├── openai_classifier.py   # OpenAI Structured Outputs classifier
 │   │   └── sql_classifier.py      # Batch CLI classifier (gpt-4.1-mini)
-│   └── qdrant/
-│       ├── store.py               # Qdrant vector store client
-│       ├── indexer.py              # Interaction indexer
-│       └── kb_indexer.py           # CLI indexer (reuses SQL metadata)
-├── static/                        # Frontend
-│   ├── dashboard.html             # Analytics dashboard (Chart.js)
-│   ├── interactions.html          # Interaction browser
-│   └── tags.html                  # Tag cloud + stats
+│   ├── qdrant/
+│   │   ├── store.py               # Qdrant vector store client
+│   │   ├── indexer.py              # Interaction indexer
+│   │   └── kb_indexer.py           # CLI indexer (reuses SQL metadata)
+│   └── static/                    # Frontend
+│       ├── dashboard.html         # Analytics dashboard (Chart.js)
+│       ├── interactions.html      # Interaction browser
+│       └── tags.html              # Tag cloud + stats
 ├── scripts/
 │   └── migrate.py                 # Migration from claude-parser
 ├── tests/
