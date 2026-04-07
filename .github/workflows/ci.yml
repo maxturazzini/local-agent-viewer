@@ -42,9 +42,9 @@ jobs:
           lav search "test" --format brief || true
 
       - name: Server health check
-        if: runner.os == 'Linux'
         run: |
-          lav-server &
+          lav-server > /tmp/lav-server.log 2>&1 &
           sleep 3
-          curl -f --retry 3 --retry-delay 2 http://localhost:8764/api/health
+          cat /tmp/lav-server.log
+          curl -f --retry 3 --retry-delay 2 http://127.0.0.1:8764/api/health
           kill %1
