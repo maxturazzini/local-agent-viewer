@@ -1555,7 +1555,7 @@ def get_task_type_costs(conn, project_id=None, user_id=None, host_id=None,
     if has_classification:
         data = run_query(conn, f"""
             SELECT
-                COALESCE(cm.task_type, 'unclassified') as task_type,
+                COALESCE(cm.classification, 'unclassified') as task_type,
                 COUNT(DISTINCT c.session_id || '-' || c.project_id) as session_count,
                 ROUND(AVG(session_cost), 4) as avg_cost,
                 ROUND(SUM(session_cost), 4) as total_cost,
@@ -1587,7 +1587,7 @@ def get_task_type_costs(conn, project_id=None, user_id=None, host_id=None,
                 {i_where}
             ) c
             LEFT JOIN interaction_metadata cm ON cm.session_id = c.session_id AND cm.project_id = c.project_id
-            GROUP BY COALESCE(cm.task_type, 'unclassified')
+            GROUP BY COALESCE(cm.classification, 'unclassified')
             ORDER BY total_cost DESC
         """, i_params if i_params else None)
 
