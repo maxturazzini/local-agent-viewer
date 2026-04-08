@@ -17,6 +17,20 @@
 
 ---
 
+## Want to build your own AI agent?
+
+If LocalAgentViewer sparked your curiosity about AI agents, you might want to go deeper.
+
+**[AI, MAX Academy](https://academy.aimax.it)** offers practical AI training born from 200+ real-world workshops with 2000+ professionals. One of the flagship courses is:
+
+### [Your AI assistant. On your computer.](https://academy.aimax.it/corsi/minime-corso-base/index.html)
+
+A hands-on course that walks you through building a personal AI assistant that works on your own files, knows your work, and stays where it belongs — with you. No cloud dependency, no black boxes. You learn how to think *with* AI, not just how to click buttons.
+
+> The course is currently in **Italian**, but an **English version is on the way**. First lesson is free.
+
+---
+
 ## The problem
 
 You talk to AI agents every day. You solve bugs, design systems, refactor codebases, debug deployments. But those interactions vanish into scattered JSONL files buried in `~/.claude/`, `~/.codex/`, and platform-specific directories. No search. No analytics. No memory.
