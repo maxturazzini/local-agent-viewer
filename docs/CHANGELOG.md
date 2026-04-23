@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.5 — 2026-04-23
+
+LAV-39: Fix double-counting of Claude Code costs/tokens on multi-block turns.
+- Claude Code writes one JSONL record per content block (`thinking`, `tool_use`, text) but all blocks of a single API turn share the same `message.id` and `usage`. The parser was summing usage per row, inflating `cost_usd` and `total_tokens` by ~20–35% on Opus sessions with thinking.
+- `messages` and `token_usage` gain an `api_message_id` column; new partial `UNIQUE(session_id, project_id, api_message_id)` index on `token_usage` makes `INSERT OR IGNORE` idempotent per API turn.
+- `process_message_content` credits `tokens_in/tokens_out` only to the first block of each `api_message_id` (checks DB for existing non-zero row) so `update_interaction`'s `SUM(tokens_in+tokens_out)` stops double-counting.
+- `lav-parse --full` now wipes prior claude_code `messages`/`token_usage` rows for the project+host before re-parsing, so old duplicates with empty `api_message_id` are cleaned up on the authoritative reparse.
+- `get_session_cost_profile` exposes `api_message_id` in each timeline entry.
+- After deploying the fix, run `lav-parse --full` once to rebuild existing data cleanly.
+
 ## 0.1.4 — 2026-04-07
 
 Cost Intelligence (Alpha) — work-pattern-based token cost analysis.

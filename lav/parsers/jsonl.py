@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS messages (
     tokens_in INTEGER DEFAULT 0,
     tokens_out INTEGER DEFAULT 0,
     model TEXT,
+    api_message_id TEXT DEFAULT '',
     UNIQUE(session_id, project_id, uuid)
 );
 
@@ -217,8 +218,10 @@ CREATE TABLE IF NOT EXISTS token_usage (
     cache_creation_tokens INTEGER DEFAULT 0,
     cache_read_tokens INTEGER DEFAULT 0,
     cwd TEXT,
+    api_message_id TEXT DEFAULT '',
     UNIQUE(timestamp, session_id, project_id)
 );
+-- LAV-39: idx_token_usage_api_msg partial UNIQUE created in _migrate_add_api_message_id
 
 CREATE TABLE IF NOT EXISTS session_sources (
     session_id TEXT NOT NULL,
@@ -371,6 +374,22 @@ def _migrate_parse_state(conn: sqlite3.Connection):
     print("  Migration complete (old parse_state dropped, full reparse needed)")
 
 
+def _migrate_add_api_message_id(conn: sqlite3.Connection):
+    """LAV-39: add api_message_id column to messages/token_usage + partial unique index."""
+    msg_cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+    if "api_message_id" not in msg_cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN api_message_id TEXT DEFAULT ''")
+    tu_cols = {row[1] for row in conn.execute("PRAGMA table_info(token_usage)").fetchall()}
+    if "api_message_id" not in tu_cols:
+        conn.execute("ALTER TABLE token_usage ADD COLUMN api_message_id TEXT DEFAULT ''")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_token_usage_api_msg "
+        "ON token_usage(session_id, project_id, api_message_id) "
+        "WHERE api_message_id != ''"
+    )
+    conn.commit()
+
+
 def _migrate_conversations_to_interactions(conn: sqlite3.Connection, db_path: Path):
     """Migrate old 'conversations'/'conversation_metadata' tables to 'interactions'/'interaction_metadata'."""
     # Check if old 'conversations' table exists
@@ -424,6 +443,11 @@ def init_db(db_path: Path = UNIFIED_DB_PATH) -> sqlite3.Connection:
         _migrate_parse_state(conn)
     except Exception as e:
         print(f"  Migration check skipped: {e}")
+    # LAV-39: add api_message_id column + partial unique index
+    try:
+        _migrate_add_api_message_id(conn)
+    except Exception as e:
+        print(f"  api_message_id migration skipped: {e}")
     # Migrate conversations -> interactions
     try:
         _migrate_conversations_to_interactions(conn, db_path)
@@ -852,6 +876,7 @@ def extract_token_usage(message: dict) -> Optional[dict]:
         "output_tokens": usage.get("output_tokens", 0),
         "cache_creation_tokens": usage.get("cache_creation_input_tokens", 0),
         "cache_read_tokens": usage.get("cache_read_input_tokens", 0),
+        "api_message_id": msg_data.get("id", "") or "",
     }
 
 
@@ -873,11 +898,13 @@ def process_token_usage(message: dict, conn: sqlite3.Connection, project_id: int
         conn.execute(
             """INSERT OR IGNORE INTO token_usage
                (timestamp, session_id, project_id, user_id, host_id,
-                model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cwd)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cwd,
+                api_message_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (timestamp, session_id, project_id, user_id, host_id,
              usage["model"], usage["input_tokens"], usage["output_tokens"],
-             usage["cache_creation_tokens"], usage["cache_read_tokens"], cwd)
+             usage["cache_creation_tokens"], usage["cache_read_tokens"], cwd,
+             usage.get("api_message_id", ""))
         )
     except sqlite3.Error as e:
         print(f"DB error (tokens): {e}")
@@ -1001,7 +1028,15 @@ def process_tool_call(tool_call: dict, message: dict, conn: sqlite3.Connection,
 
 
 def process_message_content(message: dict, conn: sqlite3.Connection, project_id: int, user_id: int, host_id: int):
-    """Save message content to messages table with full structure."""
+    """Save message content to messages table with full structure.
+
+    LAV-39: Claude Code writes one JSONL record per content block (thinking, tool_use, text) but
+    all blocks of the same API turn share the same `message.id` and carry the identical `usage`.
+    We credit tokens only to the first block seen per api_message_id; later blocks store
+    tokens_in/tokens_out = 0 so downstream SUM(tokens_in+tokens_out) in update_interaction
+    doesn't double-count. Works across incremental runs: the check queries the DB for any
+    existing row of this api_message_id that already has tokens.
+    """
     msg_type = message.get("type")
     if msg_type not in ("user", "assistant"):
         return
@@ -1021,18 +1056,30 @@ def process_message_content(message: dict, conn: sqlite3.Connection, project_id:
     tokens_in = 0
     tokens_out = 0
     model = ""
+    api_message_id = ""
     if msg_type == "assistant":
-        usage = message.get("message", {}).get("usage", {})
+        msg_data = message.get("message", {})
+        usage = msg_data.get("usage", {})
         tokens_in = usage.get("input_tokens", 0)
         tokens_out = usage.get("output_tokens", 0)
-        model = message.get("message", {}).get("model", "")
+        model = msg_data.get("model", "")
+        api_message_id = msg_data.get("id", "") or ""
+        if api_message_id and (tokens_in or tokens_out):
+            existing = conn.execute(
+                "SELECT 1 FROM messages WHERE session_id=? AND project_id=? AND api_message_id=? "
+                "AND (tokens_in>0 OR tokens_out>0) LIMIT 1",
+                (session_id, project_id, api_message_id)
+            ).fetchone()
+            if existing:
+                tokens_in = 0
+                tokens_out = 0
 
     try:
         conn.execute(
             """INSERT OR IGNORE INTO messages
-               (session_id, project_id, user_id, host_id, uuid, type, content, timestamp, tokens_in, tokens_out, model)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (session_id, project_id, user_id, host_id, uuid, msg_type, content_json, timestamp, tokens_in, tokens_out, model)
+               (session_id, project_id, user_id, host_id, uuid, type, content, timestamp, tokens_in, tokens_out, model, api_message_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (session_id, project_id, user_id, host_id, uuid, msg_type, content_json, timestamp, tokens_in, tokens_out, model, api_message_id)
         )
     except sqlite3.Error as e:
         print(f"DB error (messages): {e}")
@@ -1402,6 +1449,27 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
         print(f"  Incremental from: {last_ts}")
     else:
         print("  Full parse")
+
+    if full_reparse:
+        # LAV-39: wipe prior claude_code rows for this project/host so re-parse rebuilds clean
+        # (without this, old duplicated token_usage rows with empty api_message_id would remain).
+        sid_subquery = (
+            "SELECT session_id FROM session_sources "
+            "WHERE project_id = ? AND source = ?"
+        )
+        deleted_msgs = conn.execute(
+            f"DELETE FROM messages WHERE project_id = ? AND host_id = ? "
+            f"AND session_id IN ({sid_subquery})",
+            (project_id, host_id, project_id, SOURCE_CLAUDE_CODE)
+        ).rowcount
+        deleted_tu = conn.execute(
+            f"DELETE FROM token_usage WHERE project_id = ? AND host_id = ? "
+            f"AND session_id IN ({sid_subquery})",
+            (project_id, host_id, project_id, SOURCE_CLAUDE_CODE)
+        ).rowcount
+        conn.commit()
+        if deleted_msgs or deleted_tu:
+            print(f"  Wiped {deleted_msgs} messages / {deleted_tu} token_usage rows (full reparse)")
 
     max_timestamp = last_ts or ""
     files_processed = 0

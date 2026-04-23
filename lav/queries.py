@@ -1283,6 +1283,7 @@ def get_session_cost_profile(conn, session_id, project_id=None):
             COALESCE(tu.output_tokens, 0) as output_tokens,
             COALESCE(tu.cache_creation_tokens, 0) as cache_creation_tokens,
             COALESCE(tu.cache_read_tokens, 0) as cache_read_tokens,
+            COALESCE(tu.api_message_id, '') as api_message_id,
             {_COST_EXPR} as cost_usd
         FROM token_usage tu
         {_PRICE_JOIN}
@@ -1316,6 +1317,7 @@ def get_session_cost_profile(conn, session_id, project_id=None):
             "output_tokens": r["output_tokens"],
             "cache_creation_tokens": r["cache_creation_tokens"],
             "cache_read_tokens": r["cache_read_tokens"],
+            "api_message_id": r["api_message_id"],
             "cost_usd": round(cost, 6),
             "cumulative_cost": round(cumulative, 4),
         })
