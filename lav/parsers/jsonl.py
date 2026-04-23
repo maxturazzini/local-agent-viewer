@@ -2226,14 +2226,15 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                 conn.execute("""
                     INSERT OR IGNORE INTO messages
                     (session_id, project_id, user_id, host_id, uuid, type, content,
-                     timestamp, tokens_in, tokens_out, model)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     timestamp, tokens_in, tokens_out, model, api_message_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     session_id, project_id, r_user_id, r_host_id,
                     msg.get("uuid"), msg.get("type", ""),
                     msg.get("content", ""), msg.get("timestamp", ""),
                     msg.get("tokens_in", 0), msg.get("tokens_out", 0),
                     msg.get("model", ""),
+                    msg.get("api_message_id", "") or "",
                 ))
                 stats["messages"] += 1
             except sqlite3.Error:
@@ -2244,14 +2245,16 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                 conn.execute("""
                     INSERT OR IGNORE INTO token_usage
                     (timestamp, session_id, project_id, user_id, host_id, model,
-                     input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cwd)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cwd,
+                     api_message_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     tu.get("timestamp", ""), session_id, project_id, r_user_id, r_host_id,
                     tu.get("model", ""),
                     tu.get("input_tokens", 0), tu.get("output_tokens", 0),
                     tu.get("cache_creation_tokens", 0), tu.get("cache_read_tokens", 0),
                     tu.get("cwd", ""),
+                    tu.get("api_message_id", "") or "",
                 ))
                 stats["token_usage"] += 1
             except sqlite3.Error:
