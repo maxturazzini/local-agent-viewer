@@ -1827,7 +1827,7 @@ def export_sessions(conn, since_ts: str, limit: int = 1000) -> list:
         LEFT JOIN hosts h ON h.id = c.host_id
         LEFT JOIN session_sources ss ON ss.session_id = c.session_id AND ss.project_id = c.project_id
         WHERE c.timestamp > ?
-        ORDER BY c.timestamp DESC
+        ORDER BY c.timestamp ASC
         LIMIT ?
     """, [since_ts, limit])
 
