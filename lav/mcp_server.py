@@ -21,6 +21,7 @@ Tools (write, require LAV_API_KEY):
 import json
 import os
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -28,8 +29,11 @@ import lav  # noqa: F401 — triggers .env loading
 from fastmcp import FastMCP
 from lav.config import UNIFIED_DB_PATH, QDRANT_DATA_DIR, QDRANT_COLLECTION, QDRANT_URL
 
-# Lazy imports to avoid loading heavy deps at startup
+# Lazy imports to avoid loading heavy deps at startup.
+# The lock guards cold-start initialization under the streamable-http transport,
+# where concurrent requests can otherwise race on Qdrant file-mode file locks.
 _kb_store = None
+_kb_store_lock = threading.Lock()
 
 
 def _get_read_connection() -> Optional[sqlite3.Connection]:
@@ -44,16 +48,19 @@ def _get_read_connection() -> Optional[sqlite3.Connection]:
 
 
 def _get_kb_store():
-    """Lazy-init Qdrant vector store (HTTP or file mode)."""
+    """Lazy-init Qdrant vector store (HTTP or file mode), thread-safe."""
     global _kb_store
-    if _kb_store is None:
-        from lav.qdrant.store import InteractionVectorStore
-        if QDRANT_URL:
-            _kb_store = InteractionVectorStore(url=QDRANT_URL, collection=QDRANT_COLLECTION)
-        else:
-            QDRANT_DATA_DIR.mkdir(parents=True, exist_ok=True)
-            _kb_store = InteractionVectorStore(data_path=QDRANT_DATA_DIR, collection=QDRANT_COLLECTION)
-        _kb_store.ensure_collection()
+    if _kb_store is not None:
+        return _kb_store
+    with _kb_store_lock:
+        if _kb_store is None:
+            from lav.qdrant.store import InteractionVectorStore
+            if QDRANT_URL:
+                _kb_store = InteractionVectorStore(url=QDRANT_URL, collection=QDRANT_COLLECTION)
+            else:
+                QDRANT_DATA_DIR.mkdir(parents=True, exist_ok=True)
+                _kb_store = InteractionVectorStore(data_path=QDRANT_DATA_DIR, collection=QDRANT_COLLECTION)
+            _kb_store.ensure_collection()
     return _kb_store
 
 

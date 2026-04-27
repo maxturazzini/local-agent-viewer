@@ -14,6 +14,7 @@ LAV-41: Remote MCP server via streamable-http transport.
 - New `utils/services/`: cross-platform LaunchAgent (`com.aimax.lav-mcp.plist`) + systemd user unit (`lav-mcp.service`) + wrapper (`bin/lav-mcp.sh`) + `install.sh` that detects platform and substitutes `__HOME__`. Defaults to loopback for safety.
 - New `docs/remote-mcp-server.md` reference (configuration, deployment, client setup, security, troubleshooting). README gains a "Remote MCP server" subsection under MCP Server.
 - `.env.example` documents the new `LAV_MCP_TRANSPORT` / `LAV_MCP_HOST` / `LAV_MCP_PORT` env vars (commented-out, stdio remains the implicit default).
+- Thread-safe lazy init of the Qdrant store via `threading.Lock` (double-checked locking). Pre-existing race in `_get_kb_store()` was harmless under stdio (single-threaded) but caused cold-start failures when concurrent HTTP requests hit the un-initialized singleton.
 - No code changes outside `lav/mcp_server.py`. CLI, HTTP server, and core modules untouched.
 
 ## 0.1.5 — 2026-04-23
