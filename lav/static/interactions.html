@@ -1378,21 +1378,22 @@
                     ? `<span class="kb-sensitivity ${metaSens}">${metaSens}</span>`
                     : '<span style="color:#ccc">-</span>';
 
+                const projectName = conv.project || '';
                 row.insertAdjacentHTML('beforeend', `
                     <div class="conv-timestamp" data-col="timestamp">${formatTimestamp(conv.timestamp)}</div>
                     <div class="conv-summary-cell" data-col="summary">
                         <span class="conv-display" title="${escapeAttr(conv.display || conv.summary || '')}">${escapeHtml(conv.display || conv.summary || '(no summary)')}</span>
                     </div>
-                    <div class="conv-project" data-col="project"><span class="badge badge-project" style="background: ${conv.project ? getProjectColor(conv.project) : '#999'};" data-project="${conv.project || ''}" title="Filter by ${conv.project || ''}">${conv.project || '-'}</span></div>
-                    <div class="conv-user" data-col="user">${conv.username || '-'}</div>
-                    <div class="conv-host" data-col="host">${hostShort || '-'}</div>
-                    <div class="conv-source" data-col="source">${sourceLabel || '-'}</div>
+                    <div class="conv-project" data-col="project"><span class="badge badge-project" style="background: ${projectName ? getProjectColor(projectName) : '#999'};" data-project="${escapeAttr(projectName)}" title="Filter by ${escapeAttr(projectName)}">${escapeHtml(projectName || '-')}</span></div>
+                    <div class="conv-user" data-col="user">${escapeHtml(conv.username || '-')}</div>
+                    <div class="conv-host" data-col="host">${escapeHtml(hostShort || '-')}</div>
+                    <div class="conv-source" data-col="source">${escapeHtml(sourceLabel || '-')}</div>
                     <div class="conv-classification" data-col="class">${clsBadge}</div>
                     <div class="conv-sensitivity" data-col="sens">${sensBadge}</div>
                     <div class="conv-tokens" data-col="tokens">${formatNumber(conv.total_tokens)}</div>
                     <div class="conv-cost" data-col="cost" style="font-size:0.82rem;color:var(--spring-green);font-weight:600;">$${(conv.cost_usd || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
                     <div class="conv-messages" data-col="messages">${conv.message_count || 0} msgs</div>
-                    <div data-col="session"><span class="conv-session-id" data-full-id="${conv.session_id}" onclick="event.stopPropagation(); copySessionId(this);">${conv.session_id.substring(0, 8)}</span></div>
+                    <div data-col="session"><span class="conv-session-id" data-full-id="${escapeAttr(conv.session_id || '')}" onclick="event.stopPropagation(); copySessionId(this);">${escapeHtml((conv.session_id || '').substring(0, 8))}</span></div>
                 `);
 
                 row.addEventListener('click', (e) => {
