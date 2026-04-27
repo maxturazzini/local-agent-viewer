@@ -13,6 +13,7 @@ LAV-41: Remote MCP server via streamable-http transport.
 - Tool return signatures unchanged — FastMCP 3.1.0 serializes dict returns into `structured_content` for both stdio and streamable-http (verified end-to-end with smoke test). No payload wrapping needed.
 - New `utils/services/`: cross-platform LaunchAgent (`com.aimax.lav-mcp.plist`) + systemd user unit (`lav-mcp.service`) + wrapper (`bin/lav-mcp.sh`) + `install.sh` that detects platform and substitutes `__HOME__`. Defaults to loopback for safety.
 - New `docs/remote-mcp-server.md` reference (configuration, deployment, client setup, security, troubleshooting). README gains a "Remote MCP server" subsection under MCP Server.
+- `.env.example` documents the new `LAV_MCP_TRANSPORT` / `LAV_MCP_HOST` / `LAV_MCP_PORT` env vars (commented-out, stdio remains the implicit default).
 - No code changes outside `lav/mcp_server.py`. CLI, HTTP server, and core modules untouched.
 
 ## 0.1.5 — 2026-04-23
