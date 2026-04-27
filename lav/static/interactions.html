@@ -1381,7 +1381,7 @@
                 row.insertAdjacentHTML('beforeend', `
                     <div class="conv-timestamp" data-col="timestamp">${formatTimestamp(conv.timestamp)}</div>
                     <div class="conv-summary-cell" data-col="summary">
-                        <span class="conv-display" title="${conv.display || conv.summary || ''}">${conv.display || conv.summary || '(no summary)'}</span>
+                        <span class="conv-display" title="${escapeAttr(conv.display || conv.summary || '')}">${escapeHtml(conv.display || conv.summary || '(no summary)')}</span>
                     </div>
                     <div class="conv-project" data-col="project"><span class="badge badge-project" style="background: ${conv.project ? getProjectColor(conv.project) : '#999'};" data-project="${conv.project || ''}" title="Filter by ${conv.project || ''}">${conv.project || '-'}</span></div>
                     <div class="conv-user" data-col="user">${conv.username || '-'}</div>
@@ -1466,6 +1466,11 @@
         const div = document.createElement('div');
         div.textContent = str;
         return div.innerHTML;
+    }
+
+    function escapeAttr(str) {
+        // escapeHtml handles &<>; we additionally escape " (and ') for attribute contexts
+        return escapeHtml(str).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
     function toggleCollapsible(headerEl) {
@@ -1892,17 +1897,44 @@
     // ===== COPY SESSION ID =====
     function copySessionId(element) {
         const fullId = element.dataset.fullId;
-        navigator.clipboard.writeText(fullId).then(() => {
+        if (!fullId) return;
+
+        const showFeedback = (ok) => {
             const original = element.textContent;
-            element.textContent = 'Copied';
-            element.style.background = 'rgba(0, 200, 0, 0.2)';
-            element.style.color = 'green';
+            element.textContent = ok ? 'Copied' : 'Copy failed';
+            element.style.background = ok ? 'rgba(0, 200, 0, 0.2)' : 'rgba(220, 0, 0, 0.2)';
+            element.style.color = ok ? 'green' : '#b00';
             setTimeout(() => {
                 element.textContent = original;
                 element.style.background = '';
                 element.style.color = '';
             }, 1500);
-        });
+        };
+
+        const fallbackCopy = () => {
+            // Works in non-secure contexts (e.g. http://hostname over LAN) where navigator.clipboard is undefined/blocked.
+            const ta = document.createElement('textarea');
+            ta.value = fullId;
+            ta.setAttribute('readonly', '');
+            ta.style.position = 'fixed';
+            ta.style.top = '-1000px';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            let ok = false;
+            try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+            document.body.removeChild(ta);
+            showFeedback(ok);
+        };
+
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(fullId).then(
+                () => showFeedback(true),
+                () => fallbackCopy()
+            );
+        } else {
+            fallbackCopy();
+        }
     }
 
     // ===== INITIAL LOAD =====
