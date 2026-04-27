@@ -322,6 +322,41 @@ lav-mcp
 
 Write tools require `LAV_API_KEY`. Read tools require `LAV_READ_API_KEY` if set on the server — if not set, read access is open. Both keys are defined in `.env` and passed to MCP clients via config.
 
+#### Remote MCP server (HTTP transport)
+
+By default `lav-mcp` runs in **stdio** mode (in-process, local clients only). To consume the same tools from a different machine — without ssh-stdio tunnels — switch to the **streamable-http** transport:
+
+```bash
+LAV_MCP_TRANSPORT=streamable-http LAV_MCP_PORT=8765 lav-mcp
+# Listens on http://127.0.0.1:8765/mcp by default (loopback).
+# Set LAV_MCP_HOST=0.0.0.0 to expose on LAN/VPN.
+```
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `LAV_MCP_TRANSPORT` | `stdio` | Set to `streamable-http` to enable the HTTP server |
+| `LAV_MCP_HOST` | `127.0.0.1` | Bind address (use `0.0.0.0` for LAN/VPN) |
+| `LAV_MCP_PORT` | `8765` | HTTP port |
+
+**Client config** (Claude Desktop / Claude Code) via `mcp-remote`:
+
+```json
+{
+  "mcpServers": {
+    "local-agent-viewer": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://<host>:8765/mcp"]
+    }
+  }
+}
+```
+
+API keys are passed as tool arguments (field `api_key`), not as HTTP headers — the client reads them from local env and includes them in the MCP request payload.
+
+**Security**: when `LAV_MCP_HOST=0.0.0.0`, always set `LAV_READ_API_KEY` in your `.env` so read access is not open to the network. The transport itself is unencrypted (no TLS) — keep the port behind a VPN or trusted LAN.
+
+For LaunchAgent / systemd templates and installation, see [utils/services/README.md](utils/services/README.md). Full reference: [docs/remote-mcp-server.md](docs/remote-mcp-server.md).
+
 ## Multi-Machine Setup
 
 <details>

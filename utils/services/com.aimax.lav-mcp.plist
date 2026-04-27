@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  macOS LaunchAgent template for lav-mcp (streamable-http transport).
+  Replace __HOME__ with your home directory (e.g. /Users/youruser) before installing,
+  or run utils/services/install.sh which performs the substitution automatically.
+
+  Install:
+    cp com.aimax.lav-mcp.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.aimax.lav-mcp.plist
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.aimax.lav-mcp.plist
+    rm ~/Library/LaunchAgents/com.aimax.lav-mcp.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aimax.lav-mcp</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HOME__/.local/bin/lav-mcp.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>__HOME__/.local/logs/lav-mcp.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.local/logs/lav-mcp-err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin</string>
+        <key>HOME</key>
+        <string>__HOME__</string>
+    </dict>
+</dict>
+</plist>

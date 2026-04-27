@@ -18,6 +18,7 @@ Tools (write, require LAV_API_KEY):
   - sync: trigger data re-parse
 """
 
+import json
 import os
 import sqlite3
 from pathlib import Path
@@ -294,7 +295,6 @@ def kb_index(
     messages = data["messages"]
 
     # Parse optional inputs
-    import json
     tag_list = [t.strip() for t in tags.split(",")] if tags else []
     metadata = json.loads(pre_metadata) if pre_metadata else None
 
@@ -497,7 +497,13 @@ def manage_pricing(
 
 
 def main():
-    mcp.run()
+    transport = os.getenv("LAV_MCP_TRANSPORT", "stdio").lower()
+    if transport in ("streamable-http", "http"):
+        host = os.getenv("LAV_MCP_HOST", "127.0.0.1")
+        port = int(os.getenv("LAV_MCP_PORT", "8765"))
+        mcp.run(transport="streamable-http", host=host, port=port)
+    else:
+        mcp.run()
 
 
 if __name__ == "__main__":

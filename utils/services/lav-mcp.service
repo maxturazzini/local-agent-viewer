@@ -1,0 +1,28 @@
+# Linux systemd unit template for lav-mcp (streamable-http transport).
+# Designed as a user service (no root). Place under ~/.config/systemd/user/
+# and start with `systemctl --user enable --now lav-mcp.service`.
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp lav-mcp.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now lav-mcp.service
+#
+# Logs:
+#   journalctl --user -u lav-mcp.service -f
+
+[Unit]
+Description=LocalAgentViewer MCP server (streamable-http)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/lav-mcp.sh
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:%h/.local/logs/lav-mcp.log
+StandardError=append:%h/.local/logs/lav-mcp-err.log
+
+[Install]
+WantedBy=default.target
