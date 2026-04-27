@@ -250,6 +250,15 @@ def parse_chatgpt_export(
     else:
         last_update_float = 0.0
         print("  Full parse")
+        # mcp_tool_calls has no UNIQUE constraint, so INSERT OR IGNORE doesn't
+        # dedupe on re-runs. Wipe prior chatgpt rows before re-inserting.
+        try:
+            conn.execute(
+                "DELETE FROM mcp_tool_calls WHERE session_id LIKE 'chatgpt:%'"
+            )
+            conn.commit()
+        except sqlite3.Error as e:
+            print(f"  DB warning (cleanup mcp_tool_calls): {e}")
 
     # Load JSON
     print("  Loading JSON...")

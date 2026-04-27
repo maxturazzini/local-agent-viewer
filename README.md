@@ -114,6 +114,7 @@ OPENAI_API_KEY=sk-...            # AI classification (lav-classify) + embeddings
 ANTHROPIC_API_KEY=sk-ant-...     # Qdrant KB auto-tagging via Haiku
 QDRANT_URL=http://localhost:6333 # Remote Qdrant server (omit for local file storage)
 CHATGPT_EXPORT_PATH=             # Path to ChatGPT conversations.json
+CLAUDE_AI_EXPORT_PATH=           # Folder of Anthropic claude.ai export (data-*-batch-0000)
 
 # Auth for CLI (lav) and MCP server (lav-mcp)
 # LAV_API_KEY=your-secret-key        # Required for write operations (sync, kb index, pricing add)
@@ -146,6 +147,7 @@ The database is created automatically at `~/.local/share/local-agent-viewer/loca
 | `lav` | **Unified CLI** — query, search, KB management, sync, pricing | — |
 | `lav-parse` | Parse JSONL interactions (Claude Code, Codex, Desktop) | — |
 | `lav-parse-chatgpt` | Parse ChatGPT export | `CHATGPT_EXPORT_PATH` |
+| `lav-parse-claude-ai` | Parse Anthropic claude.ai account export | `CLAUDE_AI_EXPORT_PATH` (or `--folder`) |
 | `lav-server` | Start the web server | — |
 | `lav-classify` | Classify interactions via gpt-4.1-mini | `OPENAI_API_KEY` |
 | `lav-index` | Index interactions into Qdrant | `qdrant-client`, `openai` |

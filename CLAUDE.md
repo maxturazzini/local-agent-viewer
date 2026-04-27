@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-LocalAgentViewer (LAV) — local long-term memory for AI agent interactions. Parses JSONL/JSON logs from Claude Code, Codex CLI, Claude Desktop, and ChatGPT into a single SQLite database with a web dashboard, AI classification, and optional vector search.
+LocalAgentViewer (LAV) — local long-term memory for AI agent interactions. Parses JSONL/JSON logs from Claude Code, Codex CLI, Claude Desktop, ChatGPT, and Anthropic claude.ai account exports into a single SQLite database with a web dashboard, AI classification, and optional vector search.
 
 ## Commands
 
@@ -18,6 +18,7 @@ lav-parse                     # incremental parse from local JSONL
 lav-parse --project myProject # parse one project
 lav-parse --full              # full reparse
 lav-parse-chatgpt             # parse ChatGPT export
+lav-parse-claude-ai           # parse Anthropic claude.ai export folder (data-*-batch-0000)
 lav-server                    # start server on :8764
 
 # Unified CLI — query & KB management (zero extra deps)
@@ -76,7 +77,7 @@ Single SQLite DB at `~/.local/share/local-agent-viewer/local_agent_viewer.db`.
 - **Project** (`projects`) — which codebase
 - **User** (`users`) — which person
 - **Host** (`hosts`) — which machine
-- **Source** (`session_sources`) — which agent (claude_code, codex_cli, cowork_desktop, chatgpt)
+- **Source** (`session_sources`) — which agent (claude_code, codex_cli, cowork_desktop, chatgpt, claude_ai)
 
 Composite PK: `interactions(session_id, project_id)`. Append-only — records are never deleted.
 

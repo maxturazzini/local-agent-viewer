@@ -170,6 +170,7 @@ SOURCE_CLAUDE_CODE = "claude_code"
 SOURCE_CODEX_CLI = "codex_cli"
 SOURCE_COWORK_DESKTOP = "cowork_desktop"
 SOURCE_CHATGPT = "chatgpt"
+SOURCE_CLAUDE_AI = "claude_ai"
 
 # ===========================================================================
 # CHATGPT EXPORT
@@ -177,6 +178,13 @@ SOURCE_CHATGPT = "chatgpt"
 
 _chatgpt_env = os.environ.get("CHATGPT_EXPORT_PATH")
 CHATGPT_EXPORT_PATH = Path(_chatgpt_env) if _chatgpt_env else None
+
+# ===========================================================================
+# CLAUDE.AI EXPORT (Anthropic on-demand account export folder)
+# ===========================================================================
+
+_claudeai_env = os.environ.get("CLAUDE_AI_EXPORT_PATH")
+CLAUDE_AI_EXPORT_PATH = Path(_claudeai_env) if _claudeai_env else None
 
 # ===========================================================================
 # LOCAL SETTINGS (optional manifest)
@@ -287,6 +295,42 @@ def get_chatgpt_export_path(override: Optional[str] = None) -> Optional[Path]:
     if CHATGPT_EXPORT_PATH is None:
         return None
     return CHATGPT_EXPORT_PATH if CHATGPT_EXPORT_PATH.exists() else None
+
+
+def get_claudeai_export_folder(override: Optional[str] = None) -> Optional[Path]:
+    """Resolve claude.ai export folder (Anthropic account export).
+
+    Precedence:
+    1) CLI override
+    2) settings.local.json sources.claude_ai_export_path
+    3) CLAUDE_AI_EXPORT_PATH env var
+    4) auto-discover most recent ~/Downloads/data-*-batch-0000/
+
+    Returns a directory containing conversations.json, or None.
+    """
+    candidate: Optional[Path] = None
+    if override:
+        candidate = _expand_path(override)
+    else:
+        settings = load_local_settings()
+        configured = (settings.get("sources") or {}).get("claude_ai_export_path")
+        if configured:
+            candidate = _expand_path(configured)
+        elif CLAUDE_AI_EXPORT_PATH is not None:
+            candidate = CLAUDE_AI_EXPORT_PATH
+
+    if candidate is not None:
+        return candidate if candidate.exists() and candidate.is_dir() else None
+
+    downloads = Path.home() / "Downloads"
+    if not downloads.is_dir():
+        return None
+    matches = sorted(
+        (p for p in downloads.glob("data-*-batch-0000") if (p / "conversations.json").exists()),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    return matches[0] if matches else None
 
 
 def get_cowork_sessions_dirs(

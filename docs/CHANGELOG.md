@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+ChatGPT loader: wipe `mcp_tool_calls` rows for `chatgpt` source on `--full` re-runs.
+- `mcp_tool_calls` has no UNIQUE constraint, so the existing `INSERT OR IGNORE` would silently duplicate tool calls on every full re-parse. Same fix applied to the new `claude_ai` loader. Aligns with the LAV-39 pattern of wiping prior rows on full reparse.
+
+Anthropic claude.ai account export importer (on-demand batch).
+- New parser `lav.parsers.claude_ai` and CLI `lav-parse-claude-ai`. Source: `claude_ai`, host: `cloud`, project: `claude_ai` (fixed v1).
+- Reads the `data-<account-uuid>-...-batch-0000/` folder produced by Anthropic's "Export account data" flow. v1 ingests `conversations.json` only; `projects.json`, `memories.json` and `design_chats/` are deliberately out of scope.
+- Renders all six `content[]` types into a single message body in chronological order: `text`, `thinking` (preserved with header), `tool_use` (input JSON, capped at 2000 chars), `tool_result` (flattened text, capped at 5000 chars), `voice_note`, while skipping `token_budget` (metadata-only). The flat `msg.text` field is not authoritative (differs in ~26% of messages) and is used only as a fallback for older exports without `content[]`.
+- Each `tool_use` block also produces a row in `mcp_tool_calls` (`server_name = integration_name` when present, otherwise `claude_ai`), so the dashboard tool charts pick them up automatically. `interactions.tools_used` lists the unique tool names per conversation.
+- Attachments with `extracted_content` are appended to the message body (full text, no cap) so they're indexed by FTS5. Bare `files[]` entries (only `file_uuid + file_name`, no payload available in the export) are appended as a one-line reference list.
+- Incremental cursor on `conv.updated_at` (parsed to `datetime`) stored in `parse_state` under key `claude_ai_last_update` with sentinel `(project_id=-1, source='claude_ai', host_id=<this host>)`. Re-runs of `--full` are idempotent thanks to deterministic message UUIDs (`claudeai:sha1(conv_uuid|msg_uuid)`) and `INSERT OR REPLACE`.
+- Folder resolution: `--folder` flag → `settings.local.json: sources.claude_ai_export_path` → `CLAUDE_AI_EXPORT_PATH` env var → auto-discover the most recent `~/Downloads/data-*-batch-0000/` containing `conversations.json`.
+- Schema unchanged. MCP server, CLI, classifier, Qdrant indexer and dashboard all work with the new source out of the box (filters auto-detect it).
+
 LAV-40: Fix Claude Code title parsing for new `ai-title` and `custom-title` records.
 - Recent Claude Code versions (~2.1.x+) no longer write `{"type":"summary"}` records. Titles now arrive as `{"type":"ai-title","aiTitle":"…"}` (LLM-generated) or `{"type":"custom-title","customTitle":"…"}` (user-pinned). LAV was ignoring both and falling back to `smart_title()` (truncated first prompt), so the dashboard/CLI/MCP showed raw prompt incipits instead of the curated titles visible in Claude Code's UI.
 - Parser now recognises all three record types with priority `custom-title > ai-title > legacy summary > smart_title fallback`. Schema, sync/export, FTS, and other parsers untouched.
