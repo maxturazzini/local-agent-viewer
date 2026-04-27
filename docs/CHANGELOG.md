@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+LAV-40: Fix Claude Code title parsing for new `ai-title` and `custom-title` records.
+- Recent Claude Code versions (~2.1.x+) no longer write `{"type":"summary"}` records. Titles now arrive as `{"type":"ai-title","aiTitle":"…"}` (LLM-generated) or `{"type":"custom-title","customTitle":"…"}` (user-pinned). LAV was ignoring both and falling back to `smart_title()` (truncated first prompt), so the dashboard/CLI/MCP showed raw prompt incipits instead of the curated titles visible in Claude Code's UI.
+- Parser now recognises all three record types with priority `custom-title > ai-title > legacy summary > smart_title fallback`. Schema, sync/export, FTS, and other parsers untouched.
+- New manual test: `python tests/test_title_parsing.py` covers the 4 priority cases against a tempdir + temp DB.
+- After deploying the fix, run `lav-parse --full` to backfill existing sessions' titles.
+
+LAV-41: Remote MCP server via streamable-http transport.
+- `lav-mcp` accepts `LAV_MCP_TRANSPORT=streamable-http` (also `http`) to listen on a TCP port instead of stdio. New env vars: `LAV_MCP_HOST` (default `127.0.0.1`), `LAV_MCP_PORT` (default `8765`).
+- Tool return signatures unchanged — FastMCP 3.1.0 serializes dict returns into `structured_content` for both stdio and streamable-http (verified end-to-end with smoke test). No payload wrapping needed.
+- New `utils/services/`: cross-platform LaunchAgent (`com.aimax.lav-mcp.plist`) + systemd user unit (`lav-mcp.service`) + wrapper (`bin/lav-mcp.sh`) + `install.sh` that detects platform and substitutes `__HOME__`. Defaults to loopback for safety.
+- New `docs/remote-mcp-server.md` reference (configuration, deployment, client setup, security, troubleshooting). README gains a "Remote MCP server" subsection under MCP Server.
+- No code changes outside `lav/mcp_server.py`. CLI, HTTP server, and core modules untouched.
+
 ## 0.1.5 — 2026-04-23
 
 LAV-39: Fix double-counting of Claude Code costs/tokens on multi-block turns.

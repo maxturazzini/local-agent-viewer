@@ -1521,11 +1521,21 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
             msg_type = message.get("type", "")
             msg_timestamp = message.get("timestamp", "")
 
-            if msg_type == "summary":
-                summary_text = message.get("summary", "")
+            if msg_type in ("summary", "ai-title", "custom-title"):
+                if msg_type == "custom-title":
+                    title_text = message.get("customTitle", "")
+                    priority = 3
+                elif msg_type == "ai-title":
+                    title_text = message.get("aiTitle", "")
+                    priority = 2
+                else:
+                    title_text = message.get("summary", "")
+                    priority = 1
                 session_id = message.get("sessionId", file_session_id)
-                if summary_text and session_id:
-                    session_summaries[session_id] = summary_text
+                if title_text and session_id:
+                    existing = session_summaries.get(session_id)
+                    if existing is None or existing[1] < priority:
+                        session_summaries[session_id] = (title_text, priority)
                 continue
 
             if msg_type not in ("user", "assistant"):
@@ -1567,7 +1577,8 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
             process_token_usage(message, conn, project_id, user_id, host_id)
 
     for session_id in sessions_updated:
-        summary = session_summaries.get(session_id)
+        summary_entry = session_summaries.get(session_id)
+        summary = summary_entry[0] if summary_entry else None
         agent_info = session_agent_info.get(session_id)
         parent_sid, agent_id = agent_info if agent_info else (None, None)
         update_interaction(session_id, project_name, conn, project_id, user_id, host_id,
