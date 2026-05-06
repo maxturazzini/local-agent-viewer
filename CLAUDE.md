@@ -127,14 +127,25 @@ Vanilla HTML/JS/CSS + Chart.js CDN. Three pages: dashboard (6 sub-tabs), interac
 
 ### Key conventions
 
-- **Development workflow**:
-  1. Pick Jira ticket → transition to **In Progress**
+- **Two-environment awareness — ALWAYS run `hostname` first** before anything that touches "prod" or a running server. Two machines exist:
+  - **macChia** (dev): `~/.local/share/local-agent-viewer/config.json` → `role: agent`. The server on :8764 only exposes `/api/health|info|export` — **no dashboard**. To test UI changes locally, spin up a temporary `lav-server` with role overridden to `both` on a different port (e.g. :8765) by monkey-patching `lav.server._runtime_config` from a one-off Python launcher. Never edit the prod agent config.
+  - **minimacs.local** (prod): `role: both`, full dashboard at http://minimacs.local:8764. Deploy via `ssh minimacs.local`. Both share the same git repo path (`~/claude_projects/local-agent-viewer`) via editable install.
+- **Development workflow** — mandatory even for one-line changes:
+  1. Pick (or create) Jira ticket → transition to **In Progress**
   2. **Plan**: propose approach and ask user for approval before coding
-  3. Develop → test e2e (manual — no test suite)
-  4. Update docs: CLAUDE.md (if env/architecture changed) → README (if user-facing) → .env.example (if new env vars) → `docs/CHANGELOG.md` (always — add entry under current version)
-  5. Ask user about commit → commit with ticket ref (e.g. `LAV-32: ...`)
-  6. Add Jira comment: decisions made, key results, Claude Code session ID
-  7. Transition to **Done** (only after all above)
+  3. Develop → test e2e (manual — no test suite). For UI: use the temp `lav-server` on macChia.
+  4. Update docs: CLAUDE.md (if env/architecture changed) → README (if user-facing) → .env.example (if new env vars) → `docs/CHANGELOG.md` (**always** — entry under `## Unreleased` with `LAV-XX:` prefix)
+  5. Ask user about commit → commit with ticket ref (e.g. `LAV-32: ...`). Multiple tickets in one commit is OK if the changes are coupled (e.g. `LAV-43, LAV-44: ...`)
+  6. Push to `origin/main`
+  7. **Deploy on minimacs** (see decision tree below)
+  8. Add Jira comment per ticket: commit hash, test method (mention macChia temp server if UI), deploy notes
+  9. Transition to **Done** (only after deploy verified)
+- **Deploy decision tree** — branch on what changed in the diff:
+  - Only `lav/static/**` → `ssh minimacs.local 'cd ~/claude_projects/local-agent-viewer && git pull'` + browser hard refresh. No restart (static files re-read each request).
+  - `pyproject.toml` changed (e.g. new `console_scripts`) → also `~/.local/lav-venv/bin/pip install -e ~/claude_projects/local-agent-viewer`
+  - Any `lav/*.py` changed (server code) → also restart: `kill $(pgrep -f "python.*-m lav.server")`. KeepAlive auto-restarts. The wrapper bash + tee processes don't need killing — only the python process. **Note**: `pgrep -f lav-server` matches only the wrapper, not the python process; use `python.*lav.server` instead.
+  - `lav/mcp_server.py` changed → also restart `lav-mcp` processes (`pgrep -f "lav-venv/bin/lav-mcp"`). Be aware: this drops live MCP client connections.
+  - `pyproject.toml` version bump → also tag the release after push.
 - **`internal_docs/`** is gitignored — private notes, not shipped
 - **Jira project `LAV`** on aimaxplayground.atlassian.net tracks all TODO/backlog (epics + tasks). No local TODO files — use Jira as single source of truth
 - **Sentinel values**: `parse_state` uses `project_id=-1` and `source=''` (never NULL)
@@ -142,9 +153,9 @@ Vanilla HTML/JS/CSS + Chart.js CDN. Three pages: dashboard (6 sub-tabs), interac
 - **`conversation_id`** in `chatgpt.py` is OpenAI's external field name — not a bug, don't rename
 - Migration code referencing old `conversations` table in `jsonl.py` and `qdrant/store.py` is intentional
 
-### Production deployment (this machine)
+### Production deployment (minimacs.local)
 
 - venv: `~/.local/lav-venv/`
-- LaunchAgents: `com.aimax.lav-server` (KeepAlive), `com.aimax.lav-parser` (every 15 min)
+- LaunchAgents: `com.aimax.lav-server` (KeepAlive), `com.aimax.lav-parser` (every 15 min), `com.aimax.lav-mcp` (if streamable-http enabled)
 - Wrapper scripts: `~/.local/bin/lav-server.sh`, `~/.local/bin/lav-parser.sh`
-- To deploy changes: `~/.local/lav-venv/bin/pip install -e .` then `kill $(pgrep -f lav-server)` (KeepAlive restarts it)
+- See "Deploy decision tree" above for the conditional restart matrix.

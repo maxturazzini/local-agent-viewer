@@ -6,6 +6,12 @@ LAV-43: Interactions grid now shows the AI title instead of the raw first prompt
 - Title precedence in the grid cell is now `summary` (Claude Code AI/custom title or `smart_title()` fallback) → `meta_summary` (LAV classifier abstract) → `display` (raw first user message). Previously `display` won unconditionally, so cells showed `<ide_opened_file>...` incipits even when a curated title existed (visible in the modal).
 - One-line frontend change in `lav/static/interactions.html`. No backend / API change — all three fields were already in the `/api/interactions` payload.
 
+LAV-45: Formalize dev workflow + two-environment awareness + deploy decision tree in CLAUDE.md.
+- Added explicit **Two-environment awareness** block (macChia=`agent`/dev, minimacs=`both`/prod) with the local-test pattern (`lav.server._runtime_config` monkey-patch on :8765) so future sessions don't default-assume `localhost = prod`.
+- Made **Development workflow** mandatory for one-line changes too (Jira ticket + CHANGELOG entry + closing comment with commit hash & test method).
+- Replaced the single-line "deploy" hint with a **decision tree** branching on what changed (`lav/static/**` only / `pyproject.toml` / `lav/*.py` / `lav/mcp_server.py`). Documents the gotcha that `pgrep -f lav-server` matches only the wrapper, not the python process.
+- Docs-only change (`CLAUDE.md`). No code touched.
+
 LAV-44: Resizable columns in the interactions grid with localStorage persistence.
 - Drag the right edge of any header cell to resize. Width is clamped to 50px min and saved to `localStorage` under `lav-column-widths` on mouseup.
 - `loadColumnWidths()` merges saved widths into the `COLUMNS` array before first render. The `summary` column stays `1fr` until explicitly resized, then becomes fixed px.
