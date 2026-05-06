@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+LAV-43: Interactions grid now shows the AI title instead of the raw first prompt.
+- Title precedence in the grid cell is now `summary` (Claude Code AI/custom title or `smart_title()` fallback) → `meta_summary` (LAV classifier abstract) → `display` (raw first user message). Previously `display` won unconditionally, so cells showed `<ide_opened_file>...` incipits even when a curated title existed (visible in the modal).
+- One-line frontend change in `lav/static/interactions.html`. No backend / API change — all three fields were already in the `/api/interactions` payload.
+
+LAV-44: Resizable columns in the interactions grid with localStorage persistence.
+- Drag the right edge of any header cell to resize. Width is clamped to 50px min and saved to `localStorage` under `lav-column-widths` on mouseup.
+- `loadColumnWidths()` merges saved widths into the `COLUMNS` array before first render. The `summary` column stays `1fr` until explicitly resized, then becomes fixed px.
+- Pure frontend change in `lav/static/interactions.html` (CSS + JS). Reset: `localStorage.removeItem('lav-column-widths')` + reload.
+
 ChatGPT loader: wipe `mcp_tool_calls` rows for `chatgpt` source on `--full` re-runs.
 - `mcp_tool_calls` has no UNIQUE constraint, so the existing `INSERT OR IGNORE` would silently duplicate tool calls on every full re-parse. Same fix applied to the new `claude_ai` loader. Aligns with the LAV-39 pattern of wiping prior rows on full reparse.
 

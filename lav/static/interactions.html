@@ -282,6 +282,30 @@
             text-transform: uppercase;
             letter-spacing: 0.5px;
         }
+        .interaction-header > [data-col] {
+            position: relative;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            user-select: none;
+        }
+        .col-resizer {
+            position: absolute;
+            top: 0;
+            right: -4px;
+            width: 8px;
+            height: 100%;
+            cursor: col-resize;
+            z-index: 2;
+        }
+        .col-resizer:hover, .col-resizer.dragging {
+            background: var(--dodger-blue);
+            opacity: 0.4;
+        }
+        body.col-resizing, body.col-resizing * {
+            cursor: col-resize !important;
+            user-select: none !important;
+        }
 
         .interaction-item {
             display: grid;
@@ -955,6 +979,8 @@
         { key: 'session',   label: 'Session',    width: '100px' }
     ];
     const COL_STORAGE_KEY = 'lav-visible-columns';
+    const COL_WIDTH_STORAGE_KEY = 'lav-column-widths';
+    const MIN_COL_WIDTH = 50;
 
     function getVisibleColumns() {
         try {
@@ -968,6 +994,24 @@
         localStorage.setItem(COL_STORAGE_KEY, JSON.stringify(keys));
     }
 
+    function loadColumnWidths() {
+        try {
+            const saved = localStorage.getItem(COL_WIDTH_STORAGE_KEY);
+            if (!saved) return;
+            const widths = JSON.parse(saved);
+            COLUMNS.forEach(c => {
+                if (widths[c.key]) c.width = widths[c.key];
+            });
+        } catch(e) {}
+    }
+
+    function saveColumnWidths() {
+        const widths = {};
+        COLUMNS.forEach(c => { widths[c.key] = c.width; });
+        localStorage.setItem(COL_WIDTH_STORAGE_KEY, JSON.stringify(widths));
+    }
+
+    loadColumnWidths();
     let visibleColumns = getVisibleColumns();
 
     function applyColumnVisibility() {
@@ -980,6 +1024,58 @@
         });
         document.querySelectorAll('[data-col]').forEach(el => {
             el.style.display = visibleColumns.includes(el.dataset.col) ? '' : 'none';
+        });
+        installColumnResizers();
+    }
+
+    function installColumnResizers() {
+        const header = document.getElementById('interactionHeader');
+        if (!header) return;
+        header.querySelectorAll('[data-col]').forEach(cell => {
+            if (cell.querySelector('.col-resizer')) return;
+            const handle = document.createElement('div');
+            handle.className = 'col-resizer';
+            handle.addEventListener('mousedown', (e) => startColumnResize(e, cell));
+            cell.appendChild(handle);
+        });
+    }
+
+    function startColumnResize(e, cell) {
+        e.preventDefault();
+        e.stopPropagation();
+        const key = cell.dataset.col;
+        const col = COLUMNS.find(c => c.key === key);
+        if (!col) return;
+        const startX = e.clientX;
+        const startWidth = cell.getBoundingClientRect().width;
+        const handle = cell.querySelector('.col-resizer');
+        handle.classList.add('dragging');
+        document.body.classList.add('col-resizing');
+
+        function onMove(ev) {
+            const delta = ev.clientX - startX;
+            const newWidth = Math.max(MIN_COL_WIDTH, Math.round(startWidth + delta));
+            col.width = newWidth + 'px';
+            applyColumnGridOnly();
+        }
+        function onUp() {
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+            handle.classList.remove('dragging');
+            document.body.classList.remove('col-resizing');
+            saveColumnWidths();
+        }
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+    }
+
+    function applyColumnGridOnly() {
+        const gridCols = COLUMNS
+            .filter(c => visibleColumns.includes(c.key))
+            .map(c => c.width)
+            .join(' ');
+        document.querySelectorAll('.interaction-header, .interaction-item').forEach(el => {
+            el.style.gridTemplateColumns = gridCols;
         });
     }
 
@@ -1383,7 +1479,7 @@
                 row.insertAdjacentHTML('beforeend', `
                     <div class="conv-timestamp" data-col="timestamp">${formatTimestamp(conv.timestamp)}</div>
                     <div class="conv-summary-cell" data-col="summary">
-                        <span class="conv-display" title="${escapeAttr(conv.display || conv.summary || '')}">${escapeHtml(conv.display || conv.summary || '(no summary)')}</span>
+                        <span class="conv-display" title="${escapeAttr(conv.summary || conv.meta_summary || conv.display || '')}">${escapeHtml(conv.summary || conv.meta_summary || conv.display || '(no summary)')}</span>
                     </div>
                     <div class="conv-project" data-col="project"><span class="badge badge-project" style="background: ${projectName ? getProjectColor(projectName) : '#999'};" data-project="${escapeAttr(projectName)}" title="Filter by ${escapeAttr(projectName)}">${escapeHtml(projectName || '-')}</span></div>
                     <div class="conv-user" data-col="user">${escapeHtml(conv.username || '-')}</div>
