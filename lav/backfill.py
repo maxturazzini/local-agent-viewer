@@ -274,22 +274,37 @@ def copy_child_table(conn: sqlite3.Connection,
 
 
 def advance_cursor(conn: sqlite3.Connection, agent: str, since_used: str) -> str:
-    """Set parse_state.last_pull:<agent> to MAX(message.timestamp) just imported.
+    """Set parse_state.last_pull:<agent> to MAX(snapshot.message.timestamp) — but
+    never regress below the current value. Historical backfills run against an
+    older snapshot than what the live cursor may have already reached via
+    regular incremental pulls, so we take MAX(current, new).
 
-    Falls back to `since_used` if no messages exist (no-op import).
+    Falls back to `since_used` if no messages > since exist in the snapshot.
     """
     row = conn.execute("""
         SELECT MAX(s.timestamp)
         FROM src.messages s
         WHERE s.timestamp > ?
     """, (since_used,)).fetchone()
-    new_cursor = (row[0] if row and row[0] else since_used)
+    snapshot_max = (row[0] if row and row[0] else since_used)
+
+    key = f"last_pull:{agent}"
+    cur = conn.execute(
+        "SELECT value FROM parse_state WHERE key = ? AND project_id = -1 AND source = 'remote' AND host_id = -1",
+        (key,)
+    ).fetchone()
+    current = cur[0] if cur else ""
+    new_cursor = max(current, snapshot_max)  # lexicographic compare on ISO-8601
+
     conn.execute("""
         INSERT INTO parse_state (key, project_id, source, host_id, value)
         VALUES (?, -1, 'remote', -1, ?)
         ON CONFLICT(key, project_id, source, host_id) DO UPDATE SET value = excluded.value
-    """, (f"last_pull:{agent}", new_cursor))
-    print(f"[backfill] last_pull:{agent} -> {new_cursor}")
+    """, (key, new_cursor))
+    if new_cursor != snapshot_max:
+        print(f"[backfill] last_pull:{agent} kept at {new_cursor} (snapshot MAX={snapshot_max} did not regress)")
+    else:
+        print(f"[backfill] last_pull:{agent} -> {new_cursor}")
     return new_cursor
 
 
@@ -304,6 +319,10 @@ def run(agent: str, ssh_host: str, since: str,
         snapshot_path = Path(f"/tmp/lav_snapshot_{agent}_{os.getpid()}.db")
 
     if not snapshot_path.exists():
+        if not ssh_host:
+            raise SystemExit(
+                f"[backfill] snapshot {snapshot_path} does not exist and --ssh-host was not provided"
+            )
         fetch_snapshot(ssh_host, remote_db, snapshot_path, ssh_user)
     else:
         print(f"[backfill] reusing existing snapshot at {snapshot_path}")
@@ -343,7 +362,9 @@ def main():
                     "SQL-direct alternative to lav sync for wide historical windows."
     )
     p.add_argument("--agent", required=True, help="Agent name (matches config.json agents[].name)")
-    p.add_argument("--ssh-host", required=True, help="SSH host of the agent (IP or hostname)")
+    p.add_argument("--ssh-host", default=None,
+                   help="SSH host of the agent (IP or hostname). Optional if --snapshot-path "
+                        "is provided and the file already exists (pre-staged snapshot).")
     p.add_argument("--ssh-user", default=None, help="Optional SSH username (defaults to ssh config)")
     p.add_argument("--since", required=True, help="ISO timestamp, e.g. 2025-11-14T00:00:00")
     p.add_argument("--remote-db", default="~/.local/share/local-agent-viewer/local_agent_viewer.db",
