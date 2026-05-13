@@ -253,11 +253,22 @@ def pull_from_agents(conn, agents_config: list, agent_filter: str = None, full: 
                     package.get("host", {}),
                     package.get("user", {}),
                 )
-                imported_timestamps = [
-                    s.get("interaction", {}).get("timestamp", "")
-                    for s in package.get("sessions", [])
-                ]
-                latest_ts = max((t for t in imported_timestamps if t), default=None)
+                # Advance cursor to the latest *message* timestamp imported,
+                # not the interaction (session-birth) timestamp. The agent now
+                # filters by COALESCE(MAX(messages.timestamp), c.timestamp), so
+                # "since" must track that same value or river sessions get
+                # exported on every pull. Fall back to interaction.timestamp
+                # for ghost sessions with no messages.
+                imported_timestamps = []
+                for s in package.get("sessions", []):
+                    interaction_ts = s.get("interaction", {}).get("timestamp", "")
+                    if interaction_ts:
+                        imported_timestamps.append(interaction_ts)
+                    for m in s.get("messages", []):
+                        msg_ts = m.get("timestamp", "")
+                        if msg_ts:
+                            imported_timestamps.append(msg_ts)
+                latest_ts = max(imported_timestamps, default=None)
                 # Only advance cursor when sessions were actually imported.
                 # When nothing arrives, keep the cursor where it was so the
                 # next pull retries from the same point (avoids skipping sessions

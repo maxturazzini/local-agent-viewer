@@ -2289,7 +2289,7 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
         for bc in session_data.get("bash_commands", []):
             try:
                 conn.execute("""
-                    INSERT INTO bash_commands
+                    INSERT OR IGNORE INTO bash_commands
                     (timestamp, session_id, project_id, user_id, host_id, command, description,
                      target_file, cwd, git_branch)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -2305,7 +2305,7 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
         for so in session_data.get("search_operations", []):
             try:
                 conn.execute("""
-                    INSERT INTO search_operations
+                    INSERT OR IGNORE INTO search_operations
                     (timestamp, session_id, project_id, user_id, host_id, tool, pattern, path, output_mode, cwd)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
@@ -2353,7 +2353,7 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
         for mc in session_data.get("mcp_tool_calls", []):
             try:
                 conn.execute("""
-                    INSERT INTO mcp_tool_calls
+                    INSERT OR IGNORE INTO mcp_tool_calls
                     (timestamp, session_id, project_id, user_id, host_id, tool_name, server_name, cwd, git_branch)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (

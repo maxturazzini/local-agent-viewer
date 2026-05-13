@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+LAV-46: Collector pull no longer loses messages on long-running ("river") sessions.
+- Root cause: `export_sessions` filtered by `interactions.timestamp`, which is the session-birth timestamp (first message) and never moves. A session started at 06:00 that keeps appending messages until 22:00 was exported exactly once — when its birth timestamp first crossed `since` — then dropped from every subsequent pull while still gaining messages on the agent. Repro for 2026-05-12: agent DB had 2566 messages, collector DB had only 1025 (40%).
+- Fix in `lav/queries.py:export_sessions`: switch the WHERE/ORDER from `c.timestamp` to `COALESCE(MAX(messages.timestamp), c.timestamp)` per session, via a `LEFT JOIN (SELECT ... GROUP BY session_id, project_id)` subquery. Child tables (messages, token_usage, file_operations, bash_commands, search_operations, skill_invocations, subagent_invocations, mcp_tool_calls) are also filtered to `timestamp > since` so a re-exported river session ships only its new tail — no bandwidth waste and no duplicate ingestion on the collector.
+- Fix in `lav/server.py:pull_from_agents`: the `last_pull` cursor now advances to `max(interaction.timestamp, message.timestamp)` across the imported payload, not `max(interaction.timestamp)` alone. Otherwise the cursor would freeze at session-birth values and the new agent-side filter would never advance.
+- Defense-in-depth in `lav/parsers/jsonl.py:ingest_remote_sessions`: switched the three plain `INSERT`s (`bash_commands`, `search_operations`, `mcp_tool_calls`) to `INSERT OR IGNORE`. These tables don't have UNIQUE constraints today (no-op for now); paired with a follow-up ticket to dedup + add UNIQUE indexes, this becomes effective without further code change.
+- Backfill: a regular pull on the collector picks up the gap from the current `last_pull` forward automatically. To recover the pre-fix historical gap (e.g. the missing ~50% of 2026-05-12 on minimacs), run `lav sync --scope agents` with `--full` once.
+
 LAV-43: Interactions grid now shows the AI title instead of the raw first prompt.
 - Title precedence in the grid cell is now `summary` (Claude Code AI/custom title or `smart_title()` fallback) → `meta_summary` (LAV classifier abstract) → `display` (raw first user message). Previously `display` won unconditionally, so cells showed `<ide_opened_file>...` incipits even when a curated title existed (visible in the modal).
 - One-line frontend change in `lav/static/interactions.html`. No backend / API change — all three fields were already in the `/api/interactions` payload.

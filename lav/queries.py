@@ -1814,10 +1814,18 @@ def generate_insights(work_patterns, task_type_costs, efficiency):
 def export_sessions(conn, since_ts: str, limit: int = 1000) -> list:
     """Export sessions with all related data since a timestamp.
 
+    `since_ts` is compared against per-session activity (max message timestamp,
+    falling back to interaction.timestamp), so long-running "river" sessions
+    keep being exported as new messages append. Child tables are also filtered
+    to `timestamp > since_ts` so a re-exported session only carries the rows
+    that arrived after the collector's last cursor.
+
     Batch-loads all child tables to avoid N+1 queries.
     Returns list of session dicts with nested data.
     """
-    # Get interactions since timestamp
+    # Select sessions whose last-activity timestamp is newer than `since_ts`.
+    # `last_activity_ts` is COALESCE(MAX(messages.timestamp), c.timestamp) so
+    # ghost sessions (no messages) still surface once via their interaction ts.
     interactions = run_query(conn, """
         SELECT c.*, p.name as project_name, u.username, h.hostname, h.os_type,
                COALESCE(ss.source, 'unknown') as client_source
@@ -1826,8 +1834,13 @@ def export_sessions(conn, since_ts: str, limit: int = 1000) -> list:
         LEFT JOIN users u ON u.id = c.user_id
         LEFT JOIN hosts h ON h.id = c.host_id
         LEFT JOIN session_sources ss ON ss.session_id = c.session_id AND ss.project_id = c.project_id
-        WHERE c.timestamp > ?
-        ORDER BY c.timestamp ASC
+        LEFT JOIN (
+            SELECT session_id, project_id, MAX(timestamp) AS last_msg_ts
+            FROM messages
+            GROUP BY session_id, project_id
+        ) m ON m.session_id = c.session_id AND m.project_id = c.project_id
+        WHERE COALESCE(m.last_msg_ts, c.timestamp) > ?
+        ORDER BY COALESCE(m.last_msg_ts, c.timestamp) ASC
         LIMIT ?
     """, [since_ts, limit])
 
@@ -1843,12 +1856,14 @@ def export_sessions(conn, since_ts: str, limit: int = 1000) -> list:
     for sid, pid in session_keys:
         flat_params.extend([sid, pid])
 
-    # Batch load all child tables
+    # Batch load all child tables, restricted to rows newer than `since_ts`
+    # so a re-exported river session ships only its new tail.
     def batch_load(table, extra_cols=""):
         rows = run_query(conn, f"""
             SELECT * FROM {table}
             WHERE (session_id, project_id) IN ({placeholders})
-        """, flat_params)
+              AND timestamp > ?
+        """, flat_params + [since_ts])
         grouped = {}
         for r in rows:
             key = (r["session_id"], r["project_id"])
