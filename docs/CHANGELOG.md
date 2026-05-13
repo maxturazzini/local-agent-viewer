@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+LAV-48: New `lav-backfill-from-snapshot` CLI for SQL-direct historical backfill.
+- HTTP `/api/export` pull (LAV-46) is now correct but fragile over wide historical windows (6+ months: 5+ round-trips × 1000-session limit, each subject to the 180s `timeout_seconds` and Tailscale flakiness). This adds an alternative pipeline that bypasses HTTP entirely.
+- Flow: `ssh agent 'sqlite3 db ".backup snapshot.db"'` → `scp` snapshot back → ATTACH on local DB → build (proj/user/host) ID translation maps via `get_or_create_*` helpers → INSERT OR IGNORE every table for sessions where `COALESCE(MAX(messages.timestamp), c.timestamp) > since` (same river-aware filter as LAV-46) → advance `parse_state.last_pull:<agent>` with `MAX(current, snapshot_max)` so historical runs never regress a live cursor.
+- New module `lav/backfill.py` (374 lines) + console script `lav-backfill-from-snapshot` in `pyproject.toml`.
+- `--ssh-host` is optional: if `--snapshot-path` is pre-staged (e.g. pushed from the agent side because reverse SSH isn't configured), the fetch step is skipped.
+- Bench on minimacs, 6-month window (`--since 2025-11-14T00:00:00`) against a 3.3 GB snapshot: **14 seconds total**, +19610 messages imported across 4130 active sessions. Compare to the projected 15–30 min via HTTP `/api/export` over 5 sequential rounds.
+- Usage: `lav-backfill-from-snapshot --agent macchia --ssh-host 100.79.52.27 --since 2025-11-14T00:00:00` — or with a pre-staged snapshot: `... --snapshot-path /tmp/snap.db --since ...` (no `--ssh-host` needed).
+
 LAV-46: Collector pull no longer loses messages on long-running ("river") sessions.
 - Root cause: `export_sessions` filtered by `interactions.timestamp`, which is the session-birth timestamp (first message) and never moves. A session started at 06:00 that keeps appending messages until 22:00 was exported exactly once — when its birth timestamp first crossed `since` — then dropped from every subsequent pull while still gaining messages on the agent. Repro for 2026-05-12: agent DB had 2566 messages, collector DB had only 1025 (40%).
 - Fix in `lav/queries.py:export_sessions`: switch the WHERE/ORDER from `c.timestamp` to `COALESCE(MAX(messages.timestamp), c.timestamp)` per session, via a `LEFT JOIN (SELECT ... GROUP BY session_id, project_id)` subquery. Child tables (messages, token_usage, file_operations, bash_commands, search_operations, skill_invocations, subagent_invocations, mcp_tool_calls) are also filtered to `timestamp > since` so a re-exported river session ships only its new tail — no bandwidth waste and no duplicate ingestion on the collector.
