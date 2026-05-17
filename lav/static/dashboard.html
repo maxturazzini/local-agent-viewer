@@ -4153,11 +4153,11 @@
         const cards = document.getElementById('dvCards');
         const gapMin = (w.active_gap_sec || 300) / 60;
         const capMin = (w.assistant_cap_sec || 600) / 60;
-        const tipSessions = 'How many separate Claude / Codex / ChatGPT conversations had at least one message today.';
+        const tipSessions = 'How many separate AI-agent conversations had at least one message today (across all sources).';
         const tipProjects = 'How many different projects you touched today.';
-        const tipMessages = 'Total messages exchanged today (your prompts + assistant replies).';
-        const tipActive = `Real clock time you were actively using Claude today. Two sessions running at the same time count once. Pauses shorter than ${gapMin} min are treated as continuous work.`;
-        const tipAsst = `Of that active time, how long Claude was actually generating a reply (not you typing or reading). Each reply is capped at ${capMin} min; overlapping sessions count once.`;
+        const tipMessages = 'Total messages exchanged today (your prompts + agent replies).';
+        const tipActive = `Real clock time you were actively using an AI agent today. Two sessions running at the same time count once. Pauses shorter than ${gapMin} min are treated as continuous work.`;
+        const tipAsst = `Of that active time, how long the agent was actually generating a reply (not you typing or reading). Each reply is capped at ${capMin} min; overlapping sessions count once.`;
         cards.innerHTML = `
             <div class="stat-card" title="${tipSessions}"><div class="stat-label">Sessions <span class="dv-help">?</span></div><div class="stat-value">${visible.length}</div></div>
             <div class="stat-card" title="${tipProjects}"><div class="stat-label">Projects <span class="dv-help">?</span></div><div class="stat-value">${new Set(visible.map(r => r.project_name)).size}</div></div>
