@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+LAV-55: Day View — daily Gantt + honest worktime metrics.
+- New dashboard tab **Day View** (after Cost Intelligence) with date picker, prev/next arrows and "today" shortcut. Three blocks: stat cards (Sessions, Projects, Messages, Active wall-clock, Assistant wall-clock with hover tooltips), a dedicated concurrency curve chart with Peak pill, and a per-session Gantt grouped by project with hover tooltips. Charts auto-resize on window resize (debounced).
+- Two honest wall-clock metrics computed per day in `lav/queries.py:get_day_bundle()`:
+  - `active_wallclock_sec`: union of per-session activity windows (consecutive messages with gap < 5 min count as continuous), deduplicated across parallel sessions.
+  - `assistant_wallclock_sec`: union of (user → next assistant) intervals capped at 10 min per pair, deduplicated.
+  These avoid the ~13× inflation of naïve span-sum (e.g. 12/05: span-sum 36h vs active wall-clock 4.5h).
+- Reuses the LAV-46 river-session pattern (`MIN/MAX(messages.timestamp)`) so sessions straddling UTC midnight surface correctly on both days with the local slice on each.
+- "Show subagents" checkbox (default off) hides sessions with `parent_session_id` from the Gantt; subagent rows render dashed when toggled on. `meta.subagent_sessions` and `meta.subagent_invocations` exposed in the bundle.
+- New endpoint `GET /api/day?date=YYYY-MM-DD` with standard 4D filtering (`project`, `user`, `host`, `client`). Dashboard-only (role `both`); returns 404 for role `agent`, 400 for bad date.
+- New CLI subcommand `lav day YYYY-MM-DD [--project ...] [--user ...] [--source ...] [--format json|table|brief]`. `--format brief` prints one line per session plus a worktime summary footer.
+- Frontend (`lav/static/dashboard.html`): timezone-aware hour positioning via local date math (no hardcoded CEST), so sessions straddling local midnight render past the right edge with `+1` hour labels instead of folding back into the same day.
+- Validated against the `agent_worktime.py` ground-truth tool on 2026-05-12: sessions 25 = 25, active wall-clock 16087s vs 16367s (−1.7%), assistant wall-clock 7454s vs 7636s (−2.4%). Drift is from LAV's `messages` table filtering tool_use/system records; the honest metrics still match the JSONL truth within ±2%.
+- No schema changes, no new dependencies.
+
 LAV-48: New `lav-backfill-from-snapshot` CLI for SQL-direct historical backfill.
 - HTTP `/api/export` pull (LAV-46) is now correct but fragile over wide historical windows (6+ months: 5+ round-trips × 1000-session limit, each subject to the 180s `timeout_seconds` and Tailscale flakiness). This adds an alternative pipeline that bypasses HTTP entirely.
 - Flow: `ssh agent 'sqlite3 db ".backup snapshot.db"'` → `scp` snapshot back → ATTACH on local DB → build (proj/user/host) ID translation maps via `get_or_create_*` helpers → INSERT OR IGNORE every table for sessions where `COALESCE(MAX(messages.timestamp), c.timestamp) > since` (same river-aware filter as LAV-46) → advance `parse_state.last_pull:<agent>` with `MAX(current, snapshot_max)` so historical runs never regress a live cursor.

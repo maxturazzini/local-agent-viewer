@@ -87,6 +87,7 @@ from lav.queries import (
     get_task_type_costs,
     get_efficiency_metrics,
     generate_insights,
+    get_day_bundle,
 )
 
 # Runtime config (agent/collector roles)
@@ -826,6 +827,33 @@ class APIHandler(SimpleHTTPRequestHandler):
                     "insights": insights,
                     "alpha": True,
                 })
+            finally:
+                conn.close()
+            return
+
+        # ==== DAY VIEW ====
+
+        if path == "/api/day":
+            date = params.get("date", [None])[0]
+            import re as _re
+            if not date or not _re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+                self.send_error(400, "date param required as YYYY-MM-DD")
+                return
+            conn = get_read_connection()
+            if not conn:
+                self.send_json({"error": "No database"})
+                return
+            try:
+                ids = resolve_ids(conn, params)
+                client_source = params.get("client", [None])[0]
+                bundle = get_day_bundle(
+                    conn, date,
+                    project_id=ids["project_id"],
+                    user_id=ids["user_id"],
+                    host_id=ids["host_id"],
+                    client_source=client_source,
+                )
+                self.send_json(bundle)
             finally:
                 conn.close()
             return

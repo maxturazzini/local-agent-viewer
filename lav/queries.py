@@ -1896,3 +1896,244 @@ def export_sessions(conn, since_ts: str, limit: int = 1000) -> list:
         })
 
     return sessions
+
+
+# ===========================================================================
+# DAY VIEW / WORKTIME
+# ===========================================================================
+
+def get_day_bundle(conn, date_str: str,
+                   project_id=None, user_id=None, host_id=None,
+                   client_source=None,
+                   active_gap_sec: int = 300,
+                   assistant_cap_sec: int = 600) -> dict:
+    """Day View bundle: per-session Gantt rows + concurrency curve + honest worktime metrics.
+
+    For sessions active on `date_str` (UTC date string YYYY-MM-DD), aggregates
+    only the messages that fall on that day — so a "river" session straddling
+    midnight surfaces on both days with the local slice on each.
+
+    Honest metrics:
+      - active_wallclock_sec: union of per-session activity windows (gap <
+        `active_gap_sec` between consecutive messages counts as continuous),
+        deduplicated across parallel sessions.
+      - assistant_wallclock_sec: union of (user → next assistant) intervals
+        capped at `assistant_cap_sec`, deduplicated.
+
+    Subagents are counted (meta.subagent_invocations) but not drawn as
+    separate Gantt rows in v1 — they're parented to the parent session.
+    """
+    from datetime import datetime, timedelta
+
+    where_msg, params_msg = build_filters(
+        project_id=project_id, user_id=user_id, host_id=host_id,
+        start=date_str, end=date_str, client=client_source, table_alias='m'
+    )
+    join_ss_msg = _join_session_sources('m')
+
+    sessions_raw = run_query(conn, f"""
+        SELECT
+            m.session_id,
+            m.project_id,
+            MIN(m.timestamp) AS start_ts,
+            MAX(m.timestamp) AS end_ts,
+            COUNT(*) AS msg_count,
+            SUM(CASE WHEN m.type = 'user' THEN 1 ELSE 0 END) AS user_msgs,
+            SUM(CASE WHEN m.type = 'assistant' THEN 1 ELSE 0 END) AS assistant_msgs
+        FROM messages m
+        {join_ss_msg}
+        {where_msg}
+        GROUP BY m.session_id, m.project_id
+        ORDER BY start_ts
+    """, params_msg)
+
+    empty_worktime = {
+        "active_wallclock_sec": 0.0,
+        "assistant_wallclock_sec": 0.0,
+        "active_gap_sec": active_gap_sec,
+        "assistant_cap_sec": assistant_cap_sec,
+    }
+
+    if not sessions_raw:
+        return {
+            "date": date_str,
+            "rows": [],
+            "projects": [],
+            "concurrency": [],
+            "peak_concurrency": 0,
+            "peak_at": None,
+            "worktime": empty_worktime,
+            "meta": {
+                "total_sessions": 0,
+                "total_projects": 0,
+                "total_messages": 0,
+                "subagent_invocations": 0,
+            },
+        }
+
+    keys = [(s["session_id"], s["project_id"]) for s in sessions_raw]
+    placeholders = ",".join(["(?,?)" for _ in keys])
+    flat = [v for k in keys for v in k]
+    enriched_rows = run_query(conn, f"""
+        SELECT
+            c.session_id, c.project_id,
+            c.summary, c.display, c.parent_session_id, c.agent_id,
+            p.name AS project_name,
+            COALESCE(ss.source, 'unknown') AS source
+        FROM interactions c
+        LEFT JOIN projects p ON p.id = c.project_id
+        LEFT JOIN session_sources ss ON ss.session_id = c.session_id AND ss.project_id = c.project_id
+        WHERE (c.session_id, c.project_id) IN ({placeholders})
+    """, flat)
+    meta_map = {(r["session_id"], r["project_id"]): r for r in enriched_rows}
+
+    msg_rows = run_query(conn, f"""
+        SELECT m.session_id, m.project_id, m.type, m.timestamp
+        FROM messages m
+        {join_ss_msg}
+        {where_msg}
+        ORDER BY m.session_id, m.project_id, m.timestamp
+    """, params_msg)
+
+    def _parse(ts: str):
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+    by_sess = {}
+    for r in msg_rows:
+        by_sess.setdefault((r["session_id"], r["project_id"]), []).append(r)
+
+    active_intervals = []
+    asst_intervals = []
+    for recs in by_sess.values():
+        if not recs:
+            continue
+        cs = _parse(recs[0]["timestamp"])
+        ce = cs
+        for r in recs[1:]:
+            t = _parse(r["timestamp"])
+            if (t - ce).total_seconds() <= active_gap_sec:
+                ce = t
+            else:
+                active_intervals.append((cs, ce))
+                cs, ce = t, t
+        active_intervals.append((cs, ce))
+        for i in range(len(recs) - 1):
+            if recs[i]["type"] == "user":
+                for j in range(i + 1, len(recs)):
+                    if recs[j]["type"] == "assistant":
+                        t_u = _parse(recs[i]["timestamp"])
+                        t_a = _parse(recs[j]["timestamp"])
+                        delta = (t_a - t_u).total_seconds()
+                        if delta <= assistant_cap_sec:
+                            asst_intervals.append((t_u, t_a))
+                        else:
+                            asst_intervals.append((t_u, t_u + timedelta(seconds=assistant_cap_sec)))
+                        break
+
+    def _merge(iv):
+        if not iv:
+            return []
+        iv = sorted(iv)
+        out = [list(iv[0])]
+        for s, e in iv[1:]:
+            if s <= out[-1][1]:
+                out[-1][1] = max(out[-1][1], e)
+            else:
+                out.append([s, e])
+        return out
+
+    active_merged = _merge(active_intervals)
+    asst_merged = _merge(asst_intervals)
+    active_sec = sum((e - s).total_seconds() for s, e in active_merged)
+    asst_sec = sum((e - s).total_seconds() for s, e in asst_merged)
+
+    rows = []
+    for s in sessions_raw:
+        key = (s["session_id"], s["project_id"])
+        meta = meta_map.get(key, {})
+        start = _parse(s["start_ts"])
+        end = _parse(s["end_ts"])
+        parent_sid = meta.get("parent_session_id") or ""
+        rows.append({
+            "session_id": s["session_id"],
+            "project_id": s["project_id"],
+            "project_name": meta.get("project_name") or "unknown",
+            "source": meta.get("source") or "unknown",
+            "start": s["start_ts"],
+            "end": s["end_ts"],
+            "duration_min": (end - start).total_seconds() / 60.0,
+            "msg_count": s["msg_count"],
+            "user_msgs": s["user_msgs"],
+            "assistant_msgs": s["assistant_msgs"],
+            "summary": meta.get("summary") or "",
+            "display": meta.get("display") or "",
+            "parent_session_id": parent_sid or None,
+            "agent_id": meta.get("agent_id") or None,
+            "is_subagent": bool(parent_sid),
+        })
+
+    palette = ["#35C2FF", "#F9C927", "#00D35D", "#ff6ab5", "#b48cff",
+               "#ff9a3c", "#888fad", "#5c6789"]
+    by_proj = {}
+    for r in rows:
+        by_proj.setdefault(r["project_name"], []).append(r)
+    proj_totals = {p: sum(r["duration_min"] for r in rs) for p, rs in by_proj.items()}
+    sorted_projs = sorted(proj_totals.items(), key=lambda x: -x[1])
+    projects = []
+    for i, (name, total) in enumerate(sorted_projs):
+        projects.append({
+            "name": name,
+            "color": palette[i % len(palette)],
+            "session_count": len(by_proj[name]),
+            "total_min": round(total, 2),
+        })
+
+    events = []
+    for r in rows:
+        events.append((_parse(r["start"]), +1))
+        events.append((_parse(r["end"]), -1))
+    events.sort(key=lambda x: (x[0], -x[1]))
+    cur = 0
+    peak = 0
+    peak_at = None
+    concurrency_curve = []
+    for t, d in events:
+        concurrency_curve.append({"t": t.isoformat(), "c": cur})
+        cur += d
+        concurrency_curve.append({"t": t.isoformat(), "c": cur})
+        if cur > peak:
+            peak = cur
+            peak_at = t.isoformat()
+
+    where_sa, params_sa = build_filters(
+        project_id=project_id, user_id=user_id, host_id=host_id,
+        start=date_str, end=date_str, client=client_source, table_alias='sa'
+    )
+    join_ss_sa = _join_session_sources('sa')
+    subagent_count = run_query(conn, f"""
+        SELECT COUNT(*) AS n FROM subagent_invocations sa
+        {join_ss_sa}
+        {where_sa}
+    """, params_sa)[0]["n"]
+
+    return {
+        "date": date_str,
+        "rows": rows,
+        "projects": projects,
+        "concurrency": concurrency_curve,
+        "peak_concurrency": peak,
+        "peak_at": peak_at,
+        "worktime": {
+            "active_wallclock_sec": round(active_sec, 2),
+            "assistant_wallclock_sec": round(asst_sec, 2),
+            "active_gap_sec": active_gap_sec,
+            "assistant_cap_sec": assistant_cap_sec,
+        },
+        "meta": {
+            "total_sessions": len(rows),
+            "total_projects": len(projects),
+            "total_messages": sum(r["msg_count"] for r in rows),
+            "subagent_invocations": subagent_count,
+            "subagent_sessions": sum(1 for r in rows if r["is_subagent"]),
+        },
+    }

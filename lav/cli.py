@@ -225,6 +225,45 @@ def cmd_show(args):
         conn.close()
 
 
+def cmd_day(args):
+    """Day View bundle: per-session Gantt + worktime metrics for a single day."""
+    import re
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", args.date or ""):
+        _die("date must be YYYY-MM-DD")
+
+    conn = _get_read_connection()
+    if not conn:
+        _die("No database. Run lav-parse first.")
+
+    from lav.queries import get_day_bundle
+
+    try:
+        project_id = _resolve_name_to_id(conn, "projects", "name", args.project) if args.project else None
+        user_id = _resolve_name_to_id(conn, "users", "username", args.user) if args.user else None
+        bundle = get_day_bundle(
+            conn, args.date,
+            project_id=project_id,
+            user_id=user_id,
+            client_source=args.source,
+        )
+        if args.format == "brief":
+            # One line per session — easy diff vs golden
+            for r in bundle["rows"]:
+                print(f"{r['start'][11:19]}  {r['end'][11:19]}  "
+                      f"{r['project_name']:<20}  msg={r['msg_count']:<4}  "
+                      f"dur={r['duration_min']:.1f}m  {r['session_id'][:8]}")
+            w = bundle["worktime"]
+            m = bundle["meta"]
+            print(f"\n{m['total_sessions']} sessions · {m['total_projects']} projects · "
+                  f"{m['total_messages']} msgs · peak {bundle['peak_concurrency']}")
+            print(f"active_wallclock = {w['active_wallclock_sec']/3600:.2f}h · "
+                  f"assistant_wallclock = {w['assistant_wallclock_sec']/3600:.2f}h")
+        else:
+            _output(bundle, args.format)
+    finally:
+        conn.close()
+
+
 def cmd_kb_search(args):
     """Semantic search in Qdrant KB."""
     try:
@@ -425,6 +464,16 @@ def build_parser():
     p_show.add_argument("session_id", help="Session UUID")
     _add_format_arg(p_show)
     p_show.set_defaults(func=cmd_show)
+
+    # ── day ──
+    p_day = sub.add_parser("day", help="Day View bundle: Gantt rows + worktime metrics for a day")
+    p_day.add_argument("date", help="YYYY-MM-DD")
+    p_day.add_argument("--project", help="Filter by project name")
+    p_day.add_argument("--user", help="Filter by username")
+    p_day.add_argument("--source", help="Filter by source (claude_code, codex_cli, ...)")
+    p_day.add_argument("--format", choices=["json", "table", "brief"], default="json",
+                       help="Output format (default: json)")
+    p_day.set_defaults(func=cmd_day)
 
     # ── kb ── (sub-subcommands)
     p_kb = sub.add_parser("kb", help="Knowledge base operations (Qdrant)")

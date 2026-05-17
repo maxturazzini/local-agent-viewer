@@ -1141,6 +1141,44 @@
         .kb-tags-cloud-item:hover { background: var(--deep-sky-blue); color: var(--white); }
         .kb-tags-cloud-item .count { font-size: 0.7rem; margin-left: 4px; opacity: 0.7; }
 
+        /* ===== DAY VIEW ===== */
+        .dv-controls { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+        .dv-btn { background: var(--white); border: 1px solid var(--light-gray); color: var(--dim-gray); cursor: pointer; padding: 6px 12px; border-radius: 6px; font-size: 0.9rem; transition: background 0.15s; }
+        .dv-btn:hover { background: var(--light-gray); }
+        .dv-date { background: var(--white); border: 1px solid var(--light-gray); border-radius: 6px; padding: 6px 10px; font-family: inherit; font-size: 0.9rem; }
+        .dv-loading { color: var(--dodger-blue); font-size: 0.85rem; }
+        .dv-meta { color: var(--dim-gray); font-size: 0.85rem; margin-left: auto; }
+        #dvGantt { width: 100%; display: block; }
+        .dv-legend { margin-top: 16px; display: flex; gap: 14px; flex-wrap: wrap; font-size: 0.8rem; color: var(--dim-gray); }
+        .dv-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+        .dv-swatch { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
+        .dv-bar { cursor: crosshair; }
+        .dv-bar:hover { stroke: #333; stroke-width: 1.5; }
+        .dv-concurrency-line { stroke: #F9C927; stroke-width: 1.5; fill: none; opacity: 0.9; }
+        .dv-concurrency-area { fill: #F9C927; opacity: 0.10; }
+        .dv-tooltip { position: absolute; background: #222; color: #fff; padding: 8px 12px; border-radius: 6px;
+            font-size: 0.8rem; pointer-events: none; opacity: 0; transition: opacity 0.15s;
+            max-width: 360px; line-height: 1.5; box-shadow: 0 4px 14px rgba(0,0,0,0.4); z-index: 1000; }
+        .dv-tooltip.show { opacity: 1; }
+        .dv-tooltip .t-proj { font-weight: 600; }
+        .dv-tooltip .t-time { color: #F9C927; font-family: monospace; }
+        .dv-tooltip .t-activity { margin-top: 4px; color: #ccc; }
+        .dv-empty { text-align: center; padding: 60px 20px; color: var(--dim-gray); font-size: 0.95rem; }
+        .dv-peak-pill { display: inline-flex; align-items: center; gap: 10px; margin-top: 14px;
+            background: linear-gradient(135deg, rgba(249,201,39,0.18), rgba(249,201,39,0.08));
+            border: 1px solid rgba(249,201,39,0.35); color: #6e5400;
+            padding: 8px 16px; border-radius: 999px; font-size: 0.85rem; font-weight: 600; }
+        .dv-peak-pill .pill-num { font-size: 1.1rem; color: #b89400; }
+        .dv-peak-pill .pill-when { color: #8a7600; font-weight: 500; font-family: monospace; }
+        .dv-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem;
+            color: var(--dim-gray); cursor: pointer; user-select: none; margin-left: 6px; }
+        .dv-toggle input { cursor: pointer; }
+        .dv-bar.subagent { fill-opacity: 0.55; stroke-dasharray: 3 2; stroke: rgba(0,0,0,0.25); }
+        .dv-help { display: inline-block; width: 14px; height: 14px; line-height: 14px; text-align: center;
+            border-radius: 50%; background: var(--light-gray); color: var(--dim-gray);
+            font-size: 0.65rem; font-weight: 700; margin-left: 4px; cursor: help; }
+        .stat-card[title] { cursor: help; }
+
         /* ===== RESPONSIVE ===== */
         @media (max-width: 768px) {
             body { padding: 12px; }
@@ -1313,6 +1351,7 @@
         <div class="tab" data-tab="users">Users</div>
         <div class="tab" data-tab="kb" style="background: linear-gradient(135deg, rgba(0,211,93,0.1), rgba(0,75,255,0.1));">Knowledge Base</div>
         <div class="tab" data-tab="costintel">Cost Intelligence</div>
+        <div class="tab" data-tab="dayview">Day View</div>
     </div>
 
     <!-- ===== OVERVIEW TAB ===== -->
@@ -1737,6 +1776,35 @@
             <div class="chart-title" style="color: var(--dodger-blue);">Key Insights</div>
             <ul id="ciInsightsList" style="list-style: none; padding: 0; margin: 0;"></ul>
         </div>
+    </div>
+
+    <!-- ===== DAY VIEW TAB ===== -->
+    <div id="dayview" class="tab-content">
+        <div class="dv-controls">
+            <button class="dv-btn" id="dvPrev" title="Previous day">◀</button>
+            <input type="date" id="dvDate" class="dv-date">
+            <button class="dv-btn" id="dvNext" title="Next day">▶</button>
+            <button class="dv-btn" id="dvToday">today</button>
+            <label class="dv-toggle" title="Show subagent sessions (parent_session_id ≠ NULL) as separate rows">
+                <input type="checkbox" id="dvShowSubagents">
+                <span>Show subagents</span>
+            </label>
+            <span class="dv-loading" id="dvLoading" style="display:none;">loading…</span>
+            <span class="dv-meta" id="dvMeta"></span>
+        </div>
+        <div class="stats-grid" id="dvCards"></div>
+        <div class="chart-container">
+            <div class="chart-title">Concurrency</div>
+            <div id="dvConcHost"><svg id="dvConc"></svg></div>
+            <div class="dv-peak-pill" id="dvPeakPill"></div>
+        </div>
+        <div class="chart-container">
+            <div class="chart-title">Sessions Gantt</div>
+            <div class="chart-hint" id="dvHint">1 row = 1 session. Hover for details.</div>
+            <div id="dvChartHost"><svg id="dvGantt"></svg></div>
+            <div class="dv-legend" id="dvLegend"></div>
+        </div>
+        <div class="dv-tooltip" id="dvTooltip"></div>
     </div>
 
     <div class="footer">
@@ -2338,6 +2406,7 @@
     function loadTabData(tabId) {
         if (tabId === 'kb') { loadKBStats(); return; }
         if (tabId === 'costintel') { renderCostIntelligence(); return; }
+        if (tabId === 'dayview') { initDayView(); return; }
         if (!state.data) return;
         switch (tabId) {
             case 'overview': renderOverview(); break;
@@ -3949,6 +4018,401 @@
     document.getElementById('kbSearchQuery').addEventListener('keypress', (e) => {
         if (e.key === 'Enter') kbSearch();
     });
+
+    // ===== DAY VIEW TAB =====
+    const dvState = { date: null, bundle: null, wired: false };
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+
+    function dvEl(tag, attrs, parent) {
+        const e = document.createElementNS(SVG_NS, tag);
+        if (attrs) for (const k in attrs) e.setAttribute(k, attrs[k]);
+        if (parent) parent.appendChild(e);
+        return e;
+    }
+
+    function dvFmtHM(iso) {
+        const d = new Date(iso);
+        return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    }
+    function dvFmtHMS(sec) {
+        if (!sec) return '0m';
+        const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+        return h > 0 ? `${h}h ${m}m` : `${m}m`;
+    }
+    function dvShiftDate(s, days) {
+        const d = new Date(s + 'T12:00:00Z');
+        d.setUTCDate(d.getUTCDate() + days);
+        return d.toISOString().slice(0, 10);
+    }
+    function dvLocalYMD(d) {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        return `${y}-${m}-${dd}`;
+    }
+    function dvHourFloat(iso, baseDate) {
+        // Use LOCAL date to decide ±24 offset, otherwise mixing UTC-date with
+        // local-hours misplaces messages around midnight (e.g. 22:14 UTC = 00:14
+        // next-day local in CEST: UTC date matches baseDate but the bar must
+        // render at hour 24+).
+        const d = new Date(iso);
+        const ymd = dvLocalYMD(d);
+        const localH = d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600;
+        if (ymd > baseDate) return localH + 24;
+        if (ymd < baseDate) return localH - 24;
+        return localH;
+    }
+
+    function initDayView() {
+        if (!dvState.wired) {
+            document.getElementById('dvPrev').addEventListener('click', () => dvLoad(dvShiftDate(dvState.date, -1)));
+            document.getElementById('dvNext').addEventListener('click', () => dvLoad(dvShiftDate(dvState.date, +1)));
+            document.getElementById('dvToday').addEventListener('click', () => dvLoad(new Date().toISOString().slice(0, 10)));
+            document.getElementById('dvDate').addEventListener('change', (e) => dvLoad(e.target.value));
+            document.getElementById('dvShowSubagents').addEventListener('change', () => {
+                if (dvState.bundle) {
+                    dvRenderCards(dvState.bundle);
+                    dvRenderConcurrency(dvState.bundle);
+                    dvRenderChart(dvState.bundle);
+                    dvRenderPeakPill(dvState.bundle);
+                }
+            });
+            // Redraw on window resize so SVG widths track the viewport (debounced).
+            let resizeTimer = null;
+            window.addEventListener('resize', () => {
+                if (!dvState.bundle) return;
+                if (document.getElementById('dayview') && !document.getElementById('dayview').classList.contains('active')) return;
+                clearTimeout(resizeTimer);
+                resizeTimer = setTimeout(() => {
+                    dvRenderConcurrency(dvState.bundle);
+                    dvRenderChart(dvState.bundle);
+                }, 120);
+            });
+            dvState.wired = true;
+        }
+        if (!dvState.date) {
+            // Default to yesterday (most recent fully-finished day)
+            const d = new Date();
+            d.setDate(d.getDate() - 1);
+            dvLoad(d.toISOString().slice(0, 10));
+        } else {
+            dvLoad(dvState.date);
+        }
+    }
+
+    async function dvLoad(dateStr) {
+        dvState.date = dateStr;
+        document.getElementById('dvDate').value = dateStr;
+        document.getElementById('dvLoading').style.display = '';
+        try {
+            const params = new URLSearchParams();
+            params.set('date', dateStr);
+            // Respect dashboard filters
+            if (state.project) params.set('project', state.project);
+            if (state.user) params.set('user', state.user);
+            if (state.host) params.set('host', state.host);
+            if (state.source) params.set('client', state.source);
+            const res = await fetch(`${API_BASE}/api/day?${params.toString()}`, { cache: 'no-store' });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            dvState.bundle = await res.json();
+            dvRenderCards(dvState.bundle);
+            dvRenderConcurrency(dvState.bundle);
+            dvRenderChart(dvState.bundle);
+            dvRenderPeakPill(dvState.bundle);
+        } catch (e) {
+            document.getElementById('dvChartHost').innerHTML =
+                `<div class="dv-empty">Error: ${e.message}</div>`;
+            document.getElementById('dvCards').innerHTML = '';
+            document.getElementById('dvLegend').innerHTML = '';
+        } finally {
+            document.getElementById('dvLoading').style.display = 'none';
+        }
+    }
+
+    function dvVisibleRows(b) {
+        const show = document.getElementById('dvShowSubagents').checked;
+        return show ? b.rows : b.rows.filter(r => !r.is_subagent);
+    }
+
+    function dvComputePeak(rows) {
+        if (!rows.length) return { peak: 0, peakAt: null };
+        const ev = [];
+        rows.forEach(r => { ev.push([new Date(r.start).getTime(), +1]); ev.push([new Date(r.end).getTime(), -1]); });
+        ev.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+        let cur = 0, peak = 0, peakAt = null;
+        for (const [t, d] of ev) {
+            cur += d;
+            if (cur > peak) { peak = cur; peakAt = new Date(t).toISOString(); }
+        }
+        return { peak, peakAt };
+    }
+
+    function dvRenderCards(b) {
+        const m = b.meta, w = b.worktime;
+        const visible = dvVisibleRows(b);
+        const cards = document.getElementById('dvCards');
+        const gapMin = (w.active_gap_sec || 300) / 60;
+        const capMin = (w.assistant_cap_sec || 600) / 60;
+        const tipSessions = 'How many separate Claude / Codex / ChatGPT conversations had at least one message today.';
+        const tipProjects = 'How many different projects you touched today.';
+        const tipMessages = 'Total messages exchanged today (your prompts + assistant replies).';
+        const tipActive = `Real clock time you were actively using Claude today. Two sessions running at the same time count once. Pauses shorter than ${gapMin} min are treated as continuous work.`;
+        const tipAsst = `Of that active time, how long Claude was actually generating a reply (not you typing or reading). Each reply is capped at ${capMin} min; overlapping sessions count once.`;
+        cards.innerHTML = `
+            <div class="stat-card" title="${tipSessions}"><div class="stat-label">Sessions <span class="dv-help">?</span></div><div class="stat-value">${visible.length}</div></div>
+            <div class="stat-card" title="${tipProjects}"><div class="stat-label">Projects <span class="dv-help">?</span></div><div class="stat-value">${new Set(visible.map(r => r.project_name)).size}</div></div>
+            <div class="stat-card" title="${tipMessages}"><div class="stat-label">Messages <span class="dv-help">?</span></div><div class="stat-value">${formatNumber(visible.reduce((s, r) => s + r.msg_count, 0))}</div></div>
+            <div class="stat-card" title="${tipActive}"><div class="stat-label">Active wall-clock <span class="dv-help">?</span></div><div class="stat-value">${dvFmtHMS(w.active_wallclock_sec)}</div></div>
+            <div class="stat-card" title="${tipAsst}"><div class="stat-label">Assistant wall-clock <span class="dv-help">?</span></div><div class="stat-value">${dvFmtHMS(w.assistant_wallclock_sec)}</div></div>
+        `;
+        let metaText = `${b.date}`;
+        const hidden = b.rows.length - visible.length;
+        if (m.subagent_sessions > 0) {
+            metaText += hidden > 0
+                ? ` · ${hidden} subagent session(s) hidden`
+                : ` · ${m.subagent_sessions} subagent session(s) shown`;
+        }
+        if (m.subagent_invocations > 0) {
+            metaText += ` · ${m.subagent_invocations} Task() invocations`;
+        }
+        document.getElementById('dvMeta').textContent = metaText;
+    }
+
+    function dvRenderPeakPill(b) {
+        const pill = document.getElementById('dvPeakPill');
+        const visible = dvVisibleRows(b);
+        const { peak, peakAt } = dvComputePeak(visible);
+        if (!peak) { pill.innerHTML = ''; pill.style.display = 'none'; return; }
+        pill.style.display = '';
+        const whenLabel = peakAt ? ` at ${dvFmtHM(peakAt)} local` : '';
+        pill.innerHTML = `Peak concurrency: <span class="pill-num">${peak}</span> sessions <span class="pill-when">${whenLabel}</span>`;
+    }
+
+    function dvRenderConcurrency(b) {
+        const host = document.getElementById('dvConcHost');
+        host.innerHTML = '<svg id="dvConc"></svg>';
+        const svg = document.getElementById('dvConc');
+        const sourceRows = dvVisibleRows(b);
+        if (!sourceRows.length) {
+            host.innerHTML = '<div class="dv-empty">No sessions on this date.</div>';
+            return;
+        }
+        const baseDate = b.date;
+        const rows = sourceRows.map(r => ({
+            startH: dvHourFloat(r.start, baseDate),
+            endH: dvHourFloat(r.end, baseDate),
+        }));
+        const allH = rows.flatMap(r => [r.startH, r.endH]);
+        const xMin = Math.min(0, Math.floor(Math.min(...allH)));
+        const xMax = Math.max(24, Math.ceil(Math.max(...allH)));
+
+        const W = Math.max(host.clientWidth - 8, 800);
+        const margin = { top: 14, right: 16, bottom: 28, left: 50 };
+        const chartH = 110;
+        const H = chartH + margin.top + margin.bottom;
+
+        svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+        svg.setAttribute('width', W);
+        svg.setAttribute('height', H);
+
+        const xScale = h => margin.left + (h - xMin) / (xMax - xMin) * (W - margin.left - margin.right);
+        const yTop = margin.top;
+        const yBot = margin.top + chartH;
+
+        // Sweep events
+        const ev = [];
+        rows.forEach(r => { ev.push([r.startH, +1]); ev.push([r.endH, -1]); });
+        ev.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+        let cur = 0, peak = 0;
+        const pts = [[xMin, 0]];
+        for (const [t, d] of ev) { pts.push([t, cur]); cur += d; if (cur > peak) peak = cur; pts.push([t, cur]); }
+        pts.push([xMax, cur]);
+        const maxC = Math.max(peak, 1);
+        const yC = c => yBot - (c / maxC) * chartH;
+
+        // Hour grid + labels
+        for (let h = xMin; h <= xMax; h++) {
+            dvEl('line', {
+                x1: xScale(h), x2: xScale(h),
+                y1: yTop, y2: yBot,
+                stroke: 'rgba(0,0,0,0.06)',
+            }, svg);
+            const lbl = h < 0 ? String(h + 24).padStart(2, '0') + ':00 −1' :
+                        h < 24 ? String(h).padStart(2, '0') + ':00' :
+                                 String(h - 24).padStart(2, '0') + ':00 +1';
+            const t = dvEl('text', {
+                x: xScale(h), y: yBot + 14,
+                'text-anchor': 'middle', fill: '#555', 'font-size': '10px',
+            }, svg);
+            t.textContent = lbl;
+        }
+        // Y-axis ticks
+        for (let c = 0; c <= maxC; c++) {
+            dvEl('line', {
+                x1: margin.left, x2: W - margin.right, y1: yC(c), y2: yC(c),
+                stroke: 'rgba(0,0,0,0.05)',
+            }, svg);
+            const tl = dvEl('text', {
+                x: margin.left - 8, y: yC(c) + 3, 'text-anchor': 'end',
+                fill: '#777', 'font-size': '10px',
+            }, svg);
+            tl.textContent = c;
+        }
+
+        // Curve
+        let area = `M ${xScale(pts[0][0])} ${yC(0)}`;
+        for (const [t, c] of pts) area += ` L ${xScale(t)} ${yC(c)}`;
+        area += ` L ${xScale(xMax)} ${yC(0)} Z`;
+        dvEl('path', { d: area, class: 'dv-concurrency-area' }, svg);
+        let line = `M ${xScale(pts[0][0])} ${yC(pts[0][1])}`;
+        for (const [t, c] of pts) line += ` L ${xScale(t)} ${yC(c)}`;
+        dvEl('path', { d: line, class: 'dv-concurrency-line' }, svg);
+    }
+
+    function dvRenderChart(b) {
+        const host = document.getElementById('dvChartHost');
+        host.innerHTML = '<svg id="dvGantt"></svg>';
+        const svg = document.getElementById('dvGantt');
+        const tt = document.getElementById('dvTooltip');
+
+        const sourceRows = dvVisibleRows(b);
+        if (!sourceRows.length) {
+            host.innerHTML = '<div class="dv-empty">No sessions on this date.</div>';
+            document.getElementById('dvLegend').innerHTML = '';
+            return;
+        }
+
+        const baseDate = b.date;
+        const rows = sourceRows.map(r => ({
+            ...r,
+            startH: dvHourFloat(r.start, baseDate),
+            endH: dvHourFloat(r.end, baseDate),
+        }));
+        const allH = rows.flatMap(r => [r.startH, r.endH]);
+        const xMin = Math.min(0, Math.floor(Math.min(...allH)));
+        const xMax = Math.max(24, Math.ceil(Math.max(...allH)));
+
+        const W = Math.max(host.clientWidth - 8, 800);
+        const margin = { top: 12, right: 16, bottom: 56, left: 190 };
+        const rowH = 16, headerH = 26, groupGap = 8;
+
+        const palette = ['#35C2FF', '#F9C927', '#00D35D', '#ff6ab5', '#b48cff', '#ff9a3c', '#888fad', '#5c6789'];
+        const projAgg = new Map();
+        for (const r of rows) {
+            const a = projAgg.get(r.project_name) || { name: r.project_name, rows: [], total_min: 0 };
+            a.rows.push(r);
+            a.total_min += r.duration_min;
+            projAgg.set(r.project_name, a);
+        }
+        const sortedProjs = Array.from(projAgg.values()).sort((a, b) => b.total_min - a.total_min);
+        sortedProjs.forEach((p, i) => {
+            p.color = palette[i % palette.length];
+            p.session_count = p.rows.length;
+        });
+        const groups = sortedProjs.map(p => ({
+            proj: p,
+            rows: p.rows.slice().sort((a, b) => a.startH - b.startH),
+        }));
+
+        let y = margin.top;
+        const groupLayout = [];
+        for (const g of groups) {
+            const headerY = y; y += headerH;
+            const rowYs = [];
+            for (let i = 0; i < g.rows.length; i++) { rowYs.push(y); y += rowH; }
+            y += groupGap;
+            groupLayout.push({ group: g, headerY, rowYs });
+        }
+        const chartH = y - groupGap;
+        const H = chartH + margin.bottom;
+
+        svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+        svg.setAttribute('width', W);
+        svg.setAttribute('height', H);
+
+        const xScale = h => margin.left + (h - xMin) / (xMax - xMin) * (W - margin.left - margin.right);
+
+        // Grid + hour labels (under the gantt)
+        for (let h = xMin; h <= xMax; h++) {
+            dvEl('line', {
+                x1: xScale(h), x2: xScale(h),
+                y1: margin.top, y2: chartH,
+                stroke: 'rgba(0,0,0,0.06)',
+            }, svg);
+            const lbl = h < 0 ? String(h + 24).padStart(2, '0') + ':00 −1' :
+                        h < 24 ? String(h).padStart(2, '0') + ':00' :
+                                 String(h - 24).padStart(2, '0') + ':00 +1';
+            const t = dvEl('text', {
+                x: xScale(h), y: chartH + 18,
+                'text-anchor': 'middle', fill: '#555', 'font-size': '11px',
+            }, svg);
+            t.textContent = lbl;
+        }
+
+        // Groups + rows
+        for (const gl of groupLayout) {
+            const p = gl.group.proj, grows = gl.group.rows, color = p.color;
+            dvEl('rect', { x: 0, y: gl.headerY, width: W, height: headerH, fill: color, 'fill-opacity': 0.08 }, svg);
+            dvEl('rect', { x: 0, y: gl.headerY, width: 5, height: headerH, fill: color }, svg);
+            const totH = Math.floor(p.total_min / 60), totM = Math.round(p.total_min % 60);
+            const totLbl = totH > 0 ? `${totH}h ${totM}m` : `${totM}m`;
+            const nm = dvEl('text', {
+                x: 14, y: gl.headerY + headerH / 2 + 5,
+                fill: color, 'font-size': '13px', 'font-weight': '700',
+            }, svg);
+            nm.textContent = p.name;
+            const meta = dvEl('text', {
+                x: 14 + 110, y: gl.headerY + headerH / 2 + 5,
+                fill: '#777', 'font-size': '11px',
+            }, svg);
+            meta.textContent = `${p.session_count} sessions · ${totLbl}`;
+
+            for (let i = 0; i < grows.length; i++) {
+                const r = grows[i], ry = gl.rowYs[i];
+                if (i % 2 === 0) {
+                    dvEl('rect', {
+                        x: margin.left, y: ry, width: W - margin.left - margin.right, height: rowH,
+                        fill: 'rgba(0,0,0,0.02)',
+                    }, svg);
+                }
+                const lbl = dvEl('text', {
+                    x: margin.left - 10, y: ry + rowH / 2 + 4,
+                    'text-anchor': 'end', fill: '#666', 'font-size': '10px',
+                }, svg);
+                lbl.textContent = `sess ${i + 1} (${r.msg_count} msg)`;
+                const bx = xScale(r.startH), bw = Math.max(2, xScale(r.endH) - bx);
+                const by = ry + 2, bh = rowH - 4;
+                const barCls = r.is_subagent ? 'dv-bar subagent' : 'dv-bar';
+                const bar = dvEl('rect', {
+                    x: bx, y: by, width: bw, height: bh,
+                    fill: color, rx: 3, class: barCls, 'fill-opacity': r.is_subagent ? 0.55 : 0.85,
+                }, svg);
+                bar.addEventListener('mousemove', (e) => {
+                    const summary = r.summary || r.display || '—';
+                    const subTag = r.is_subagent ? ' · <span style="color:#f99">subagent</span>' : '';
+                    tt.innerHTML = `
+                        <div class="t-proj" style="color:${color}">${p.name} · sess ${i + 1}${subTag}</div>
+                        <div class="t-time">${dvFmtHM(r.start)} → ${dvFmtHM(r.end)} · ${r.duration_min.toFixed(0)} min · ${r.msg_count} msg · ${r.source}</div>
+                        <div class="t-activity">${summary}</div>
+                    `;
+                    tt.classList.add('show');
+                    tt.style.left = (e.pageX + 12) + 'px';
+                    tt.style.top = (e.pageY + 12) + 'px';
+                });
+                bar.addEventListener('mouseleave', () => tt.classList.remove('show'));
+            }
+        }
+
+        // Legend
+        const legend = document.getElementById('dvLegend');
+        legend.innerHTML = '';
+        sortedProjs.forEach(p => {
+            const span = document.createElement('span');
+            span.className = 'dv-legend-item';
+            span.innerHTML = `<span class="dv-swatch" style="background:${p.color}"></span>${p.name} (${p.session_count})`;
+            legend.appendChild(span);
+        });
+    }
 
     init();
     </script>

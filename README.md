@@ -176,6 +176,10 @@ lav kb index <session_id> --tags "blog,newsletter"
 lav kb remove <session_id>
 lav kb tags <session_id> --set "new,tags"
 
+# Day View — daily Gantt + honest worktime metrics
+lav day 2026-05-12
+lav day 2026-05-12 --project miniMe --format brief
+
 # Sync & pricing
 lav sync
 lav sync --scope project --project miniMe --full
@@ -244,6 +248,8 @@ Each layer is independent — the core works with just layer 1. Classification a
 - **Timeline** — activity patterns and session duration
 - **Users** — per-user drill-down with 7 views
 - **Knowledge Base** — semantic search across interactions
+- **Cost Intelligence** — work patterns, task-type costs, efficiency metrics
+- **Day View** — daily Gantt of all sessions grouped by project, concurrency curve, and two honest worktime metrics (`active_wallclock`, `assistant_wallclock`) that avoid the ~13× inflation of span-sum. Hover any metric card for its definition. Toggle "Show subagents" to include sessions with `parent_session_id`.
 
 ### 4D Filtering
 Every query supports four independent dimensions:
