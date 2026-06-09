@@ -1284,7 +1284,11 @@ def get_session_cost_profile(conn, session_id, project_id=None):
             COALESCE(tu.cache_creation_tokens, 0) as cache_creation_tokens,
             COALESCE(tu.cache_read_tokens, 0) as cache_read_tokens,
             COALESCE(tu.api_message_id, '') as api_message_id,
-            {_COST_EXPR} as cost_usd
+            {_COST_EXPR} as cost_usd,
+            ROUND(COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0, 6) as cost_input,
+            ROUND(COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0, 6) as cost_output,
+            ROUND(COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0, 6) as cost_cache_write,
+            ROUND(COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0, 6) as cost_cache_read
         FROM token_usage tu
         {_PRICE_JOIN}
         WHERE tu.session_id = ? {pid_clause}
@@ -1299,6 +1303,7 @@ def get_session_cost_profile(conn, session_id, project_id=None):
     timeline = []
     total_input = total_output = total_cache_write = total_cache_read = 0
     total_cost = 0.0
+    cost_input = cost_output = cost_cache_write = cost_cache_read = 0.0
     models = set()
 
     for r in rows:
@@ -1309,6 +1314,10 @@ def get_session_cost_profile(conn, session_id, project_id=None):
         total_output += r["output_tokens"]
         total_cache_write += r["cache_creation_tokens"]
         total_cache_read += r["cache_read_tokens"]
+        cost_input += r["cost_input"] or 0.0
+        cost_output += r["cost_output"] or 0.0
+        cost_cache_write += r["cost_cache_write"] or 0.0
+        cost_cache_read += r["cost_cache_read"] or 0.0
         models.add(r["model"])
         timeline.append({
             "timestamp": r["timestamp"],
@@ -1360,6 +1369,14 @@ def get_session_cost_profile(conn, session_id, project_id=None):
                 "output": total_output,
                 "cache_creation": total_cache_write,
                 "cache_read": total_cache_read,
+                "total": total_input + total_output + total_cache_write + total_cache_read,
+            },
+            "cost": {
+                "input": round(cost_input, 4),
+                "output": round(cost_output, 4),
+                "cache_write": round(cost_cache_write, 4),
+                "cache_read": round(cost_cache_read, 4),
+                "total": round(total_cost, 4),
             },
         },
         "timeline": timeline,

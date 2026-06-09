@@ -1605,7 +1605,13 @@
     }
 
     function renderThinking(text) {
-        return '<div class="thinking-block"><div class="thinking-header" onclick="toggleCollapsible(this)">\uD83D\uDCAD Extended Thinking <span class="toggle-icon">\u25B6</span></div><div class="thinking-content collapsed"><pre>' + escapeHtml(text) + '</pre></div></div>';
+        // Opus 4.7/4.8 omit thinking text by default, leaving only an encrypted
+        // signature blob. Never dump that blob \u2014 show a muted placeholder instead.
+        var hasText = text && String(text).trim();
+        var body = hasText
+            ? '<pre>' + escapeHtml(text) + '</pre>'
+            : '<div style="color: #999; font-style: italic; padding: 2px 0;">(encrypted \u2014 no readable thinking content)</div>';
+        return '<div class="thinking-block"><div class="thinking-header" onclick="toggleCollapsible(this)">\uD83D\uDCAD Extended Thinking <span class="toggle-icon">\u25B6</span></div><div class="thinking-content collapsed">' + body + '</div></div>';
     }
 
     function renderToolResult(item) {
@@ -1819,8 +1825,8 @@
                 contentItems.forEach(function(item) {
                     if (item.type === 'text' && item.text) {
                         itemsHtml += '<div class="message-text">' + escapeHtml(item.text) + '</div>';
-                    } else if (item.type === 'thinking' && item.thinking) {
-                        itemsHtml += renderThinking(item.thinking);
+                    } else if (item.type === 'thinking' || item.type === 'redacted_thinking') {
+                        itemsHtml += renderThinking(item.thinking || '');
                     } else if (item.type === 'tool_use') {
                         itemsHtml += renderToolUse(item, nextMsg);
                     } else if (item.type === 'tool_result') {
@@ -1961,6 +1967,35 @@
             var phases = costProfile.phases || {};
             var third = Math.max(Math.floor(timeline.length / 3), 1);
             var phaseColors = { early: '#004BFF', mid: '#FF7A20', late: '#00D35D' };
+
+            // Totals summary (token + USD cost per category) — shown above the message table
+            var tk = s.tokens || {};
+            var ct = s.cost || {};
+            var totTokens = (tk.total != null) ? tk.total : ((tk.input || 0) + (tk.output || 0) + (tk.cache_creation || 0) + (tk.cache_read || 0));
+            var totalRows = [
+                ['Input', tk.input, ct.input],
+                ['Output', tk.output, ct.output],
+                ['Cache In (write)', tk.cache_creation, ct.cache_write],
+                ['Cache Out (read)', tk.cache_read, ct.cache_read]
+            ];
+            var totHtml = '<div style="background: #FFFFFF; border-radius: 16px; padding: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); margin-bottom: 20px; overflow-x: auto;">';
+            totHtml += '<div style="font-size: 1rem; font-weight: 700; margin-bottom: 16px;">Totals</div>';
+            totHtml += '<table style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">';
+            totHtml += '<thead><tr style="border-bottom: 1px solid #F2F2F2; color: #666;"><th style="padding: 8px; text-align: left;">Category</th><th style="padding: 8px; text-align: right;">Tokens</th><th style="padding: 8px; text-align: right;">Cost (USD)</th></tr></thead><tbody>';
+            totalRows.forEach(function(r) {
+                totHtml += '<tr style="border-bottom: 1px solid #F2F2F2;">';
+                totHtml += '<td style="padding: 8px;">' + r[0] + '</td>';
+                totHtml += '<td style="padding: 8px; text-align: right; color: #666;">' + (r[1] || 0).toLocaleString() + '</td>';
+                totHtml += '<td style="padding: 8px; text-align: right; color: #00D35D;">$' + (r[2] || 0).toFixed(4) + '</td>';
+                totHtml += '</tr>';
+            });
+            totHtml += '<tr style="border-top: 2px solid #E5E5E5; font-weight: 700;">';
+            totHtml += '<td style="padding: 8px;">TOTAL</td>';
+            totHtml += '<td style="padding: 8px; text-align: right;">' + totTokens.toLocaleString() + '</td>';
+            totHtml += '<td style="padding: 8px; text-align: right; color: #00D35D;">$' + (ct.total || 0).toFixed(4) + '</td>';
+            totHtml += '</tr>';
+            totHtml += '</tbody></table></div>';
+            el.insertAdjacentHTML('beforeend', totHtml);
 
             var tblHtml = '<div style="background: #FFFFFF; border-radius: 16px; padding: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); overflow-x: auto;">';
             tblHtml += '<div style="font-size: 1rem; font-weight: 700; margin-bottom: 16px;">Message-Level Detail';

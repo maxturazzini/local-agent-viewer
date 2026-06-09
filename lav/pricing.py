@@ -30,6 +30,8 @@ CREATE INDEX IF NOT EXISTS idx_pricing_model_date ON model_pricing(model, from_d
 
 DEFAULT_PRICING = [
     # (model, provider, input, output, cache_write, cache_read, from_date)
+    ("claude-opus-4-8", "anthropic", 5.00, 25.00, 6.25, 0.50, "2024-01-01"),
+    ("claude-opus-4-7", "anthropic", 5.00, 25.00, 6.25, 0.50, "2024-01-01"),
     ("claude-opus-4-6", "anthropic", 5.00, 25.00, 6.25, 0.50, "2024-01-01"),
     ("claude-opus-4-5-20251101", "anthropic", 5.00, 25.00, 6.25, 0.50, "2024-01-01"),
     ("claude-opus-4-1-20250805", "anthropic", 15.00, 75.00, 18.75, 1.50, "2024-01-01"),

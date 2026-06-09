@@ -1251,7 +1251,7 @@ def update_interaction(session_id: str, project_name: str, conn: sqlite3.Connect
             SELECT
                 MIN(timestamp) as first_ts,
                 COUNT(*) as msg_count,
-                SUM(tokens_in + tokens_out) as total_tokens,
+                SUM(tokens_in + tokens_out) as msg_tokens,
                 MAX(model) as model
             FROM messages
             WHERE session_id = ? AND project_id = ?
@@ -1260,21 +1260,25 @@ def update_interaction(session_id: str, project_name: str, conn: sqlite3.Connect
         if not row or not row[0]:
             return
 
-        first_ts, msg_count, total_tokens, model = row
+        first_ts, msg_count, msg_tokens, model = row
 
-        if not total_tokens or total_tokens == 0:
-            cursor = conn.execute("""
-                SELECT
-                    SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens) as total_tokens,
-                    MAX(model) as model
-                FROM token_usage
-                WHERE session_id = ? AND project_id = ?
-            """, (session_id, project_id))
-            trow = cursor.fetchone()
-            if trow:
-                total_tokens = trow[0] or 0
-                if not model and trow[1]:
-                    model = trow[1]
+        # total_tokens is cache-inclusive: the full token_usage breakdown
+        # (input + output + cache write + cache read). token_usage is deduplicated
+        # by api_message_id and includes subagent messages under the same session_id,
+        # so this matches the Cost Profile token total shown in the UI. Fall back to
+        # the messages' tokens_in+tokens_out only for sources without token_usage
+        # (e.g. ChatGPT / claude.ai exports, which have no cache tokens).
+        cursor = conn.execute("""
+            SELECT
+                SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens) as total_tokens,
+                MAX(model) as model
+            FROM token_usage
+            WHERE session_id = ? AND project_id = ?
+        """, (session_id, project_id))
+        trow = cursor.fetchone()
+        total_tokens = trow[0] if (trow and trow[0] is not None) else (msg_tokens or 0)
+        if not model and trow and trow[1]:
+            model = trow[1]
 
         cursor = conn.execute("""
             SELECT content FROM messages

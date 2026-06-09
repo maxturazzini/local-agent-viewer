@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+LAV-58: Add missing `claude-opus-4-8` (and `claude-opus-4-7`) model pricing.
+- `claude-opus-4-8` (the current model) was absent from `model_pricing`, so every opus-4-8 interaction was costed at $0.0000 — the most expensive model in a session was silently ignored. On a /deep-research session (`fc00f15f…`) this halved the reported cost ($13.50 vs ~$26 real).
+- Added both `claude-opus-4-8` and `claude-opus-4-7` to `DEFAULT_PRICING` in `lav/pricing.py` (`$5 in / $25 out`, cache write $6.25 = 1.25×, cache read $0.50 = 0.1× per Mtok — identical to opus-4-6). Permanent for fresh installs (seeded via `INSERT OR IGNORE` in `init_db`).
+- Live DBs: insert via `lav pricing add --model claude-opus-4-8 --provider anthropic --input 5.0 --output 25.0 --cache-write 6.25 --cache-read 0.5 --from-date 2024-01-01`. Costs are computed at query time (LEFT JOIN, never materialized), so the row fixes **all** historical opus-4-8 data retroactively with no re-parse.
+
+LAV-57: Cost Profile — token + USD cost totals block above Message-Level Detail.
+- `get_session_cost_profile` (`lav/queries.py`) now returns a per-category cost breakdown in `summary.cost` (`input`/`output`/`cache_write`/`cache_read`/`total`) plus `summary.tokens.total`, computed from the same `token_usage` rows as the existing token totals (the 4 prices already live in `_COST_EXPR`). `cost.total` equals the existing `cost_usd` (consistency check).
+- Frontend (`lav/static/interactions.html` `renderCostProfile`): new "Totals" card rendered above the message table — a 3-column table (Category | Tokens | Cost USD) with rows Input / Output / Cache In (write) / Cache Out (read) and a bold TOTAL. Reuses existing formatters; falls back to $0 for sessions without pricing. Makes the cost breakdown legible at a glance (e.g. cache *write* dominates, not the large cache *read*).
+
+LAV-59: `interactions.total_tokens` is now cache-inclusive — one consistent token total everywhere.
+- The materialized `interactions.total_tokens` column was cache-*excluded* (`SUM(tokens_in+tokens_out)` from `messages`), so the Interactions grid and the detail-popup header showed numbers ~50× smaller than the Cost Profile total for cached sessions (e.g. `fc00f15f`: 339,617 vs 19,356,374). Two different numbers for the same session.
+- `lav/parsers/jsonl.py` `update_interaction()`: `total_tokens` is now computed from `token_usage` (`input+output+cache_creation+cache_read`, deduped by `api_message_id`, includes subagent rows under the same session_id → matches Cost Profile). Falls back to `messages.tokens_in+tokens_out` only for sources without `token_usage` (ChatGPT / claude.ai exports).
+- Existing rows backfilled in place: `UPDATE interactions SET total_tokens = (SELECT SUM(...) FROM token_usage WHERE session/project match)` where `token_usage` exists. Grid, popup header and the user/host/project aggregates all read the now-correct column. **Semantic change (intentional, not silent):** historical token totals increase by including cache tokens.
+
+LAV-60: Transcript — thinking blocks stay collapsed; encrypted signatures are never dumped.
+- Opus 4.7/4.8 `thinking` blocks carry an empty `thinking` field (text omitted by default) plus an encrypted `signature`. The render branch was gated on `item.thinking` being truthy, so empty-thinking blocks fell through to the raw-JSON fallback and spilled the base64 signature into the transcript.
+- `lav/static/interactions.html`: the branch now matches `thinking` / `redacted_thinking` regardless of text and always routes through `renderThinking()`, which shows a muted `(encrypted — no readable thinking content)` placeholder instead of the signature. Blocks remain collapsed by default, expandable on click.
+
 LAV-55: Day View — daily Gantt + honest worktime metrics.
 - New dashboard tab **Day View** (after Cost Intelligence) with date picker, prev/next arrows and "today" shortcut. Three blocks: stat cards (Sessions, Projects, Messages, Active wall-clock, Assistant wall-clock with hover tooltips), a dedicated concurrency curve chart with Peak pill, and a per-session Gantt grouped by project with hover tooltips. Charts auto-resize on window resize (debounced).
 - Two honest wall-clock metrics computed per day in `lav/queries.py:get_day_bundle()`:
