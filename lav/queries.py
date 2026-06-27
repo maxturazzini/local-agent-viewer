@@ -690,8 +690,17 @@ def get_date_range(conn, project_id=None, user_id=None, host_id=None, client_sou
 def get_interactions_list(conn, project_id=None, user_id=None, host_id=None,
                            search=None, start_date=None, end_date=None,
                            limit=50, offset=0, client_source=None,
-                           classification=None, sensitivity=None):
-    """Get list of interactions with 4D filters + optional metadata filters."""
+                           classification=None, sensitivity=None, grouped=True):
+    """Get list of interactions with 4D filters + optional metadata filters.
+
+    When grouped=True (default) only top-level masters (parent_session_id IS NULL)
+    are returned, with cost_usd/total_tokens rolled up over the session and all its
+    transitive descendants (via parent_session_id), plus derived_count. Orphan rows
+    whose parent does not resolve to a master are promoted to top-level.
+
+    When grouped=False, behavior is exactly as before: every session is a row, with
+    per-session cost, no parent filter, and derived_count is 0.
+    """
     where, params = build_filters(
         project_id=project_id, user_id=user_id, host_id=host_id,
         start=start_date, end=end_date, client=client_source, table_alias='c'
@@ -736,6 +745,34 @@ def get_interactions_list(conn, project_id=None, user_id=None, host_id=None,
         else:
             where = " WHERE " + extra
         params.append(sensitivity)
+
+    # Grouped mode: only show top-level masters. Applied to BOTH the SELECT and the
+    # COUNT WHERE so pagination/total stay consistent. The descendant rollup happens
+    # in Python below (correct for arbitrary nesting depth).
+    #
+    # A row is a child (hidden, rolled up under its master) iff its parent_session_id
+    # is set, differs from its own session_id (SELF-PARENT GUARD — some masters point
+    # to themselves), AND a row with that parent session_id exists ANYWHERE.
+    # NB: the parent lookup is intentionally project-AGNOSTIC. A Cowork conversation's
+    # master lives in cowork_default while its slaves get scattered into per-event
+    # inferred projects (outputs/miniMe/...), so a same-project EXISTS would leak those
+    # slaves back into the list. session_id is a globally-unique UUID, so matching on
+    # session_id alone is safe for both Cowork (cross-project tree) and Claude Code
+    # (same-project subagents).
+    # Otherwise the row is top-level: this covers real masters (NULL parent), self-parent
+    # masters, and ORPHAN PROMOTION (parent does not resolve to any existing master, so
+    # nothing disappears from the list).
+    if grouped:
+        extra = """(c.parent_session_id IS NULL
+            OR c.parent_session_id = c.session_id
+            OR NOT EXISTS (
+                SELECT 1 FROM interactions m
+                WHERE m.session_id = c.parent_session_id
+            ))"""
+        if where:
+            where += " AND " + extra
+        else:
+            where = " WHERE " + extra
 
     interactions = run_query(conn, f"""
         SELECT
@@ -795,12 +832,105 @@ def get_interactions_list(conn, project_id=None, user_id=None, host_id=None,
     """, params if params else None)
     total = count_result[0]['total'] if count_result else 0
 
+    if grouped:
+        _rollup_descendants(conn, interactions)
+    else:
+        for row in interactions:
+            row['derived_count'] = 0
+
     return {
         "interactions": interactions,
         "total": total,
         "limit": limit,
         "offset": offset,
     }
+
+
+def _per_session_cost_subquery():
+    """The per-session cost SQL shape reused across list/detail/children queries."""
+    return """COALESCE((
+                SELECT ROUND(SUM(
+                    COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
+                    + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
+                    + COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0
+                    + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
+                ), 4)
+                FROM token_usage tu
+                LEFT JOIN model_pricing mp ON mp.model = tu.model
+                    AND tu.timestamp >= mp.from_date
+                    AND (mp.to_date IS NULL OR tu.timestamp < mp.to_date)
+                WHERE tu.session_id = c.session_id AND tu.project_id = c.project_id
+            ), 0)"""
+
+
+def _rollup_descendants(conn, masters):
+    """Roll up cost_usd/total_tokens of all transitive descendants onto each master.
+
+    Computes the descendant closure (via parent_session_id) with a breadth-first
+    walk so it is correct for arbitrary nesting depth (Claude Code nests; Cowork is
+    one level — same code path). Each master gains:
+      - cost_usd / total_tokens = own value + sum over all descendants
+      - derived_count = number of descendants
+
+    The walk is project-AGNOSTIC on the parent link: a Cowork conversation's master
+    sits in cowork_default while its slaves get scattered into per-event inferred
+    projects, so descendants can live in a different project than their master. We
+    still key each node on (session_id, project_id) — the same session_id can be
+    materialised under multiple projects (composite PK), and each such copy carries
+    its own tokens and must be rolled up exactly once.
+
+    Masters are mutated in place.
+    """
+    if not masters:
+        return
+
+    cost_sql = _per_session_cost_subquery()
+
+    # Breadth-first descendant walk keyed on session_id. owner maps a session_id to
+    # the master it rolls up into; visited is keyed on (session_id, project_id) so
+    # cross-project copies of the same session_id each get counted once.
+    owner = {}          # session_id -> master dict
+    visited = set()     # (session_id, project_id)
+    frontier = []       # session_ids to expand next
+    for m in masters:
+        m['derived_count'] = 0
+        owner.setdefault(m['session_id'], m)
+        visited.add((m['session_id'], m['project_id']))
+        frontier.append(m['session_id'])
+
+    while frontier:
+        placeholders = ",".join("?" for _ in frontier)
+        children = run_query(conn, f"""
+            SELECT
+                c.session_id,
+                c.project_id,
+                c.parent_session_id,
+                COALESCE(c.total_tokens, 0) as total_tokens,
+                {cost_sql} as cost_usd
+            FROM interactions c
+            WHERE c.parent_session_id IN ({placeholders})
+              AND c.session_id != c.parent_session_id
+        """, list(frontier))
+
+        next_frontier = []
+        for child in children:
+            sid = child['session_id']
+            key = (sid, child['project_id'])
+            if key in visited:
+                # Cycle guard / already-counted node.
+                continue
+            visited.add(key)
+            master = owner.get(child['parent_session_id'])
+            if master is None:
+                continue
+            owner.setdefault(sid, master)
+            master['cost_usd'] = round(
+                (master.get('cost_usd') or 0) + (child.get('cost_usd') or 0), 4)
+            master['total_tokens'] = (master.get('total_tokens') or 0) + child['total_tokens']
+            master['derived_count'] += 1
+            next_frontier.append(sid)
+
+        frontier = next_frontier
 
 
 def search_messages(conn, query: str, limit: int = 20,
@@ -871,6 +1001,38 @@ def search_messages(conn, query: str, limit: int = 20,
     return results
 
 
+def get_interaction_children(conn, session_id, project_id=None):
+    """Get direct child (derived) sessions of a master, with per-session cost.
+
+    One level deep, ordered oldest-first. Reuses the per-session cost subquery
+    shape. Returns a list of dicts with keys: session_id, project_id, summary,
+    display, agent_id, timestamp, total_tokens, message_count, cost_usd.
+
+    Matching is project-AGNOSTIC on the parent link: a Cowork master sits in
+    cowork_default while its slaves land in per-event inferred projects, so the
+    children of a master can live in different projects. session_id is a globally
+    unique UUID, so matching on parent_session_id alone is safe. The project_id
+    argument is accepted for call-site compatibility but intentionally not used as
+    a filter.
+    """
+    cost_sql = _per_session_cost_subquery()
+    return run_query(conn, f"""
+        SELECT
+            c.session_id,
+            c.project_id,
+            c.summary,
+            c.display,
+            c.agent_id,
+            c.timestamp,
+            c.total_tokens,
+            c.message_count,
+            {cost_sql} as cost_usd
+        FROM interactions c
+        WHERE c.parent_session_id = ?
+        ORDER BY c.timestamp ASC
+    """, [session_id])
+
+
 def get_interaction_detail(conn, session_id, project_id=None):
     """Get full interaction transcript with parent info."""
     cost_subquery = """COALESCE((
@@ -923,6 +1085,8 @@ def get_interaction_detail(conn, session_id, project_id=None):
             FROM interactions WHERE session_id = ? AND project_id = ?
         """, [interaction['parent_session_id'], pid])
         interaction['parent_interaction'] = parent[0] if parent else None
+
+    interaction['children'] = get_interaction_children(conn, session_id, pid)
 
     messages = run_query(conn, """
         SELECT uuid, type, content, timestamp, tokens_in, tokens_out, model
@@ -1039,6 +1203,7 @@ def get_projects_list(conn, user_id=None, host_id=None):
         LEFT JOIN session_sources ss ON ss.session_id = c.session_id AND ss.project_id = c.project_id
         {where}
         GROUP BY p.id
+        HAVING COUNT(DISTINCT c.session_id) > 0
         ORDER BY total_sessions DESC
     """, params if params else None)
     for row in rows:

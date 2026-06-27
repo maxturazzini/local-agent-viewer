@@ -892,6 +892,7 @@ class APIHandler(SimpleHTTPRequestHandler):
                 sensitivity = params.get("sensitivity", [None])[0]
                 limit = int(params.get("limit", [50])[0])
                 offset = int(params.get("offset", [0])[0])
+                grouped = params.get("grouped", ["true"])[0].lower() not in ("false", "0")
 
                 data = get_interactions_list(
                     conn,
@@ -906,6 +907,7 @@ class APIHandler(SimpleHTTPRequestHandler):
                     client_source=client_source,
                     classification=classification,
                     sensitivity=sensitivity,
+                    grouped=grouped,
                 )
                 self.send_json(data)
             finally:

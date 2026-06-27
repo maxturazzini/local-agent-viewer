@@ -670,6 +670,43 @@
         }
         .subagent-item:hover { background: var(--light-gray); }
 
+        /* Grouped/Flat segmented toggle */
+        .list-mode-toggle {
+            display: inline-flex;
+            border: 2px solid var(--light-gray);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .list-mode-btn {
+            padding: 8px 14px;
+            border: none;
+            background: var(--white);
+            color: var(--dim-gray);
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 0.9rem;
+            transition: all 0.2s;
+        }
+        .list-mode-btn + .list-mode-btn { border-left: 2px solid var(--light-gray); }
+        .list-mode-btn:hover { color: var(--dodger-blue); }
+        .list-mode-btn.active { background: var(--dodger-blue); color: var(--white); }
+
+        /* Derived-sessions pill on a master row */
+        .derived-pill {
+            display: inline-block;
+            margin-left: 6px;
+            padding: 1px 7px;
+            border-radius: 10px;
+            background: rgba(0, 75, 255, 0.08);
+            color: var(--dodger-blue);
+            font-size: 0.72rem;
+            font-weight: 600;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .derived-pill:hover { background: rgba(0, 75, 255, 0.16); }
+        .derived-child-row { background: rgba(0, 75, 255, 0.025); }
+
         /* Breadcrumb */
         .breadcrumb {
             padding: 6px 10px;
@@ -886,6 +923,10 @@
         </div>
         <button class="btn" id="searchBtn">Search</button>
         <button class="btn btn-secondary" id="clearBtn">Clear</button>
+        <div class="list-mode-toggle" id="listModeToggle" title="Grouped: only master sessions with rolled-up cost/tokens. Flat: every session as today.">
+            <button type="button" class="list-mode-btn" data-mode="grouped">Grouped</button>
+            <button type="button" class="list-mode-btn" data-mode="flat">Flat</button>
+        </div>
         <div class="col-toggle-wrapper">
             <button class="btn btn-secondary" id="colToggleBtn">Columns</button>
             <div class="col-toggle-dropdown" id="colToggleDropdown"></div>
@@ -1129,7 +1170,8 @@
         users: [],
         hosts: [],
         multiUser: false,
-        expandedId: null
+        expandedId: null,
+        listMode: (localStorage.getItem('lav.listMode') === 'flat') ? 'flat' : 'grouped'
     };
 
     // Project color map for badges
@@ -1184,6 +1226,7 @@
         if (state.startDate) params.set('start', state.startDate);
         if (state.endDate) params.set('end', state.endDate);
         if (state.search) params.set('search', state.search);
+        params.set('grouped', state.listMode === 'flat' ? 'false' : 'true');
         params.set('offset', state.offset);
         params.set('limit', LIMIT);
         return params.toString();
@@ -1410,6 +1453,27 @@
         loadInteractions();
     }
 
+    // ===== GROUPED / FLAT LIST MODE TOGGLE =====
+    function syncListModeUI() {
+        document.querySelectorAll('#listModeToggle .list-mode-btn').forEach(function(btn) {
+            btn.classList.toggle('active', btn.dataset.mode === state.listMode);
+        });
+    }
+
+    function setListMode(mode) {
+        const next = (mode === 'flat') ? 'flat' : 'grouped';
+        if (next === state.listMode) return;
+        state.listMode = next;
+        localStorage.setItem('lav.listMode', next);
+        syncListModeUI();
+        resetAndLoad();
+    }
+
+    document.querySelectorAll('#listModeToggle .list-mode-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() { setListMode(btn.dataset.mode); });
+    });
+    syncListModeUI();
+
     // ===== PAGINATION =====
     document.getElementById('prevBtn').addEventListener('click', () => {
         if (state.offset > 0) {
@@ -1476,10 +1540,14 @@
                     : '<span style="color:#ccc">-</span>';
 
                 const projectName = conv.project || '';
+                const derivedCount = (state.listMode !== 'flat') ? (conv.derived_count || 0) : 0;
+                const derivedPill = derivedCount > 0
+                    ? `<span class="derived-pill" title="Show ${derivedCount} derived session(s)">↳ ${derivedCount} agent${derivedCount === 1 ? '' : 's'}</span>`
+                    : '';
                 row.insertAdjacentHTML('beforeend', `
                     <div class="conv-timestamp" data-col="timestamp">${formatTimestamp(conv.timestamp)}</div>
                     <div class="conv-summary-cell" data-col="summary">
-                        <span class="conv-display" title="${escapeAttr(conv.summary || conv.meta_summary || conv.display || '')}">${escapeHtml(conv.summary || conv.meta_summary || conv.display || '(no summary)')}</span>
+                        <span class="conv-display" title="${escapeAttr(conv.summary || conv.meta_summary || conv.display || '')}">${escapeHtml(conv.summary || conv.meta_summary || conv.display || '(no summary)')}</span>${derivedPill}
                     </div>
                     <div class="conv-project" data-col="project"><span class="badge badge-project" style="background: ${projectName ? getProjectColor(projectName) : '#999'};" data-project="${escapeAttr(projectName)}" title="Filter by ${escapeAttr(projectName)}">${escapeHtml(projectName || '-')}</span></div>
                     <div class="conv-user" data-col="user">${escapeHtml(conv.username || '-')}</div>
@@ -1503,6 +1571,12 @@
                     if (e.target.closest('.badge-user')) {
                         const userName = e.target.dataset.user;
                         filterByUser(userName);
+                        return;
+                    }
+                    // Clicking the derived pill expands children inline instead of opening
+                    if (e.target.closest('.derived-pill')) {
+                        e.stopPropagation();
+                        toggleDerivedRows(row, conv);
                         return;
                     }
                     openInteraction(conv.session_id, conv.project_id || conv.project);
@@ -1532,6 +1606,72 @@
             listEl.insertAdjacentHTML('beforeend',
                 '<div class="empty-state"><h3>Could not connect to server</h3><p>Make sure the backend is running on port 8764</p></div>'
             );
+        }
+    }
+
+    // ===== INLINE DERIVED-SESSION EXPANSION (grouped list) =====
+    function renderDerivedChildRow(child, projectId) {
+        const row = document.createElement('div');
+        row.className = 'interaction-item derived-child-row';
+        const sid = child.session_id || '';
+        const label = child.summary || child.display || child.agent_id || '(derived session)';
+        row.insertAdjacentHTML('beforeend', `
+            <div class="conv-timestamp" data-col="timestamp">${formatTimestamp(child.timestamp)}</div>
+            <div class="conv-summary-cell" data-col="summary" style="padding-left:18px;">
+                <span style="color:var(--dim-gray);">↳</span>
+                <span class="conv-display" title="${escapeAttr(label)}">${escapeHtml(label)}</span>
+                ${child.agent_id ? `<span class="derived-pill" style="cursor:default;">${escapeHtml(child.agent_id)}</span>` : ''}
+            </div>
+            <div class="conv-project" data-col="project"></div>
+            <div class="conv-user" data-col="user"></div>
+            <div class="conv-host" data-col="host"></div>
+            <div class="conv-source" data-col="source"></div>
+            <div class="conv-classification" data-col="class"></div>
+            <div class="conv-sensitivity" data-col="sens"></div>
+            <div class="conv-tokens" data-col="tokens">${formatNumber(child.total_tokens)}</div>
+            <div class="conv-cost" data-col="cost" style="font-size:0.82rem;color:var(--spring-green);font-weight:600;">$${(child.cost_usd || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+            <div class="conv-messages" data-col="messages">${child.message_count || 0} msgs</div>
+            <div data-col="session"><span class="conv-session-id" data-full-id="${escapeAttr(sid)}" onclick="event.stopPropagation(); copySessionId(this);">${escapeHtml(sid.substring(0, 8))}</span></div>
+        `);
+        row.addEventListener('click', (e) => {
+            if (e.target.closest('.conv-session-id')) return;
+            openInteraction(child.session_id, child.project_id || projectId);
+        });
+        return row;
+    }
+
+    async function toggleDerivedRows(masterRow, conv) {
+        // Collapse if already expanded
+        let next = masterRow.nextElementSibling;
+        if (next && next.classList.contains('derived-child-row') && next.dataset.parentSession === conv.session_id) {
+            while (next && next.classList.contains('derived-child-row') && next.dataset.parentSession === conv.session_id) {
+                const toRemove = next;
+                next = next.nextElementSibling;
+                toRemove.remove();
+            }
+            const pill = masterRow.querySelector('.derived-pill');
+            if (pill) pill.classList.remove('open');
+            return;
+        }
+        const pill = masterRow.querySelector('.derived-pill');
+        if (pill) pill.classList.add('open');
+        try {
+            const projectId = conv.project_id || conv.project;
+            const qs = projectId ? '?project=' + encodeURIComponent(projectId) : '';
+            const data = await apiFetchRaw(API_BASE + '/api/interaction/' + encodeURIComponent(conv.session_id) + qs);
+            const interaction = (data && (data.interaction || data)) || {};
+            const children = interaction.children || [];
+            let anchor = masterRow;
+            children.forEach(function(child) {
+                const childRow = renderDerivedChildRow(child, projectId);
+                childRow.dataset.parentSession = conv.session_id;
+                anchor.after(childRow);
+                anchor = childRow;
+            });
+            applyColumnVisibility();
+        } catch (err) {
+            console.error('Failed to load derived sessions:', err);
+            if (pill) pill.classList.remove('open');
         }
     }
 
@@ -1784,6 +1924,35 @@
         if (hasTags) el.appendChild(tagsDiv);
     }
 
+    // ===== DERIVED (MASTER -> SLAVE) SESSIONS =====
+    // Isolated from the transcript renderer (renderInteractionDetail/renderThinking/
+    // renderToolUse) so the restyle refactor can relocate this block untouched.
+    // Returns an HTML string reusing the .subagents CSS (cross-session navigation).
+    function renderDerivedSessions(interaction) {
+        const children = (interaction && interaction.children) || [];
+        if (!children.length) return '';
+
+        let items = '';
+        children.forEach(function(child) {
+            const sid = child.session_id || '';
+            const projId = (child.project_id != null) ? child.project_id : (interaction.project_id != null ? interaction.project_id : null);
+            const projArg = (projId == null) ? 'null' : (typeof projId === 'number' ? projId : "'" + escapeAttr(String(projId)) + "'");
+            const label = child.summary || child.display || child.agent_id || '(derived session)';
+            const agentTag = child.agent_id ? ' <span style="color:var(--dim-gray);">· ' + escapeHtml(child.agent_id) + '</span>' : '';
+            const cost = '$' + (child.cost_usd || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            const tokens = formatNumber(child.total_tokens) + ' tokens';
+            items += '<div class="subagent-item" onclick="openInteraction(\'' + escapeAttr(sid) + '\', ' + projArg + ')">' +
+                '↳ ' + escapeHtml(label) + agentTag +
+                ' <span style="float:right;color:var(--dim-gray);">' + tokens + ' · <span style="color:var(--spring-green);font-weight:600;">' + cost + '</span></span>' +
+                '</div>';
+        });
+
+        return '<div class="subagents">' +
+            '<div class="subagents-header" onclick="toggleCollapsible(this)">Derived sessions (' + children.length + ') <span class="toggle-icon open">▶</span></div>' +
+            '<div class="subagents-list">' + items + '</div>' +
+            '</div>';
+    }
+
     function renderInteractionDetail(data) {
         const interaction = data.interaction || data;
         const messages = data.messages || [];
@@ -1814,6 +1983,9 @@
             const parentSummary = interaction.parent_interaction.summary || interaction.parent_interaction.display || 'Parent';
             html += '<nav class="breadcrumb"><a href="#" onclick="openInteraction(\'' + interaction.parent_session_id + '\', ' + (interaction.project_id || 'null') + '); return false;">\u2190 ' + escapeHtml(parentSummary.slice(0, 60)) + '</a><span> / Current</span></nav>';
         }
+
+        // Derived (master -> slave) sessions, isolated from the transcript renderer
+        html += renderDerivedSessions(interaction);
 
         // Render messages
         messages.forEach(function(msg, idx) {

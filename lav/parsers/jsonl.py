@@ -706,6 +706,87 @@ def format_cowork_session_id(session_id: str) -> str:
     return f"cowork:{session_id}"
 
 
+def _cowork_user_text(event: dict) -> Optional[str]:
+    """First plain-text body of a Cowork user event (used to title a merged conversation)."""
+    msg = event.get("message")
+    if not isinstance(msg, dict):
+        return None
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                return item.get("text")
+    return None
+
+
+# Generic path segments that are NOT a project (output/scratch dirs, OS/cloud folders).
+_COWORK_GENERIC_SEGMENTS = frozenset({
+    "outputs", "output", "uploads", "upload", "mnt", "home", "cache", "tmp", "temp",
+    "downloads", "desktop", "documents", "applications", "movies", "music", "pictures",
+    "public", "library", "cloudstorage", "tool-results", "tool_results", "sessions",
+    "artifacts", "shared", "var", "folders", "private", "users", "skills", "uploads",
+    ".claude", ".skills", ".config", ".local-plugins", ".git", "node_modules",
+})
+# Segment names after which the NEXT segment is the real project root.
+_COWORK_ROOT_MARKERS = frozenset({"mnt", "claude_coworks", "artifacts"})
+
+
+def _looks_like_filename(seg: str) -> bool:
+    """A path segment that is a file (has an extension), not a directory/project."""
+    return "." in seg and not seg.startswith(".")
+
+
+def infer_cowork_project(path_str: str) -> Optional[str]:
+    """Best-effort REAL project name from a Cowork path, or None (-> cowork_default).
+
+    Cowork has no project working dir: it runs in an ephemeral sandbox (/sessions/...)
+    and writes results into generic folders (outputs/, uploads/) or names files directly.
+    The old extract_project_name returned the last path segment, so it produced junk
+    project names like 'outputs' or 'SKILL.md'. This resolver instead rejects sandbox /
+    scratch / OS locations and extracts a meaningful project root, falling back to None.
+    """
+    if not path_str or not path_str.startswith("/"):
+        return None
+    low = path_str.lower()
+    # Ephemeral / non-project locations -> no project.
+    if ("local-agent-mode-sessions" in low or "claude-code-sessions" in low
+            or low.startswith("/tmp") or low.startswith("/private/tmp")
+            or "/var/folders/" in low or "claude-hostloop" in low):
+        return None
+
+    segments = [s for s in Path(path_str).parts if s and s != "/"]
+    if not segments:
+        return None
+
+    def _pick(seg: str) -> Optional[str]:
+        s = (seg or "").strip()
+        if not s or s.startswith("-") or _looks_like_filename(s):
+            return None
+        if s.lower() in _COWORK_GENERIC_SEGMENTS:
+            return None
+        return s
+
+    # 1. Segment right after a known root marker (e.g. /mnt/<project>, /Claude_Coworks/<project>).
+    for i in range(len(segments) - 1):
+        if segments[i].lower() in _COWORK_ROOT_MARKERS:
+            cand = _pick(segments[i + 1])
+            if cand:
+                return cand
+
+    # 2. /Users/<user>/...: first meaningful dir, skipping OS/cloud wrappers.
+    if segments[0].lower() == "users" and len(segments) > 2:
+        for seg in segments[2:]:
+            if seg.lower().startswith("onedrive"):
+                continue
+            cand = _pick(seg)
+            if cand:
+                return cand
+
+    return None
+
+
 # ===========================================================================
 # SESSION SOURCE
 # ===========================================================================
@@ -1866,9 +1947,13 @@ def parse_cowork_sessions(
     total_tools = 0
 
     def infer_project_from_event(event: dict) -> Optional[str]:
+        # Cowork-aware project resolution: reject sandbox/scratch/OS paths and generic
+        # folders/filenames, return a real project root or None (-> cowork_default).
         cwd = event.get("cwd") if isinstance(event.get("cwd"), str) else ""
-        if cwd and not cwd.startswith("/sessions/"):
-            return extract_project_name(Path(cwd))
+        if cwd:
+            proj = infer_cowork_project(cwd)
+            if proj:
+                return proj
         msg = event.get("message")
         if isinstance(msg, dict):
             content = msg.get("content")
@@ -1883,18 +1968,63 @@ def parse_cowork_sessions(
                     if tool_name in ("Read", "Write", "Edit"):
                         fp = tool_input.get("file_path") if isinstance(tool_input, dict) else ""
                         if isinstance(fp, str) and fp.startswith("/"):
-                            return extract_project_name(Path(fp))
+                            proj = infer_cowork_project(fp)
+                            if proj:
+                                return proj
                     if tool_name == "Bash" and isinstance(tool_input, dict):
                         cmd = tool_input.get("command", "")
                         if isinstance(cmd, str):
                             for token in cmd.split():
                                 if token.startswith("/"):
-                                    return extract_project_name(Path(token))
+                                    proj = infer_cowork_project(token)
+                                    if proj:
+                                        return proj
         return None
 
     max_audit_ts = ""
 
     for audit_path in audit_files:
+        # A1. Master session id for this conversation = audit folder name with the
+        # 'local_' folder prefix stripped. NB: only 'local_' is the folder prefix —
+        # for a 'local_ditto_<uuid>' folder the in-file master session_id is
+        # 'ditto_<uuid>' (the 'ditto_' belongs to the real sid), so we must NOT strip it.
+        # If the prefix is absent, master_sid=None (defensive: each sid is its own master).
+        folder = audit_path.parent.name
+        raw_master = folder[len("local_"):] if folder.startswith("local_") else None
+        master_sid = format_cowork_session_id(raw_master) if raw_master else None
+
+        # Pre-scan the conversation (one audit file) once to determine:
+        #  - file_project: the human prompt rarely carries a path — the project signal
+        #    comes from the agent's tool calls — so the first event that yields a project
+        #    sets the project for the WHOLE conversation (master + everything merged in).
+        #  - sids_in_file / has_inner: Cowork logs ONE conversation as a folder-uuid
+        #    "shell" (human turns only) PLUS an inner agent-execution session (which echoes
+        #    the human turns + carries all assistant work + tokens). They are the SAME
+        #    conversation, so when an inner session exists we MERGE everything under the
+        #    folder-uuid master and drop the shell's duplicate turns.
+        #  - shell_first_user: the human's opening prompt, used to title the merged row
+        #    (the inner session's first user line is often a seed, not the real prompt).
+        file_project = None
+        sids_in_file = set()
+        shell_first_user = None
+        for ev in parse_jsonl_file(audit_path):
+            rs = format_cowork_session_id(ev.get("session_id", ""))
+            if rs:
+                sids_in_file.add(rs)
+            if file_project is None:
+                p = infer_project_from_event(ev)
+                if p:
+                    file_project = p
+            if (shell_first_user is None and master_sid and rs == master_sid
+                    and ev.get("type") == "user"):
+                txt = _cowork_user_text(ev)
+                if txt:
+                    shell_first_user = txt
+        if not file_project:
+            file_project = default_project_name
+        has_inner = master_sid is not None and any(s != master_sid for s in sids_in_file)
+        merged_summary = smart_title(shell_first_user) if shell_first_user else None
+
         for event in parse_jsonl_file(audit_path):
             msg_type = event.get("type", "")
             audit_ts = event.get("_audit_timestamp") or ""
@@ -1905,14 +2035,26 @@ def parse_cowork_sessions(
                 max_audit_ts = audit_ts
 
             raw_sid = event.get("session_id", "")
-            sid = format_cowork_session_id(raw_sid)
-            if not sid:
+            sid_orig = format_cowork_session_id(raw_sid)
+            if not sid_orig:
                 continue
 
-            inferred = infer_project_from_event(event)
-            if inferred:
-                session_project.setdefault(sid, inferred)
-            project_name = session_project.get(sid, default_project_name)
+            # MERGE: a Cowork conversation = one audit file. The folder-uuid "shell"
+            # (human turns) and the inner agent-execution session are the same dialogue,
+            # so we relabel every event to the folder-uuid master and drop the shell's
+            # duplicate turns (they are re-logged inside the agent session). When there is
+            # no inner session (shell-only file) we keep events under their own id.
+            if master_sid is not None and has_inner:
+                if sid_orig == master_sid:
+                    continue  # shell duplicate — the inner agent session carries this turn
+                sid = master_sid
+            else:
+                sid = sid_orig
+            parent_sid = None  # Cowork: one conversation per file, no slaves
+
+            # Every session in this file (master + slaves) inherits the one file_project.
+            project_name = file_project
+            session_project.setdefault(sid, file_project)
 
             if project_filter and project_name != project_filter:
                 continue
@@ -1921,7 +2063,9 @@ def parse_cowork_sessions(
             project_id = get_or_create_project(conn, project_name)
             user_id = get_or_create_user(conn, username)
 
-            last_ts = get_parse_state(conn, "last_parsed", project_id, SOURCE_COWORK_DESKTOP, host_id)
+            # A4. Honor full_reparse: a None watermark forces re-emission of all
+            # historical events (mirrors parse_project). Normal runs stay incremental.
+            last_ts = None if full_reparse else get_parse_state(conn, "last_parsed", project_id, SOURCE_COWORK_DESKTOP, host_id)
             if last_ts and audit_ts <= last_ts:
                 continue
 
@@ -1966,8 +2110,9 @@ def parse_cowork_sessions(
 
             process_token_usage(msg, conn, project_id, user_id, host_id)
 
-            # Update interaction for this session
-            update_interaction(sid, project_name, conn, project_id, user_id, host_id)
+            # Update the merged conversation row; title it with the human's opening prompt.
+            update_interaction(sid, project_name, conn, project_id, user_id, host_id,
+                               summary=merged_summary, parent_session_id=parent_sid)
 
         conn.commit()
 

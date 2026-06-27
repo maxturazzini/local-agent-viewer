@@ -146,6 +146,7 @@ def get_interactions(
             start_date=start,
             end_date=end,
             limit=limit,
+            grouped=False,  # search must surface every session (incl. slaves), not collapse to masters
         )
         return data
     finally:

@@ -202,6 +202,7 @@ def cmd_search(args):
             start_date=args.start,
             end_date=args.end,
             limit=args.limit,
+            grouped=False,  # search must surface every session (incl. slaves), not collapse to masters
         )
         _output(data, args.format)
     finally:
