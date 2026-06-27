@@ -25,6 +25,21 @@
             --dark-gray: #999999;
             --light-gray: #F2F2F2;
             --ai-gradient: linear-gradient(135deg, #004BFF 0%, #35C2FF 100%);
+
+            /* ===== Quiet Canvas tokens (LAV-63 transcript component) ===== */
+            --surface: #F7F8FA;
+            --surface-2: #F1F3F5;
+            --border: #E6E8EB;
+            --text: #1A1D21;
+            --muted: #6B7280;
+            --accent: #004BFF;
+            --error: #DC2626;
+            --error-bg: #FCEFEF;
+            --mono: ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+            --sans: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+            --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px;
+            --radius: 8px;
+            --radius-sm: 6px;
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -427,54 +442,9 @@
             max-height: 90vh;
             display: flex;
             flex-direction: column;
+            overflow: hidden;
             box-shadow: 0 8px 32px rgba(0,0,0,0.2);
         }
-
-        .modal-header {
-            padding: 8px 12px;
-            border-bottom: 1px solid var(--light-gray);
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-
-        .modal-title { font-size: 1rem; font-weight: 700; }
-
-        .modal-meta {
-            display: flex;
-            gap: 6px;
-            color: var(--dim-gray);
-            font-size: 0.75rem;
-            flex-wrap: wrap;
-            align-items: center;
-        }
-
-        .modal-session-id {
-            font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
-            font-size: 0.75rem;
-            padding: 4px 8px;
-            background: rgba(100, 100, 100, 0.1);
-            border-radius: 4px;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        .modal-session-id:hover {
-            background: rgba(0, 75, 255, 0.2);
-            color: var(--dodger-blue);
-        }
-
-        .modal-close {
-            width: 24px; height: 24px;
-            border: none;
-            background: var(--light-gray);
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 1rem;
-            color: var(--dim-gray);
-            transition: all 0.2s;
-            flex-shrink: 0;
-        }
-        .modal-close:hover { background: var(--red); color: var(--white); }
 
         .kb-enrichment {
             padding: 12px 16px;
@@ -514,161 +484,244 @@
         .kb-sensitivity.confidential { background: rgba(255, 165, 0, 0.15); color: #cc8400; }
         .kb-sensitivity.restricted { background: rgba(255, 76, 83, 0.15); color: var(--red); }
 
-        .modal-body {
-            padding: 6px 10px;
-            overflow-y: auto;
-            flex: 1;
+        /* =====================================================================
+           TRANSCRIPT COMPONENT (.tx) — "Quiet Canvas" (LAV-63)
+           Container-agnostic: knows nothing about the modal/dock shell.
+           ===================================================================== */
+        .tx { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; height: 100%; }
+
+        /* --- component header --- */
+        .tx-head {
+            flex: 0 0 auto;
+            padding: var(--s4) var(--s5) var(--s3);
+            border-bottom: 1px solid var(--border);
+            background: var(--white);
+        }
+        .tx-head-top { display: flex; align-items: flex-start; gap: var(--s3); }
+        .tx-title {
+            font-size: 15px; font-weight: 600; margin: 0; letter-spacing: -.01em;
+            flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .tx-close {
+            flex: 0 0 auto; border: none; background: transparent; cursor: pointer;
+            width: 28px; height: 28px; border-radius: var(--radius-sm); color: var(--muted);
+            font-size: 18px; line-height: 1; display: flex; align-items: center; justify-content: center;
+            transition: background .15s, color .15s;
+        }
+        .tx-close:hover { background: var(--surface); color: var(--text); }
+        .tx-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+        /* meta row — quiet, all neutral */
+        .tx-meta {
+            display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4);
+            margin-top: var(--s2); font-size: 12px; color: var(--muted);
+        }
+        .tx-meta b { color: var(--text); font-weight: 600; }
+        .tx-meta .dot { color: #c4c8cd; }
+        .tx-meta .tx-session-id {
+            font-family: var(--mono); font-size: 12px; line-height: inherit;
+            color: var(--muted); border: none; cursor: pointer;
+            background: var(--surface-2); border-radius: var(--radius-sm);
+            padding: 1px 7px; transition: background .15s, color .15s;
+        }
+        .tx-meta .tx-session-id:hover { background: rgba(0,75,255,.1); color: var(--accent); }
+        .tx-meta .tx-session-id:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+        /* --- shell slot (KB band + tabs injected here) --- */
+        .tx-aux { flex: 0 0 auto; }
+
+        /* tab strip injected into the slot by the shell */
+        .tx-tabs {
+            display: flex; gap: 0;
+            border-bottom: 1px solid var(--border);
+            padding: 0 var(--s5);
+        }
+        .tx-tab {
+            padding: 10px 18px; background: none; border: none;
+            border-bottom: 2px solid transparent;
+            color: var(--muted); font-family: inherit; font-size: 0.85rem; font-weight: 600;
+            cursor: pointer; transition: color .15s, border-color .15s;
+        }
+        .tx-tab:hover { color: var(--text); }
+        .tx-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+        .tx-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+        /* --- scroll body --- */
+        .tx-body {
+            flex: 1 1 auto; min-height: 0; overflow-y: auto;
+            padding: var(--s5) var(--s5) var(--s6);
+            scrollbar-width: thin;
+            background: var(--light-gray); /* app-gray page; white cards sit on top */
+        }
+        .tx-body::-webkit-scrollbar { width: 10px; }
+        .tx-body::-webkit-scrollbar-thumb { background: #dfe2e6; border: 3px solid var(--white); border-radius: 8px; }
+
+        /* cost panel reuses scroll behaviour */
+        .tx-cost {
+            flex: 1 1 auto; min-height: 0; overflow-y: auto;
+            padding: var(--s5);
+            background: var(--light-gray);
         }
 
-        /* ===== MESSAGES ===== */
-        .message {
-            margin-bottom: 8px;
-            padding: 8px 12px;
-            border-radius: 4px;
+        /* --- breadcrumb (inside body) --- */
+        .tx-breadcrumb { font-size: 13px; color: var(--muted); margin-bottom: var(--s4); }
+        .tx-breadcrumb a { color: var(--accent); text-decoration: none; }
+        .tx-breadcrumb a:hover { text-decoration: underline; }
+
+        /* --- derived sessions (Quiet Canvas neutral list) --- */
+        .tx-derived { margin-bottom: var(--s4); border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+        .tx-derived-head {
+            width: 100%; text-align: left; font: inherit; cursor: pointer;
+            display: flex; align-items: center; gap: var(--s2);
+            padding: 8px var(--s3); background: var(--surface); border: none;
+            font-size: 12px; font-weight: 600; color: var(--text);
         }
-        .message.user { background: var(--light-gray); }
-        .message.assistant {
-            background: linear-gradient(135deg, rgba(0,75,255,0.05) 0%, rgba(53,194,255,0.05) 100%);
-            border-left: 3px solid var(--dodger-blue);
+        .tx-derived-head:hover { background: var(--surface-2); }
+        .tx-derived-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+        .tx-derived-head .call-caret { margin-left: auto; }
+        .tx-derived-list { display: none; padding: var(--s1); }
+        .tx-derived.open .tx-derived-list { display: block; }
+        .tx-derived-item {
+            width: 100%; text-align: left; font: inherit; color: var(--text);
+            background: none; border: none;
+            display: flex; align-items: center; gap: var(--s2);
+            padding: 6px var(--s2); border-radius: var(--radius-sm);
+            cursor: pointer; font-size: 13px;
         }
-        .message-header {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            margin-bottom: 1px;
+        .tx-derived-item:hover { background: var(--surface); }
+        .tx-derived-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+        .tx-derived-item .di-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .tx-derived-item .di-agent { color: var(--muted); }
+        .tx-derived-item .di-meta { flex: 0 0 auto; color: var(--muted); font-size: 12px; }
+
+        /* =====================================================================
+           TURNS
+           ===================================================================== */
+        .turn { position: relative; padding: 0 0 var(--s5) var(--s5); margin-left: 2px; }
+        .turn::before {
+            content: ""; position: absolute; left: 0; top: 5px; bottom: 14px;
+            width: 1px; background: var(--border);
         }
-        .message-role {
-            font-weight: 700;
-            font-size: 0.75rem;
-            text-transform: uppercase;
+        .turn--user::before { background: var(--accent); opacity: .5; }
+
+        .turn-label {
+            display: flex; align-items: center; gap: var(--s2);
+            margin-bottom: var(--s2);
+            font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
         }
-        .message.user .message-role { color: var(--dim-gray); }
-        .message.assistant .message-role { color: var(--dodger-blue); }
-        .message-tokens { font-size: 0.7rem; color: var(--dark-gray); }
-        .message-content {
-            white-space: pre-wrap;
-            word-break: break-word;
-            font-size: 0.9rem;
-            line-height: 1.3;
+        .turn--user .turn-label { color: var(--accent); }
+        .turn--assistant .turn-label { color: var(--text); }
+        .turn-label .role-sub { font-weight: 500; letter-spacing: .02em; text-transform: none; color: var(--muted); }
+
+        .turn-text {
+            font-size: 14.5px; color: var(--text); line-height: 1.6;
+            white-space: pre-wrap; word-break: break-word;
+        }
+        .turn-text + .turn-text { margin-top: var(--s2); }
+        .turn-text.is-empty { color: var(--muted); font-style: italic; }
+
+        /* =====================================================================
+           SUB-STEPS (thinking / tool_use+result)
+           ===================================================================== */
+        .substeps { margin-top: var(--s3); display: flex; flex-direction: column; gap: var(--s2); }
+        .substep { position: relative; padding-left: var(--s4); }
+        .substep::before {
+            content: ""; position: absolute; left: calc(-1 * var(--s5)); top: 11px;
+            width: calc(var(--s5) + var(--s3)); height: 1px; background: var(--border);
         }
 
-        /* Thinking blocks */
-        .thinking-block {
-            margin: 6px 0;
-            border-left: 3px solid #9b59b6;
-            background: rgba(155, 89, 182, 0.05);
-            border-radius: 4px;
-            overflow: hidden;
+        /* encrypted / empty thinking: ONE muted italic line, no control */
+        .think-line {
+            font-size: 13px; color: var(--muted); font-style: italic;
+            display: flex; align-items: center; gap: 7px; padding: 1px 0;
         }
-        .thinking-header {
-            padding: 6px 10px;
-            cursor: pointer;
-            font-size: 0.85rem;
-            color: #9b59b6;
-            user-select: none;
-            transition: background 0.2s;
-            font-weight: 500;
-        }
-        .thinking-header:hover { background: rgba(155, 89, 182, 0.15); }
-        .thinking-content {
-            padding: 0 6px;
-            font-family: 'Monaco', 'Menlo', monospace;
-            font-size: 0.8rem;
-            font-style: italic;
-            color: #666;
-            max-height: 600px;
-            overflow-y: auto;
-            transition: max-height 0.3s ease-out, padding 0.3s ease-out, opacity 0.3s ease-out;
-            opacity: 1;
-        }
-        .thinking-content.collapsed {
-            max-height: 0 !important;
-            padding-top: 0 !important;
-            padding-bottom: 0 !important;
-            opacity: 0;
-            overflow: hidden;
-        }
-        .thinking-content pre { padding: 2px 0; margin: 0; white-space: pre-wrap; }
+        .think-line svg { width: 13px; height: 13px; opacity: .7; flex: 0 0 auto; }
 
-        /* Tool calls */
-        .tool-call {
-            margin: 6px 0;
-            border-left: 3px solid #3498db;
-            background: rgba(52, 152, 219, 0.05);
-            border-radius: 4px;
-            overflow: hidden;
-        }
-        .tool-call.error { border-left-color: #e74c3c; background: rgba(231, 76, 60, 0.05); }
-        .tool-header {
-            padding: 6px 10px;
-            cursor: pointer;
-            font-size: 0.85rem;
-            transition: background 0.2s;
-            user-select: none;
-            font-weight: 500;
-        }
-        .tool-header:hover { background: rgba(52, 152, 219, 0.1); }
-        .tool-output {
-            padding: 0 6px;
-            background: #f8f9fa;
-            max-height: 500px;
-            overflow-y: auto;
-            transition: max-height 0.3s ease-out, padding 0.3s ease-out, opacity 0.3s ease-out;
-            opacity: 1;
-        }
-        .tool-output.collapsed {
-            max-height: 0 !important;
-            padding-top: 0 !important;
-            padding-bottom: 0 !important;
-            opacity: 0;
-            overflow: hidden;
-        }
-        .tool-output pre { padding: 2px 0; margin: 0; font-size: 0.8rem; white-space: pre-wrap; }
-        .tool-icon { margin-right: 4px; font-size: 1rem; }
+        /* =====================================================================
+           TOOL CARD — binds tool_use to its tool_result on one neutral card
+           ===================================================================== */
+        .step-card { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--white); overflow: hidden; }
+        .step-card.is-error { border-color: #f0c9c9; }
 
-        /* Tool result standalone */
-        .tool-result-standalone {
-            margin: 6px 0;
-            padding: 6px 10px;
-            background: #f0f0f0;
-            border-left: 3px solid #27ae60;
-            border-radius: 4px;
-            font-size: 0.85rem;
+        .call-row {
+            display: flex; align-items: center; gap: var(--s2);
+            width: 100%; text-align: left; font: inherit; cursor: default;
+            background: transparent; border: none; padding: 8px var(--s3);
         }
-        .tool-result-standalone.error { border-left-color: #e74c3c; background: rgba(231, 76, 60, 0.05); }
-        .tool-result-standalone pre { margin: 0; padding: 2px 0; white-space: pre-wrap; font-size: 0.8rem; max-height: 200px; overflow-y: auto; }
+        button.call-row { cursor: pointer; }
+        button.call-row:hover { background: var(--surface); }
+        button.call-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
-        .toggle-icon {
-            float: right;
-            font-size: 0.7rem;
-            transition: transform 0.2s ease-out;
-            display: inline-block;
+        .call-icon {
+            flex: 0 0 auto; width: 22px; height: 22px; border-radius: 5px;
+            background: var(--surface-2); color: var(--muted);
+            display: flex; align-items: center; justify-content: center;
         }
-        .toggle-icon.open { transform: rotate(90deg); }
+        .call-icon svg { width: 13px; height: 13px; }
+        .call-name { flex: 0 0 auto; font-family: var(--mono); font-size: 12.5px; font-weight: 600; color: var(--text); }
+        .call-preview {
+            flex: 1 1 auto; min-width: 0;
+            font-family: var(--mono); font-size: 12px; color: var(--muted);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .call-size {
+            flex: 0 0 auto; font-size: 11px; color: var(--muted);
+            background: var(--surface); border: 1px solid var(--border);
+            padding: 1px 7px; border-radius: 999px;
+        }
+        .call-caret { flex: 0 0 auto; color: var(--muted); width: 14px; height: 14px; transition: transform .18s ease; }
+        .step-card.open .call-caret,
+        .tx-derived.open .call-caret { transform: rotate(90deg); }
 
-        /* Subagents */
-        .subagents {
-            margin: 2px 0;
-            border: 1px solid rgba(100, 100, 100, 0.2);
-            border-radius: 4px;
-            overflow: hidden;
+        .call-detail { border-top: 1px solid var(--border); background: var(--surface); padding: var(--s3); display: none; }
+        .step-card.open .call-detail { display: block; }
+        .detail-label {
+            font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+            color: var(--muted); margin: 0 0 6px;
         }
-        .subagents-header {
-            padding: 6px 10px;
-            cursor: pointer;
-            font-size: 0.85rem;
-            font-weight: 500;
-            background: rgba(0, 75, 255, 0.05);
+        .detail-label + .detail-label { margin-top: var(--s3); }
+        .code {
+            margin: 0; font-family: var(--mono); font-size: 12px; line-height: 1.55;
+            color: var(--text); white-space: pre-wrap; word-break: break-word;
+            background: var(--white); border: 1px solid var(--border);
+            border-radius: var(--radius-sm); padding: 10px 12px;
+            max-height: 340px; overflow: auto;
         }
-        .subagents-list { padding: 4px; }
-        .subagent-item {
-            padding: 4px 8px;
-            cursor: pointer;
-            border-radius: 4px;
-            font-size: 0.85rem;
-            transition: background 0.2s;
+
+        /* result rows that pair under the call (inside same card) */
+        .result-row { display: flex; gap: var(--s2); align-items: flex-start; padding: 8px var(--s3); border-top: 1px dashed var(--border); }
+        .step-card > .result-row:nth-child(2) { border-top: none; }
+        .result-icon {
+            flex: 0 0 auto; width: 22px; height: 22px; border-radius: 5px;
+            display: flex; align-items: center; justify-content: center;
+            background: var(--surface-2); color: var(--muted);
         }
-        .subagent-item:hover { background: var(--light-gray); }
+        .result-icon svg { width: 13px; height: 13px; }
+        .result-body { flex: 1 1 auto; min-width: 0; }
+        .result-meta { font-size: 11px; color: var(--muted); margin-bottom: 3px; display: flex; align-items: center; gap: 6px; }
+        .result-meta .dot { color: #c4c8cd; }
+        .result-text { font-family: var(--mono); font-size: 12px; color: var(--text); white-space: pre-wrap; word-break: break-word; margin: 0; }
+        .result-text.clamp {
+            max-height: 7.2em; overflow: hidden;
+            -webkit-mask-image: linear-gradient(180deg,#000 70%,transparent);
+                    mask-image: linear-gradient(180deg,#000 70%,transparent);
+        }
+        .result-expand {
+            margin-top: 6px; font: inherit; font-size: 11.5px; cursor: pointer;
+            border: none; background: transparent; color: var(--accent); padding: 0;
+        }
+        .result-expand:hover { text-decoration: underline; }
+        .result-expand:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+        /* ERROR result — the ONLY place red appears */
+        .result-row.is-error { background: var(--error-bg); }
+        .result-row.is-error .result-icon { background: #f7dada; color: var(--error); }
+        .result-row.is-error .result-meta { color: var(--error); font-weight: 600; }
+        .result-row.is-error .result-text { color: var(--error); }
+
+        /* orphan result rendered standalone (unpaired tool_result) */
+        .substep > .result-row { border-top: none; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+        .substep > .result-row.is-error { border-color: #f0c9c9; }
 
         /* Grouped/Flat segmented toggle */
         .list-mode-toggle {
@@ -706,16 +759,6 @@
         }
         .derived-pill:hover { background: rgba(0, 75, 255, 0.16); }
         .derived-child-row { background: rgba(0, 75, 255, 0.025); }
-
-        /* Breadcrumb */
-        .breadcrumb {
-            padding: 6px 10px;
-            font-size: 0.85rem;
-            color: var(--dim-gray);
-            margin-bottom: 8px;
-        }
-        .breadcrumb a { color: var(--dodger-blue); text-decoration: none; }
-        .breadcrumb a:hover { text-decoration: underline; }
 
         /* ===== PAGINATION ===== */
         .pagination {
@@ -975,26 +1018,9 @@
         <a href="https://aimax.it">AI, Max</a> &mdash; Local Agent Viewer
     </div>
 
-    <!-- ===== MODAL ===== -->
+    <!-- ===== MODAL (popup shell — hosts the .tx transcript component) ===== -->
     <div class="modal-overlay" id="modalOverlay">
-        <div class="modal">
-            <div class="modal-header">
-                <div>
-                    <div class="modal-title" id="modalTitle">Interaction</div>
-                    <div class="modal-meta" id="modalMeta"></div>
-                </div>
-                <button class="modal-close" id="modalClose">&times;</button>
-            </div>
-            <div class="kb-enrichment" id="kbEnrichment" style="display:none;"></div>
-            <div class="modal-tabs" style="display: flex; gap: 0; border-bottom: 1px solid var(--light-gray); margin: 0 -24px; padding: 0 24px;">
-                <button class="modal-tab active" data-modal-tab="transcript" style="padding: 10px 20px; background: none; border: none; border-bottom: 2px solid var(--dodger-blue); color: var(--black); font-family: inherit; font-size: 0.85rem; font-weight: 600; cursor: pointer;">Transcript</button>
-                <button class="modal-tab" data-modal-tab="cost" style="padding: 10px 20px; background: none; border: none; border-bottom: 2px solid transparent; color: var(--dim-gray); font-family: inherit; font-size: 0.85rem; font-weight: 600; cursor: pointer;">Cost</button>
-            </div>
-            <div class="modal-body" id="modalBody" data-modal-panel="transcript">
-                <div class="loading">Loading transcript</div>
-            </div>
-            <div class="modal-body" id="costProfileBody" data-modal-panel="cost" style="display: none;"></div>
-        </div>
+        <div class="modal" id="modalHost" role="dialog" aria-modal="true" aria-labelledby="txDialogTitle" tabindex="-1"></div>
     </div>
 
     <script>
@@ -1711,21 +1737,6 @@
         return escapeHtml(str).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
-    function toggleCollapsible(headerEl) {
-        const content = headerEl.nextElementSibling;
-        const icon = headerEl.querySelector('.toggle-icon');
-        if (!content) return;
-        if (content.classList.contains('collapsed')) {
-            content.style.maxHeight = content.scrollHeight + 'px';
-            content.classList.remove('collapsed');
-            if (icon) icon.classList.add('open');
-        } else {
-            content.style.maxHeight = '0';
-            content.classList.add('collapsed');
-            if (icon) icon.classList.remove('open');
-        }
-    }
-
     function parseMessageContent(content) {
         if (!content) return [{type: 'text', text: ''}];
         if (typeof content === 'string') {
@@ -1739,63 +1750,357 @@
         return Array.isArray(content) ? content : [{type: 'text', text: String(content)}];
     }
 
-    function getToolIcon(toolName) {
-        const icons = { 'Bash': '\u26A1', 'Read': '\uD83D\uDCD6', 'Write': '\u270D\uFE0F', 'Edit': '\u270F\uFE0F', 'Grep': '\uD83D\uDD0D', 'Glob': '\uD83D\uDCC1', 'Task': '\uD83E\uDD16', 'Skill': '\u2B50', 'WebSearch': '\uD83C\uDF10', 'WebFetch': '\uD83C\uDF0D', 'TodoWrite': '\uD83D\uDCCB' };
-        return icons[toolName] || '\uD83D\uDD27';
+    /* ========================================================================
+       TRANSCRIPT COMPONENT (.tx) \u2014 container-agnostic, dock-ready (LAV-63)
+       No fetching, no API_BASE, no state.*, no overlay/backdrop/ESC inside.
+       Uses shared utils: escapeHtml, escapeAttr, formatNumber, formatTimestamp,
+       shortenModel, shortenSessionId, copySessionId, parseMessageContent.
+       ====================================================================== */
+    const TX_ICONS = {
+        Read:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 2.5h6l3 3V13.5H3z"/><path d="M9 2.5v3h3"/><path d="M5 8h5M5 10.5h5"/></svg>',
+        Bash:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M4.5 6l2 2-2 2M8.5 10h3"/></svg>',
+        Edit:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M10.5 2.5l3 3-7.5 7.5H3v-3z"/></svg>',
+        Grep:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="7" cy="7" r="4"/><path d="M10 10l3.5 3.5"/></svg>',
+        Write:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 2.5h5l4 4V13.5H3z"/><path d="M8 2.5v4h4"/><path d="M5 9.5h5M5 11.5h3"/></svg>',
+        Glob:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4.5l2-2h3l1.5 1.5H14V13H2z"/></svg>',
+        Task:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="3" width="11" height="10" rx="1.5"/><path d="M5 6h6M5 8.5h6M5 11h3.5"/></svg>',
+        Skill:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8l1.8 3.7 4 .6-2.9 2.8.7 4L8 11l-3.6 1.9.7-4L2.2 6.1l4-.6z"/></svg>',
+        WebSearch:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="7" cy="7" r="4.3"/><path d="M2.7 7h8.6M7 2.7c1.6 1.2 1.6 7.4 0 8.6M7 2.7c-1.6 1.2-1.6 7.4 0 8.6M10.2 10.2l3 3"/></svg>',
+        WebFetch:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="5.5"/><path d="M2.5 8h11M8 2.5c1.7 1.4 1.7 9.6 0 11M8 2.5c-1.7 1.4-1.7 9.6 0 11"/></svg>',
+        TodoWrite:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 4l1.2 1.2L6.2 3M3 8.5l1.2 1.2L6.2 7.5M3 13l1.2 1.2L6.2 12M8.5 4h5M8.5 8.5h5M8.5 13h5"/></svg>',
+        _default:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M11 2.4a3 3 0 0 0-3.9 3.7L2.6 10.6a1.3 1.3 0 0 0 1.8 1.8l4.5-4.5A3 3 0 0 0 12.6 4l-1.8 1.8-1.3-.3-.3-1.3z"/></svg>',
+        brain:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M6 3.2A2 2 0 0 0 3.4 5 2 2 0 0 0 3 8.6 2 2 0 0 0 4.6 12 2 2 0 0 0 8 12.6V3.4A2 2 0 0 0 6 3.2zM10 3.2A2 2 0 0 1 12.6 5 2 2 0 0 1 13 8.6 2 2 0 0 1 11.4 12 2 2 0 0 1 8 12.6"/></svg>',
+        ok:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3.5 8.5l3 3 6-6.5"/></svg>',
+        err:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 4.5v4M8 11h.01"/><circle cx="8" cy="8" r="6.2"/></svg>',
+        caret:'<svg class="call-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 4l4 4-4 4"/></svg>',
+        close:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg>'
+    };
+    function toolIcon(name){
+        if (TX_ICONS[name]) return TX_ICONS[name];
+        return TX_ICONS._default; // covers mcp__* and any unknown tool -> wrench
     }
+    function lineCount(s){ return String(s).split('\n').length; }
 
-    function renderThinking(text) {
-        // Opus 4.7/4.8 omit thinking text by default, leaving only an encrypted
-        // signature blob. Never dump that blob \u2014 show a muted placeholder instead.
-        var hasText = text && String(text).trim();
-        var body = hasText
-            ? '<pre>' + escapeHtml(text) + '</pre>'
-            : '<div style="color: #999; font-style: italic; padding: 2px 0;">(encrypted \u2014 no readable thinking content)</div>';
-        return '<div class="thinking-block"><div class="thinking-header" onclick="toggleCollapsible(this)">\uD83D\uDCAD Extended Thinking <span class="toggle-icon">\u25B6</span></div><div class="thinking-content collapsed">' + body + '</div></div>';
+    /* short preview line for a tool call from its input */
+    function callPreview(item){
+        const i = item.input || {};
+        if (i.command) return i.command;
+        if (i.file_path) return i.file_path + (i.offset != null ? '  \u00B7  L' + i.offset + (i.limit ? ('\u2013' + (i.offset + i.limit)) : '') : '');
+        if (i.pattern) return i.pattern;
+        if (i.description) return i.description;
+        return Object.keys(i).join(', ');
     }
-
-    function renderToolResult(item) {
-        const isError = item.is_error || false;
-        const contentText = typeof item.content === 'string' ? item.content : JSON.stringify(item.content);
-        return '<div class="tool-result-standalone ' + (isError ? 'error' : '') + '"><div class="tool-header" onclick="toggleCollapsible(this)"><span class="tool-icon">' + (isError ? '\u274C' : '\u2705') + '</span> <strong>Tool Result</strong>' + (item.tool_use_id ? ' (' + item.tool_use_id.slice(0,8) + ')' : '') + ' <span class="toggle-icon">\u25B6</span></div><div class="tool-output collapsed"><pre>' + escapeHtml(contentText) + '</pre></div></div>';
+    /* whether a call's detail is "long" enough to warrant collapse */
+    function callIsLong(item){
+        const i = item.input || {};
+        const blob = JSON.stringify(i, null, 2);
+        return lineCount(blob) > 4 || blob.length > 160 || ('old_string' in i) || ('new_string' in i);
     }
-
-    function renderToolUse(item, nextMessage) {
-        let toolResult = null;
-        let isError = false;
-        if (nextMessage && nextMessage.type === 'user') {
-            try {
-                const nextContent = parseMessageContent(nextMessage.content);
-                toolResult = nextContent.find(c => c.type === 'tool_result' && c.tool_use_id === item.id);
-                isError = toolResult?.is_error || false;
-            } catch {}
+    /* pretty input block for the expanded detail */
+    function inputDetail(item){
+        const i = item.input || {};
+        if ('old_string' in i && 'new_string' in i) {
+            return '<p class="detail-label">Replace</p><pre class="code">' + escapeHtml(i.old_string) + '</pre>' +
+                   '<p class="detail-label">With</p><pre class="code">' + escapeHtml(i.new_string) + '</pre>' +
+                   (i.file_path ? '<p class="detail-label">File</p><pre class="code">' + escapeHtml(i.file_path) + '</pre>' : '');
         }
-        const inputPreview = item.input ? JSON.stringify(item.input, null, 2) : '';
-        const desc = item.input?.description ? ' - ' + escapeHtml(item.input.description).slice(0, 60) : '';
-        return '<div class="tool-call ' + (isError ? 'error' : '') + '"><div class="tool-header" onclick="toggleCollapsible(this)"><span class="tool-icon">' + getToolIcon(item.name) + '</span> <strong>' + item.name + '</strong>' + desc + ' <span class="toggle-icon">\u25B6</span></div><div class="tool-output collapsed">' + (inputPreview ? '<div><strong>Input:</strong><pre>' + escapeHtml(inputPreview) + '</pre></div>' : '') + (toolResult ? '<div><strong>Output:</strong><pre>' + escapeHtml(toolResult.content || '') + '</pre></div>' : '') + '</div></div>';
+        return '<p class="detail-label">Input</p><pre class="code">' + escapeHtml(JSON.stringify(i, null, 2)) + '</pre>';
     }
 
-    // ===== MODAL: OPEN INTERACTION =====
-    async function openInteraction(sessionId, projectId) {
-        document.getElementById('modalOverlay').classList.add('active');
-        document.getElementById('modalBody').textContent = '';
-        document.getElementById('costProfileBody').textContent = '';
-        document.getElementById('kbEnrichment').style.display = 'none';
-        document.getElementById('kbEnrichment').textContent = '';
-        // Reset to Transcript tab
-        document.querySelectorAll('.modal-tab').forEach(function(t) {
-            var isTranscript = t.dataset.modalTab === 'transcript';
-            t.classList.toggle('active', isTranscript);
-            t.style.borderBottomColor = isTranscript ? '#004BFF' : 'transparent';
-            t.style.color = isTranscript ? '#000000' : '#666666';
+    /* global map tool_use_id -> tool_result (first occurrence wins on dup ids) */
+    function indexResults(messages){
+        const map = {};
+        messages.forEach(function(m){
+            parseMessageContent(m.content).forEach(function(c){
+                if (c && c.type === 'tool_result' && c.tool_use_id && !(c.tool_use_id in map)) map[c.tool_use_id] = c;
+            });
         });
-        document.getElementById('modalBody').style.display = '';
-        document.getElementById('costProfileBody').style.display = 'none';
+        return map;
+    }
 
-        var loadingDiv = document.createElement('div');
-        loadingDiv.className = 'loading';
-        loadingDiv.textContent = 'Loading transcript';
-        document.getElementById('modalBody').appendChild(loadingDiv);
+    /* one tool_result row \u2014 used both inside a card and standalone (orphan) */
+    function resultRowHtml(res){
+        const isErr = !!res.is_error;
+        const raw = res.content;
+        const txt = typeof raw === 'string' ? raw : JSON.stringify(raw);
+        const longR = lineCount(txt) > 6;
+        return '<div class="result-row' + (isErr ? ' is-error' : '') + '">' +
+            '<span class="result-icon">' + (isErr ? TX_ICONS.err : TX_ICONS.ok) + '</span>' +
+            '<div class="result-body">' +
+                '<div class="result-meta">' + (isErr ? 'Error' : 'Result') +
+                    (res.tool_use_id ? ' <span class="dot">\u00B7</span> ' + escapeHtml(res.tool_use_id) : '') + '</div>' +
+                '<pre class="result-text' + (longR ? ' clamp' : '') + '">' + escapeHtml(txt) + '</pre>' +
+                (longR ? '<button type="button" class="result-expand">Show full result (+' + lineCount(txt) + ' lines)</button>' : '') +
+            '</div>' +
+        '</div>';
+    }
+
+    /* a single tool_use card WITH its paired result bound inside */
+    function renderToolCard(item, results, consumed){
+        const res = results[item.id];
+        if (res && item.id) consumed.add(item.id);
+        const _inp = item.input || {};
+        const _recognized = _inp.command || _inp.file_path || _inp.pattern || _inp.description;
+        // expandable when long, OR when the preview only shows key names (keeps input VALUES reachable)
+        const long = callIsLong(item) || (Object.keys(_inp).length > 0 && !_recognized);
+        const preview = callPreview(item);
+        const sizeHint = long ? ('+' + lineCount(JSON.stringify(item.input || {}, null, 2)) + ' lines') : '';
+        const headTag = long ? 'button' : 'div';
+        const head =
+            '<' + headTag + ' class="call-row"' + (long ? ' type="button" aria-expanded="false"' : '') + '>' +
+                '<span class="call-icon">' + toolIcon(item.name) + '</span>' +
+                '<span class="call-name">' + escapeHtml(item.name) + '</span>' +
+                '<span class="call-preview">' + escapeHtml(preview) + '</span>' +
+                (long ? '<span class="call-size">' + sizeHint + '</span>' + TX_ICONS.caret : '') +
+            '</' + headTag + '>';
+        const detail = long ? '<div class="call-detail">' + inputDetail(item) + '</div>' : '';
+        const resultHtml = res ? resultRowHtml(res) : '';
+        return '<div class="step-card' + (res && res.is_error ? ' is-error' : '') + '">' + head + detail + resultHtml + '</div>';
+    }
+
+    /* content items of a message rendered as substeps (thinking / tool_use) */
+    function renderSubsteps(items, results, consumed){
+        let html = '';
+        items.forEach(function(it){
+            if (it.type === 'thinking' || it.type === 'redacted_thinking') {
+                const body = (it.thinking || '').trim();
+                if (!body) {
+                    // encrypted / empty thinking -> ONE muted italic line, no control
+                    html += '<div class="substep"><div class="think-line">' + TX_ICONS.brain +
+                            'Extended thinking \u2014 encrypted, no readable content</div></div>';
+                } else {
+                    const lc = lineCount(body);
+                    if (lc > 4) {
+                        // long thinking: collapsible, preview = first line + size hint
+                        html += '<div class="substep"><div class="step-card">' +
+                            '<button class="call-row" type="button" aria-expanded="false">' +
+                                '<span class="call-icon">' + TX_ICONS.brain + '</span>' +
+                                '<span class="call-name">Thinking</span>' +
+                                '<span class="call-preview">' + escapeHtml(body.split('\n')[0]) + '</span>' +
+                                '<span class="call-size">+' + lc + ' lines</span>' + TX_ICONS.caret +
+                            '</button><div class="call-detail"><pre class="code">' + escapeHtml(body) + '</pre></div>' +
+                            '</div></div>';
+                    } else if (lc > 1) {
+                        // 2-4 readable lines: shown wrapped + open, no control (never clipped)
+                        html += '<div class="substep"><div class="step-card open">' +
+                            '<div class="call-row"><span class="call-icon">' + TX_ICONS.brain + '</span>' +
+                            '<span class="call-name">Thinking</span></div>' +
+                            '<div class="call-detail"><pre class="code">' + escapeHtml(body) + '</pre></div>' +
+                            '</div></div>';
+                    } else {
+                        // single readable line: inline, no control
+                        html += '<div class="substep"><div class="step-card open">' +
+                            '<div class="call-row"><span class="call-icon">' + TX_ICONS.brain + '</span>' +
+                            '<span class="call-name">Thinking</span>' +
+                            '<span class="call-preview">' + escapeHtml(body) + '</span></div>' +
+                            '</div></div>';
+                    }
+                }
+            } else if (it.type === 'tool_use') {
+                html += '<div class="substep">' + renderToolCard(it, results, consumed) + '</div>';
+            }
+            // tool_result items are bound via the pairing map, not rendered here
+        });
+        return html;
+    }
+
+    /* a full turn \u2014 keyed on msg.type (real API field), NOT msg.role */
+    function renderTurn(msg, results, consumed){
+        const items = parseMessageContent(msg.content);
+        const isUser = msg.type === 'user';
+
+        // user turn that is ONLY tool_results = continuation -> skip the empty shell.
+        // Do NOT mark these consumed here: paired results are already consumed by
+        // renderToolCard; leaving unpaired ones unconsumed lets the orphan pass render
+        // them so a truly unpaired tool_result never vanishes.
+        const onlyResults = isUser && items.length > 0 && items.every(function(i){ return i.type === 'tool_result'; });
+        if (onlyResults) {
+            return '';
+        }
+
+        const texts = items.filter(function(i){ return i.type === 'text' && i.text; });
+        const subItems = items.filter(function(i){ return i.type !== 'text' && i.type !== 'tool_result'; });
+        const cls = isUser ? 'user' : 'assistant';
+        const roleName = isUser ? 'You' : 'Agent';
+        const tk = (msg.tokens_in || msg.tokens_out)
+            ? ' <span class="role-sub">\u00B7 ' + formatNumber(msg.tokens_in || 0) + ' in / ' + formatNumber(msg.tokens_out || 0) + ' out</span>'
+            : '';
+        const label = '<div class="turn-label">' + roleName + tk + '</div>';
+
+        let textHtml = texts.map(function(t){ return '<div class="turn-text">' + escapeHtml(t.text) + '</div>'; }).join('');
+        const subInner = renderSubsteps(subItems, results, consumed);
+        const subHtml = subInner ? '<div class="substeps">' + subInner + '</div>' : '';
+
+        if (!textHtml && !subHtml) {
+            // empty-message fallback: raw escaped content, or muted "(empty message)"
+            const raw = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+            if (raw && raw !== '[]' && raw !== '""') {
+                textHtml = '<div class="turn-text">' + escapeHtml(raw) + '</div>';
+            } else {
+                textHtml = '<div class="turn-text is-empty">(empty message)</div>';
+            }
+        }
+
+        return '<div class="turn turn--' + cls + '">' + label + textHtml + subHtml + '</div>';
+    }
+
+    /* breadcrumb to parent (navigation via opts.onOpenInteraction) */
+    function renderBreadcrumb(interaction){
+        if (!(interaction.parent_session_id && interaction.parent_interaction)) return '';
+        const ps = interaction.parent_interaction.summary || interaction.parent_interaction.display || 'Parent';
+        const ppid = (interaction.project_id != null) ? interaction.project_id : '';
+        return '<nav class="tx-breadcrumb"><a href="#" data-nav-session="' + escapeAttr(interaction.parent_session_id) + '" data-nav-project="' + escapeAttr(String(ppid)) + '">\u2190 ' + escapeHtml(ps.slice(0, 60)) + '</a><span> / Current</span></nav>';
+    }
+
+    /* derived (master -> slave) sessions, Quiet Canvas neutral list */
+    function renderDerived(interaction){
+        const children = (interaction && interaction.children) || [];
+        if (!children.length) return '';
+        let items = '';
+        children.forEach(function(child){
+            const sid = child.session_id || '';
+            const projId = (child.project_id != null) ? child.project_id : (interaction.project_id != null ? interaction.project_id : '');
+            const label = child.summary || child.display || child.agent_id || '(derived session)';
+            const agentTag = child.agent_id ? '<span class="di-agent">\u00B7 ' + escapeHtml(child.agent_id) + '</span>' : '';
+            const tokens = formatNumber(child.total_tokens) + ' tokens';
+            const cost = '$' + (child.cost_usd || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            items += '<button type="button" class="tx-derived-item" data-nav-session="' + escapeAttr(sid) + '" data-nav-project="' + escapeAttr(String(projId)) + '">' +
+                '<span class="di-label">\u21B3 ' + escapeHtml(label) + ' ' + agentTag + '</span>' +
+                '<span class="di-meta">' + tokens + ' \u00B7 ' + cost + '</span>' +
+                '</button>';
+        });
+        return '<div class="tx-derived"><button type="button" class="tx-derived-head" aria-expanded="false">Derived sessions (' + children.length + ')' + TX_ICONS.caret + '</button>' +
+            '<div class="tx-derived-list">' + items + '</div></div>';
+    }
+
+    /* assemble the turn-stream body (breadcrumb + derived + turns + orphans) */
+    function buildTranscriptBody(messages, results, consumed, interaction){
+        let html = renderBreadcrumb(interaction) + renderDerived(interaction);
+        messages.forEach(function(msg){ html += renderTurn(msg, results, consumed); });
+        // any UNCONSUMED tool_result (orphan / unpaired) must still render
+        let orphans = '';
+        messages.forEach(function(msg){
+            parseMessageContent(msg.content).forEach(function(c){
+                if (c && c.type === 'tool_result') {
+                    if (c.tool_use_id) { if (consumed.has(c.tool_use_id)) return; consumed.add(c.tool_use_id); }
+                    orphans += '<div class="substep">' + resultRowHtml(c) + '</div>';
+                }
+            });
+        });
+        if (orphans) {
+            html += '<div class="turn turn--assistant"><div class="turn-label">Tool results <span class="role-sub">\u00B7 unpaired</span></div>' +
+                    '<div class="substeps">' + orphans + '</div></div>';
+        }
+        return html;
+    }
+
+    /* component header (.tx-head) \u2014 title + neutral meta chips + close */
+    function renderTxHead(interaction, messages){
+        const fullTitle = interaction.summary || interaction.display || 'Interaction';
+        const sid = interaction.session_id || '';
+        const meta =
+            '<div class="tx-meta">' +
+                '<span>' + escapeHtml(formatTimestamp(interaction.timestamp)) + '</span><span class="dot">\u00B7</span>' +
+                '<span><b>' + messages.length + '</b> messages</span><span class="dot">\u00B7</span>' +
+                '<span><b>' + formatNumber(interaction.total_tokens) + '</b> tokens</span><span class="dot">\u00B7</span>' +
+                '<span><b>$' + (interaction.cost_usd || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + '</b></span><span class="dot">\u00B7</span>' +
+                '<span>' + escapeHtml(shortenModel(interaction.model)) + '</span><span class="dot">\u00B7</span>' +
+                '<button type="button" class="tx-session-id" data-full-id="' + escapeAttr(sid) + '" aria-label="Copy session ID" title="Click to copy session ID">' + escapeHtml(shortenSessionId(sid)) + '</button>' +
+            '</div>';
+        return '<div class="tx-head"><div class="tx-head-top">' +
+            '<h2 class="tx-title" id="txDialogTitle" title="' + escapeAttr(fullTitle) + '">' + escapeHtml(fullTitle.slice(0, 80)) + '</h2>' +
+            '<button class="tx-close" type="button" aria-label="Close">' + TX_ICONS.close + '</button>' +
+            '</div>' + meta + '</div>';
+    }
+
+    /* MOUNT: render the component into a host; return refs for the shell.
+       opts = { onClose, onOpenInteraction, copySessionId, container } */
+    function mountTranscript(host, data, opts){
+        opts = opts || {};
+        const interaction = data.interaction || data;
+        const messages = data.messages || [];
+        const results = indexResults(messages);
+        const consumed = new Set();
+
+        const bodyInner = messages.length
+            ? buildTranscriptBody(messages, results, consumed, interaction)
+            : '<div class="empty-state"><h3>No messages in this interaction</h3></div>';
+
+        host.innerHTML =
+            '<div class="tx">' +
+                renderTxHead(interaction, messages) +
+                '<div class="tx-aux"></div>' +
+                '<div class="tx-body">' + bodyInner + '</div>' +
+            '</div>';
+
+        const root = host.querySelector('.tx');
+        const headEl = root.querySelector('.tx-head');
+        const auxEl = root.querySelector('.tx-aux');
+        const bodyEl = root.querySelector('.tx-body');
+
+        // event-delegated wiring scoped to the component root
+        function onClick(e){
+            const sidEl = e.target.closest('.tx-session-id');
+            if (sidEl) { if (opts.copySessionId) opts.copySessionId(sidEl); return; }
+            if (e.target.closest('.tx-close')) { if (opts.onClose) opts.onClose(); return; }
+            const navEl = e.target.closest('[data-nav-session]');
+            if (navEl) {
+                e.preventDefault();
+                const s = navEl.getAttribute('data-nav-session');
+                const p = navEl.getAttribute('data-nav-project');
+                if (opts.onOpenInteraction) opts.onOpenInteraction(s, p || undefined);
+                return;
+            }
+            const dHead = e.target.closest('.tx-derived-head');
+            if (dHead) {
+                const open = dHead.closest('.tx-derived').classList.toggle('open');
+                dHead.setAttribute('aria-expanded', open ? 'true' : 'false');
+                return;
+            }
+            const callBtn = e.target.closest('button.call-row');
+            if (callBtn) {
+                const card = callBtn.closest('.step-card');
+                const open = card.classList.toggle('open');
+                callBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+                return;
+            }
+            const exp = e.target.closest('.result-expand');
+            if (exp) {
+                const pre = exp.parentElement.querySelector('.result-text');
+                if (pre) pre.classList.remove('clamp');
+                exp.remove();
+                return;
+            }
+        }
+        root.addEventListener('click', onClick);
+
+        return { root: root, headEl: headEl, auxEl: auxEl, bodyEl: bodyEl,
+                 destroy: function(){ root.removeEventListener('click', onClick); } };
+    }
+
+    // ===== POPUP SHELL \u2014 owns overlay/backdrop/ESC, fetches, KB band + tabs =====
+    var _txMount = null;
+    var _modalTrigger = null;
+    var _openSeq = 0;
+
+    async function openInteraction(sessionId, projectId) {
+        var overlay = document.getElementById('modalOverlay');
+        var host = document.getElementById('modalHost');
+        var _seq = ++_openSeq;   // supersede any in-flight open (stale-render guard)
+        // Only capture the page trigger on a fresh open. When openInteraction is
+        // called from inside the modal (breadcrumb / derived nav) the modal is
+        // already active, so we keep the original trigger for focus-return on close.
+        if (!overlay.classList.contains('active')) { _modalTrigger = document.activeElement; }
+        overlay.classList.add('active');
+        // Destroy any previous mount BEFORE resetting host.innerHTML, so its delegated
+        // listener is removed from a still-attached node and a concurrent open cannot
+        // clobber a newly-mounted transcript when an earlier fetch resolves.
+        if (_txMount) { _txMount.destroy(); _txMount = null; }
+        host.innerHTML = '<div class="tx"><div class="tx-head"><div class="tx-head-top"><h2 class="tx-title" id="txDialogTitle">Loading transcript…</h2><button class="tx-close" type="button" aria-label="Close">' + TX_ICONS.close + '</button></div></div><div class="tx-body"><div class="loading">Loading transcript</div></div></div>';
+        // Keep a close affordance during the fetch and move keyboard/AT focus onto it
+        // (host has tabindex="-1"); otherwise focus would stay on the page trigger.
+        var _loadClose = host.querySelector('.tx-close');
+        if (_loadClose) { _loadClose.addEventListener('click', closeModal); _loadClose.focus(); } else { host.focus(); }
 
         try {
             var qs = projectId ? '?project=' + encodeURIComponent(projectId) : '';
@@ -1806,23 +2111,114 @@
             var data = results[0];
             var kbData = results[1];
             var sqlMeta = results[2];
-            renderInteractionDetail(data);
-            renderKbEnrichment(kbData, sqlMeta);
-            renderCostProfile(data.cost_profile);
+
+            // guard: modal closed during the fetch, or a newer open superseded this one
+            if (!overlay.classList.contains('active') || _seq !== _openSeq) return;
+
+            // A concurrent open during this fetch may have set up a fresh mount; destroy
+            // it before mounting so we never leak a listener (the loading-state reset
+            // above already cleared the pre-open mount).
+            if (_txMount) { _txMount.destroy(); _txMount = null; }
+            _txMount = mountTranscript(host, data, {
+                onClose: closeModal,
+                onOpenInteraction: openInteraction,
+                copySessionId: copySessionId,
+                container: 'popup'
+            });
+
+            // fill the .tx-aux slot with shell chrome: KB band + Transcript/Cost tabs
+            _txMount.auxEl.innerHTML =
+                '<div class="kb-enrichment" id="kbEnrichment" style="display:none;"></div>' +
+                '<div class="tx-tabs" role="tablist" aria-label="Transcript views">' +
+                    '<button type="button" class="tx-tab active" id="txTabTranscript" role="tab" aria-selected="true" tabindex="0" aria-controls="txPanelTranscript" data-modal-tab="transcript">Transcript</button>' +
+                    '<button type="button" class="tx-tab" id="txTabCost" role="tab" aria-selected="false" tabindex="-1" aria-controls="costProfileBody" data-modal-tab="cost">Cost</button>' +
+                '</div>';
+
+            // append the Cost panel after .tx-body, toggled by the tabs
+            _txMount.bodyEl.id = 'txPanelTranscript';
+            _txMount.bodyEl.setAttribute('data-modal-panel', 'transcript');
+            _txMount.bodyEl.setAttribute('role', 'tabpanel');
+            _txMount.bodyEl.setAttribute('aria-labelledby', 'txTabTranscript');
+            _txMount.bodyEl.setAttribute('tabindex', '0');
+            var costPanel = document.createElement('div');
+            costPanel.id = 'costProfileBody';
+            costPanel.className = 'tx-cost';
+            costPanel.setAttribute('data-modal-panel', 'cost');
+            costPanel.setAttribute('role', 'tabpanel');
+            costPanel.setAttribute('aria-labelledby', 'txTabCost');
+            costPanel.setAttribute('tabindex', '0');
+            costPanel.style.display = 'none';
+            _txMount.root.appendChild(costPanel);
+
+            renderKbEnrichment(document.getElementById('kbEnrichment'), kbData, sqlMeta);
+            renderCostProfile(document.getElementById('costProfileBody'), data.cost_profile);
+            wireModalTabs(_txMount);
+
+            var closeBtn = _txMount.headEl.querySelector('.tx-close');
+            if (closeBtn) closeBtn.focus();
         } catch (err) {
             console.error('Failed to load interaction:', err);
-            document.getElementById('modalBody').textContent = '';
-            var errDiv = document.createElement('div');
-            errDiv.className = 'empty-state';
-            var errH3 = document.createElement('h3');
-            errH3.textContent = 'Error loading interaction';
-            errDiv.appendChild(errH3);
-            document.getElementById('modalBody').appendChild(errDiv);
+            if (!overlay.classList.contains('active') || _seq !== _openSeq) return;
+            host.innerHTML = '<div class="tx"><div class="tx-head"><div class="tx-head-top">' +
+                '<h2 class="tx-title" id="txDialogTitle">Interaction</h2>' +
+                '<button class="tx-close" type="button" aria-label="Close">' + TX_ICONS.close + '</button>' +
+                '</div></div><div class="tx-body"><div class="empty-state"><h3>Error loading interaction</h3></div></div></div>';
+            var eb = host.querySelector('.tx-close');
+            if (eb) { eb.addEventListener('click', closeModal); eb.focus(); }
         }
     }
 
-    function renderKbEnrichment(kbData, sqlMeta) {
-        var el = document.getElementById('kbEnrichment');
+    function wireModalTabs(mount){
+        var tabs = mount.auxEl.querySelectorAll('.tx-tab');
+        var tabArr = Array.prototype.slice.call(tabs);
+        var bodyEl = mount.bodyEl;
+        var costEl = mount.root.querySelector('#costProfileBody');
+        function activate(tab){
+            tabs.forEach(function(t){ t.classList.remove('active'); t.setAttribute('aria-selected', 'false'); t.setAttribute('tabindex', '-1'); });
+            tab.classList.add('active');
+            tab.setAttribute('aria-selected', 'true');
+            tab.setAttribute('tabindex', '0');
+            var target = tab.dataset.modalTab;
+            bodyEl.style.display = (target === 'transcript') ? '' : 'none';
+            if (costEl) costEl.style.display = (target === 'cost') ? '' : 'none';
+        }
+        tabArr.forEach(function(tab, idx){
+            tab.addEventListener('click', function(){ activate(tab); });
+            // ARIA tabs pattern: Left/Right (and Home/End) move between tabs
+            tab.addEventListener('keydown', function(e){
+                var next = null;
+                if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { next = tabArr[(idx + 1) % tabArr.length]; }
+                else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { next = tabArr[(idx - 1 + tabArr.length) % tabArr.length]; }
+                else if (e.key === 'Home') { next = tabArr[0]; }
+                else if (e.key === 'End') { next = tabArr[tabArr.length - 1]; }
+                if (next) { e.preventDefault(); activate(next); next.focus(); }
+            });
+        });
+    }
+
+    function closeModal(){
+        var overlay = document.getElementById('modalOverlay');
+        overlay.classList.remove('active');
+        if (_txMount) { _txMount.destroy(); _txMount = null; }
+        if (_costProfileChart) { _costProfileChart.destroy(); _costProfileChart = null; }
+        if (_modalTrigger && _modalTrigger.focus) { try { _modalTrigger.focus(); } catch (_) {} }
+        _modalTrigger = null;
+    }
+
+    function trapModalFocus(e){
+        var host = document.getElementById('modalHost');
+        var nodes = host.querySelectorAll('button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+        var list = Array.prototype.filter.call(nodes, function(el){ return el.offsetParent !== null && !el.disabled && el.getAttribute('tabindex') !== '-1'; });
+        if (!list.length) { e.preventDefault(); return; }
+        var first = list[0], last = list[list.length - 1];
+        if (e.shiftKey) {
+            if (document.activeElement === first || !host.contains(document.activeElement)) { e.preventDefault(); last.focus(); }
+        } else {
+            if (document.activeElement === last || !host.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+        }
+    }
+
+    function renderKbEnrichment(el, kbData, sqlMeta) {
         el.textContent = '';
         el.style.display = 'none';
 
@@ -1924,143 +2320,21 @@
         if (hasTags) el.appendChild(tagsDiv);
     }
 
-    // ===== DERIVED (MASTER -> SLAVE) SESSIONS =====
-    // Isolated from the transcript renderer (renderInteractionDetail/renderThinking/
-    // renderToolUse) so the restyle refactor can relocate this block untouched.
-    // Returns an HTML string reusing the .subagents CSS (cross-session navigation).
-    function renderDerivedSessions(interaction) {
-        const children = (interaction && interaction.children) || [];
-        if (!children.length) return '';
-
-        let items = '';
-        children.forEach(function(child) {
-            const sid = child.session_id || '';
-            const projId = (child.project_id != null) ? child.project_id : (interaction.project_id != null ? interaction.project_id : null);
-            const projArg = (projId == null) ? 'null' : (typeof projId === 'number' ? projId : "'" + escapeAttr(String(projId)) + "'");
-            const label = child.summary || child.display || child.agent_id || '(derived session)';
-            const agentTag = child.agent_id ? ' <span style="color:var(--dim-gray);">· ' + escapeHtml(child.agent_id) + '</span>' : '';
-            const cost = '$' + (child.cost_usd || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-            const tokens = formatNumber(child.total_tokens) + ' tokens';
-            items += '<div class="subagent-item" onclick="openInteraction(\'' + escapeAttr(sid) + '\', ' + projArg + ')">' +
-                '↳ ' + escapeHtml(label) + agentTag +
-                ' <span style="float:right;color:var(--dim-gray);">' + tokens + ' · <span style="color:var(--spring-green);font-weight:600;">' + cost + '</span></span>' +
-                '</div>';
-        });
-
-        return '<div class="subagents">' +
-            '<div class="subagents-header" onclick="toggleCollapsible(this)">Derived sessions (' + children.length + ') <span class="toggle-icon open">▶</span></div>' +
-            '<div class="subagents-list">' + items + '</div>' +
-            '</div>';
-    }
-
-    function renderInteractionDetail(data) {
-        const interaction = data.interaction || data;
-        const messages = data.messages || [];
-
-        document.getElementById('modalTitle').textContent = (interaction.summary || interaction.display || 'Interaction').slice(0, 80);
-
-        const metaEl = document.getElementById('modalMeta');
-        metaEl.textContent = '';
-        metaEl.insertAdjacentHTML('beforeend',
-            '<span>' + formatTimestamp(interaction.timestamp) + '</span>' +
-            '<span>' + messages.length + ' messages</span>' +
-            '<span>' + formatNumber(interaction.total_tokens) + ' tokens</span>' +
-            '<span style="color:#00D35D;font-weight:600;">$' + (interaction.cost_usd || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + '</span>' +
-            '<span>' + shortenModel(interaction.model) + '</span>' +
-            '<span class="modal-session-id" data-full-id="' + (interaction.session_id || '') + '" onclick="copySessionId(this); event.stopPropagation();" title="Click to copy: ' + (interaction.session_id || '') + '">ID: ' + shortenSessionId(interaction.session_id || '') + '</span>'
-        );
-
-        if (!messages || messages.length === 0) {
-            document.getElementById('modalBody').textContent = '';
-            document.getElementById('modalBody').insertAdjacentHTML('beforeend', '<div class="empty-state"><h3>No messages in this interaction</h3></div>');
-            return;
-        }
-
-        let html = '';
-
-        // Breadcrumb if child interaction
-        if (interaction.parent_session_id && interaction.parent_interaction) {
-            const parentSummary = interaction.parent_interaction.summary || interaction.parent_interaction.display || 'Parent';
-            html += '<nav class="breadcrumb"><a href="#" onclick="openInteraction(\'' + interaction.parent_session_id + '\', ' + (interaction.project_id || 'null') + '); return false;">\u2190 ' + escapeHtml(parentSummary.slice(0, 60)) + '</a><span> / Current</span></nav>';
-        }
-
-        // Derived (master -> slave) sessions, isolated from the transcript renderer
-        html += renderDerivedSessions(interaction);
-
-        // Render messages
-        messages.forEach(function(msg, idx) {
-            const contentItems = parseMessageContent(msg.content);
-            const nextMsg = messages[idx + 1];
-            let itemsHtml = '';
-
-            if (contentItems && contentItems.length > 0) {
-                contentItems.forEach(function(item) {
-                    if (item.type === 'text' && item.text) {
-                        itemsHtml += '<div class="message-text">' + escapeHtml(item.text) + '</div>';
-                    } else if (item.type === 'thinking' || item.type === 'redacted_thinking') {
-                        itemsHtml += renderThinking(item.thinking || '');
-                    } else if (item.type === 'tool_use') {
-                        itemsHtml += renderToolUse(item, nextMsg);
-                    } else if (item.type === 'tool_result') {
-                        itemsHtml += renderToolResult(item);
-                    }
-                });
-            }
-
-            if (!itemsHtml.trim()) {
-                const rawContent = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-                if (rawContent && rawContent !== '[]' && rawContent !== '""') {
-                    itemsHtml = '<div class="message-text">' + escapeHtml(rawContent) + '</div>';
-                } else {
-                    itemsHtml = '<div class="message-text" style="color: #999; font-style: italic;">(empty message)</div>';
-                }
-            }
-
-            html += '<div class="message ' + msg.type + '"><div class="message-header"><span class="message-role">' + msg.type + '</span>' + (msg.tokens_in || msg.tokens_out ? '<span class="message-tokens">' + (msg.tokens_in || 0) + ' in / ' + (msg.tokens_out || 0) + ' out</span>' : '') + '</div><div class="message-content">' + itemsHtml + '</div></div>';
-        });
-
-        document.getElementById('modalBody').innerHTML = html;
-    }
-
-    // ===== MODAL EVENT HANDLERS =====
-    document.getElementById('modalClose').addEventListener('click', function() {
-        document.getElementById('modalOverlay').classList.remove('active');
-    });
-
+    // ===== MODAL EVENT HANDLERS (shell-owned: backdrop, ESC, focus trap) =====
     document.getElementById('modalOverlay').addEventListener('click', function(e) {
-        if (e.target === document.getElementById('modalOverlay')) {
-            document.getElementById('modalOverlay').classList.remove('active');
-        }
+        if (e.target === this) closeModal();
     });
 
     document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape') {
-            document.getElementById('modalOverlay').classList.remove('active');
-        }
-    });
-
-    // ===== MODAL TAB SWITCHING =====
-    document.querySelectorAll('.modal-tab').forEach(function(tab) {
-        tab.addEventListener('click', function() {
-            document.querySelectorAll('.modal-tab').forEach(function(t) {
-                t.classList.remove('active');
-                t.style.borderBottomColor = 'transparent';
-                t.style.color = '#666666';
-            });
-            tab.classList.add('active');
-            tab.style.borderBottomColor = '#004BFF';
-            tab.style.color = '#000000';
-            var target = tab.dataset.modalTab;
-            document.querySelectorAll('[data-modal-panel]').forEach(function(p) {
-                p.style.display = p.dataset.modalPanel === target ? '' : 'none';
-            });
-        });
+        var overlay = document.getElementById('modalOverlay');
+        if (!overlay.classList.contains('active')) return;
+        if (e.key === 'Escape') { closeModal(); return; }
+        if (e.key === 'Tab') { trapModalFocus(e); }
     });
 
     var _costProfileChart = null;
 
-    function renderCostProfile(costProfile) {
-        var el = document.getElementById('costProfileBody');
+    function renderCostProfile(el, costProfile) {
         el.textContent = '';
 
         if (!costProfile) {
@@ -2207,8 +2481,8 @@
         const showFeedback = (ok) => {
             const original = element.textContent;
             element.textContent = ok ? 'Copied' : 'Copy failed';
-            element.style.background = ok ? 'rgba(0, 200, 0, 0.2)' : 'rgba(220, 0, 0, 0.2)';
-            element.style.color = ok ? 'green' : '#b00';
+            element.style.background = ok ? 'var(--surface-2)' : 'var(--error-bg)';
+            element.style.color = ok ? 'var(--muted)' : 'var(--error)';
             setTimeout(() => {
                 element.textContent = original;
                 element.style.background = '';

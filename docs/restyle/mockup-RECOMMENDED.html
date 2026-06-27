@@ -1,0 +1,813 @@
+<!doctype html>
+<!--
+  ============================================================================
+  LocalAgentViewer — Transcript restyle  ·  "Quiet Canvas+"
+  ----------------------------------------------------------------------------
+  Synthesis base: "Quiet Canvas" (near-monochrome document; hierarchy from
+  whitespace, indentation and type weight). Grafted:
+    - from "Threaded Rail": indexResults() + carrier-turn folding, the
+      content-size drilldown rule (>2 lines -> collapse, else inline), and a
+      correct THREE-WAY thinking branch (empty -> inline line; short readable
+      -> inline; long readable -> collapse-with-preview) which fixes Quiet
+      Canvas's short-multiline truncation bug.
+    - from "Calm Bubbles": colorless success state (the result tick is muted,
+      not green) so RED is the genuinely sole semantic hue.
+  Fixes applied vs. critiques:
+    - removed the decorative radial-gradient body wash (truly flat canvas)
+    - success tick uses currentColor/--muted, never green
+    - short multi-line thinking no longer truncates silently
+  Color discipline (enforced at the token layer):
+    - ONE brand accent #004BFF  -> identity/active only (You label, user rail,
+      active toggle, focus rings)
+    - ONE meaning color #DC2626 -> errors only
+    - everything else on a neutral gray ramp
+  The transcript is a CONTAINER-AGNOSTIC component (.tx). The SAME markup is
+  mounted into two shells via a header toggle: "Popup" (centered ~860px) and
+  "Docked" (right-side panel, full height ~420px).
+  ============================================================================
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LAV — Transcript (Quiet Canvas+)</title>
+<style>
+  :root{
+    /* ---- neutral ramp: carries ALL hierarchy ---- */
+    --white:#FFFFFF;
+    --surface:#F7F8FA;
+    --surface-2:#F1F3F5;
+    --border:#E6E8EB;
+    --border-strong:#D6D9DD;
+    --text:#1A1D21;
+    --muted:#6B7280;
+    --muted-2:#9AA0A8;
+
+    /* ---- the ONLY two semantic colors ---- */
+    --accent:#004BFF;            /* identity / active only */
+    --error:#DC2626;            /* errors only */
+    --error-bg:#FCEFEF;
+    --error-border:#F0C9C9;
+
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+
+    /* ---- type scale ---- */
+    --fs-xs:11px; --fs-sm:12px; --fs-base:13px; --fs-md:14.5px; --fs-lg:15px; --fs-xl:20px;
+
+    /* ---- spacing rhythm (4px base) ---- */
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px;
+
+    --radius:8px;
+    --radius-sm:6px;
+    --radius-lg:14px;
+  }
+
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0;
+    font-family:var(--sans);
+    font-size:var(--fs-base);
+    color:var(--text);
+    background:var(--surface);              /* flat — no decorative gradient */
+    -webkit-font-smoothing:antialiased;
+    line-height:1.5;
+  }
+
+  /* ===================== demo page scaffold ===================== */
+  .page{
+    min-height:100%;
+    padding:var(--s6) var(--s5);
+    transition:padding-right .28s ease;
+  }
+  .page.docked{ padding-right:452px; }
+  .page-head{ max-width:760px; margin:0 auto var(--s5); }
+  .page-head h1{ font-size:var(--fs-xl); margin:0 0 var(--s2); letter-spacing:-.01em;}
+  .page-head p{ margin:0; color:var(--muted); font-size:var(--fs-md); max-width:62ch;}
+  .demo-controls{ margin-top:var(--s4); display:flex; gap:var(--s2); flex-wrap:wrap;}
+  .ghost-btn{
+    font:inherit; font-size:var(--fs-base); cursor:pointer;
+    border:1px solid var(--border); background:var(--white);
+    color:var(--text); padding:8px 14px; border-radius:var(--radius-sm);
+    transition:border-color .15s, background .15s;
+  }
+  .ghost-btn:hover{ border-color:var(--border-strong); background:var(--surface);}
+  .ghost-btn:focus-visible{ outline:2px solid var(--accent); outline-offset:2px;}
+
+  /* =====================================================================
+     SHELL A — POPUP
+     ===================================================================== */
+  .overlay{
+    position:fixed; inset:0; z-index:40;
+    background:rgba(20,22,26,.34);
+    display:flex; align-items:flex-start; justify-content:center;
+    padding:5vh var(--s4);
+    opacity:0; pointer-events:none; transition:opacity .2s ease;
+  }
+  .overlay.show{ opacity:1; pointer-events:auto;}
+  .shell-popup{
+    width:100%; max-width:860px; max-height:90vh;
+    background:var(--white);
+    border:1px solid var(--border);
+    border-radius:var(--radius-lg);
+    box-shadow:0 24px 60px -12px rgba(16,24,40,.28);
+    display:flex; flex-direction:column; overflow:hidden;
+    transform:translateY(8px) scale(.99);
+    transition:transform .2s ease;
+  }
+  .overlay.show .shell-popup{ transform:none;}
+
+  /* =====================================================================
+     SHELL B — DOCK
+     ===================================================================== */
+  .shell-dock{
+    position:fixed; top:0; right:0; z-index:45;
+    width:420px; height:100vh;
+    background:var(--white);
+    border-left:1px solid var(--border);
+    box-shadow:-16px 0 40px -24px rgba(16,24,40,.22);
+    display:flex; flex-direction:column; overflow:hidden;
+    transform:translateX(100%);
+    transition:transform .28s cubic-bezier(.4,0,.2,1);
+  }
+  .shell-dock.show{ transform:none;}
+
+  /* =====================================================================
+     TRANSCRIPT COMPONENT  (.tx) — identical in both shells
+     ===================================================================== */
+  .tx{ display:flex; flex-direction:column; min-height:0; height:100%; }
+
+  .tx-head{
+    flex:0 0 auto;
+    padding:var(--s4) var(--s5) var(--s3);
+    border-bottom:1px solid var(--border);
+    background:var(--white);
+  }
+  .tx.is-narrow .tx-head{ padding:var(--s4) var(--s4) var(--s3); }
+  .tx-head-top{ display:flex; align-items:flex-start; gap:var(--s3); }
+  .tx-title{
+    font-size:var(--fs-lg); font-weight:600; margin:0; letter-spacing:-.01em; flex:1; min-width:0;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .tx-close{
+    flex:0 0 auto; border:none; background:transparent; cursor:pointer;
+    width:28px; height:28px; border-radius:var(--radius-sm); color:var(--muted);
+    display:flex; align-items:center; justify-content:center;
+    transition:background .15s,color .15s;
+  }
+  .tx-close svg{ width:15px; height:15px; }
+  .tx-close:hover{ background:var(--surface); color:var(--text);}
+  .tx-close:focus-visible{ outline:2px solid var(--accent); outline-offset:1px;}
+
+  .tx-meta{
+    display:flex; flex-wrap:wrap; gap:var(--s1) var(--s4);
+    margin-top:var(--s2); font-size:var(--fs-sm); color:var(--muted);
+  }
+  .tx-meta b{ color:var(--text); font-weight:600;}
+  .tx-meta .dot{ color:var(--border-strong); }
+  .tx-meta .model{
+    font-family:var(--mono); font-size:var(--fs-xs);
+    background:var(--surface); border:1px solid var(--border);
+    border-radius:999px; padding:1px 8px; color:var(--text);
+  }
+
+  .tx-tools{ display:flex; align-items:center; gap:var(--s2); margin-top:var(--s3); }
+  .seg{
+    display:inline-flex; padding:2px; gap:2px;
+    background:var(--surface); border:1px solid var(--border);
+    border-radius:var(--radius-sm);
+  }
+  .seg button{
+    font:inherit; font-size:var(--fs-sm); font-weight:500; cursor:pointer;
+    border:none; background:transparent; color:var(--muted);
+    padding:5px 12px; border-radius:4px; display:flex; align-items:center; gap:6px;
+    transition:background .15s,color .15s;
+  }
+  .seg button svg{ width:13px; height:13px; }
+  .seg button[aria-pressed="true"]{
+    background:var(--white); color:var(--accent);
+    box-shadow:0 1px 2px rgba(16,24,40,.08);
+  }
+  .seg button:focus-visible{ outline:2px solid var(--accent); outline-offset:2px;}
+  .tx-tools .spacer{ flex:1; }
+  .tx-action{
+    font:inherit; font-size:var(--fs-xs); font-weight:500; cursor:pointer;
+    border:1px solid var(--border); background:var(--white); color:var(--muted);
+    padding:4px 10px; border-radius:999px;
+    transition:background .15s,color .15s,border-color .15s;
+  }
+  .tx-action:hover{ background:var(--surface); color:var(--text); border-color:var(--border-strong); }
+  .tx-action:focus-visible{ outline:2px solid var(--accent); outline-offset:2px;}
+
+  /* --- scroll body --- */
+  .tx-body{
+    flex:1 1 auto; min-height:0; overflow-y:auto;
+    padding:var(--s5) var(--s5) var(--s6);
+    scrollbar-width:thin;
+  }
+  .tx.is-narrow .tx-body{ padding:var(--s4) var(--s4) var(--s5); }
+  .tx-body::-webkit-scrollbar{ width:10px; }
+  .tx-body::-webkit-scrollbar-thumb{ background:#dfe2e6; border:3px solid var(--white); border-radius:8px; }
+
+  /* =====================================================================
+     TURNS — role label + thin left rail + content.
+     User vs assistant differ by: label text, rail color, nothing heavy.
+     ===================================================================== */
+  .turn{
+    position:relative;
+    padding:0 0 var(--s5) var(--s5);
+    margin-left:2px;
+  }
+  .turn::before{
+    content:""; position:absolute; left:0; top:5px; bottom:14px;
+    width:1px; background:var(--border);
+  }
+  .turn--user::before{ background:var(--accent); opacity:.5; }
+
+  .turn-head{ display:flex; align-items:center; gap:var(--s2); margin-bottom:var(--s2); }
+  .turn-label{
+    font-size:var(--fs-xs); font-weight:600; letter-spacing:.06em; text-transform:uppercase;
+  }
+  .turn--user .turn-label{ color:var(--accent); }
+  .turn--assistant .turn-label{ color:var(--text); }
+  .turn-sub{ font-size:var(--fs-xs); font-weight:500; letter-spacing:.02em; color:var(--muted); }
+  .turn-head .grow{ flex:1; }
+  .turn-collapse{
+    border:1px solid var(--border); background:var(--white); color:var(--muted);
+    font:inherit; font-size:var(--fs-xs); font-weight:500; cursor:pointer;
+    padding:2px 9px; border-radius:999px;
+    display:inline-flex; align-items:center; gap:5px;
+    transition:background .15s,color .15s,border-color .15s;
+  }
+  .turn-collapse:hover{ background:var(--surface); color:var(--text); border-color:var(--border-strong); }
+  .turn-collapse:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+  .turn-collapse .chev{ width:9px; height:9px; transition:transform .15s ease; }
+  .turn.collapsed .turn-collapse .chev{ transform:rotate(-90deg); }
+  .turn.collapsed .turn-content{ display:none; }
+  .turn-folded{ display:none; margin-top:2px; font-size:var(--fs-sm); color:var(--muted); }
+  .turn.collapsed .turn-folded{ display:block; }
+  .turn-folded code{ font-family:var(--mono); font-size:var(--fs-xs); color:var(--text); }
+
+  .turn-text{
+    font-size:var(--fs-md); color:var(--text); line-height:1.6;
+    white-space:pre-wrap; word-break:break-word;
+  }
+  .turn-text + .turn-text{ margin-top:var(--s2); }
+
+  /* =====================================================================
+     SUB-STEPS — ordered nested sequence under an assistant turn.
+     Connected to the turn rail by a small horizontal tick.
+     ===================================================================== */
+  .substeps{ margin-top:var(--s3); display:flex; flex-direction:column; gap:var(--s2); }
+  .substep{ position:relative; padding-left:var(--s4); }
+  .substep::before{
+    content:""; position:absolute; left:calc(-1 * var(--s5)); top:13px;
+    width:calc(var(--s5) + var(--s3)); height:1px; background:var(--border);
+  }
+
+  /* --- encrypted/empty thinking: ONE muted italic line, NO control --- */
+  .think-line{
+    font-size:var(--fs-sm); color:var(--muted); font-style:italic;
+    display:flex; align-items:center; gap:7px; padding:2px 0;
+  }
+  .think-line svg{ width:13px; height:13px; opacity:.7; flex:0 0 auto;}
+
+  /* --- short readable thinking: inline muted block, NO control --- */
+  .think-inline{
+    font-size:var(--fs-sm); color:var(--muted);
+    padding:var(--s2) var(--s3);
+    background:var(--surface); border:1px solid var(--border);
+    border-radius:var(--radius-sm);
+  }
+  .think-inline .lbl{
+    display:block; font-size:var(--fs-xs); font-weight:600; letter-spacing:.05em;
+    text-transform:uppercase; color:var(--muted-2); margin-bottom:3px;
+  }
+  .think-inline .body{ white-space:pre-wrap; word-break:break-word; }
+
+  /* =====================================================================
+     STEP CARD — binds tool_use to its tool_result on one neutral card
+     ===================================================================== */
+  .step-card{
+    border:1px solid var(--border);
+    border-radius:var(--radius-sm);
+    background:var(--white);
+    overflow:hidden;
+  }
+  .step-card.is-error{ border-color:var(--error-border); }
+
+  .call-row{
+    display:flex; align-items:center; gap:var(--s2);
+    width:100%; text-align:left; font:inherit;
+    background:transparent; border:none;
+    padding:8px var(--s3);
+  }
+  button.call-row{ cursor:pointer; }
+  button.call-row:hover{ background:var(--surface); }
+  button.call-row:focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; }
+
+  .call-icon{
+    flex:0 0 auto; width:22px; height:22px; border-radius:5px;
+    background:var(--surface-2); color:var(--muted);
+    display:flex; align-items:center; justify-content:center;
+  }
+  .call-icon svg{ width:13px; height:13px; }
+  .call-name{
+    flex:0 0 auto; font-family:var(--mono); font-size:var(--fs-sm); font-weight:600;
+    color:var(--text);
+  }
+  .call-preview{
+    flex:1 1 auto; min-width:0;
+    font-family:var(--mono); font-size:var(--fs-sm); color:var(--muted);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .call-size{
+    flex:0 0 auto; font-size:var(--fs-xs); color:var(--muted);
+    background:var(--surface); border:1px solid var(--border);
+    padding:1px 7px; border-radius:999px; font-variant-numeric:tabular-nums;
+  }
+  .call-caret{
+    flex:0 0 auto; color:var(--muted); width:13px; height:13px;
+    transition:transform .18s ease;
+  }
+  .step-card.open .call-caret{ transform:rotate(90deg); }
+
+  .call-detail{
+    border-top:1px solid var(--border);
+    background:var(--surface);
+    padding:var(--s3);
+    display:none;
+  }
+  .step-card.open .call-detail{ display:block; }
+  .detail-label{
+    font-size:10.5px; font-weight:600; letter-spacing:.06em; text-transform:uppercase;
+    color:var(--muted-2); margin:0 0 6px;
+  }
+  .detail-label + .code{ margin-bottom:var(--s3); }
+  .code{
+    margin:0; font-family:var(--mono); font-size:var(--fs-sm); line-height:1.55;
+    color:var(--text); white-space:pre-wrap; word-break:break-word;
+    background:var(--white); border:1px solid var(--border);
+    border-radius:var(--radius-sm); padding:10px 12px;
+    max-height:340px; overflow:auto;
+  }
+
+  /* --- result rows paired under the call (same card) --- */
+  .result-row{
+    display:flex; gap:var(--s2); align-items:flex-start;
+    padding:8px var(--s3);
+    border-top:1px dashed var(--border);
+  }
+  .result-icon{
+    flex:0 0 auto; width:22px; height:22px; border-radius:5px;
+    display:flex; align-items:center; justify-content:center;
+    background:var(--surface-2); color:var(--muted);   /* colorless success */
+  }
+  .result-icon svg{ width:13px; height:13px; }
+  .result-body{ flex:1 1 auto; min-width:0; }
+  .result-meta{
+    font-size:var(--fs-xs); color:var(--muted); margin-bottom:3px;
+    display:flex; align-items:center; gap:6px;
+  }
+  .result-meta .rk{ font-weight:600; letter-spacing:.04em; text-transform:uppercase; color:var(--muted-2); }
+  .result-meta .dot{ color:var(--border-strong); }
+  .result-text{
+    font-family:var(--mono); font-size:var(--fs-sm); color:var(--text);
+    white-space:pre-wrap; word-break:break-word; margin:0;
+  }
+  .result-text.clamp{
+    max-height:7.2em; overflow:hidden;
+    -webkit-mask-image:linear-gradient(180deg,#000 70%,transparent);
+            mask-image:linear-gradient(180deg,#000 70%,transparent);
+  }
+  .result-expand{
+    margin-top:6px; font:inherit; font-size:var(--fs-sm); cursor:pointer;
+    border:none; background:transparent; color:var(--muted); padding:0;
+    text-decoration:underline; text-underline-offset:2px;
+  }
+  .result-expand:hover{ color:var(--text); }
+  .result-expand:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+
+  /* --- ERROR result — the ONLY place red appears --- */
+  .step-card.is-error .result-row{ background:var(--error-bg); border-top-color:var(--error-border); }
+  .step-card.is-error .result-icon{ background:#f7dada; color:var(--error); }
+  .step-card.is-error .result-meta{ color:var(--error); }
+  .step-card.is-error .result-meta .rk{ color:var(--error); }
+  .step-card.is-error .result-text{ color:var(--error); }
+
+  /* tighten secondary info in the narrow dock */
+  .tx.is-narrow .call-preview{ font-size:var(--fs-xs); }
+
+  /* =====================================================================
+     responsive
+     ===================================================================== */
+  @media (max-width:560px){
+    .page.docked{ padding-right:var(--s4); }
+    .shell-dock{ width:100vw; }
+    .overlay{ padding:0; }
+    .shell-popup{ max-height:100vh; border-radius:0; height:100vh; }
+  }
+
+  .sr-only{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0;}
+</style>
+</head>
+<body>
+
+  <!-- ===================== demo page scaffold ===================== -->
+  <div class="page" id="page">
+    <div class="page-head">
+      <h1>LocalAgentViewer — Transcript</h1>
+      <p>Direction <b>&ldquo;Quiet Canvas+&rdquo;</b>. Open the transcript and flip it between a centered
+         <b>Popup</b> and a right-side <b>Dock</b> &mdash; it&rsquo;s the same component in both shells.</p>
+      <div class="demo-controls">
+        <button class="ghost-btn" id="openPopup">Open as Popup</button>
+        <button class="ghost-btn" id="openDock">Open as Dock</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== SHELL A: POPUP ===================== -->
+  <div class="overlay" id="overlay" aria-hidden="true">
+    <div class="shell-popup" id="shellPopup" role="dialog" aria-modal="true" aria-label="Conversation transcript"></div>
+  </div>
+
+  <!-- ===================== SHELL B: DOCK ===================== -->
+  <aside class="shell-dock" id="shellDock" role="complementary" aria-label="Docked transcript"></aside>
+
+<script>
+/* ============================================================================
+   SAMPLE TRANSCRIPT (exactly as supplied)
+   ========================================================================== */
+const TRANSCRIPT = {
+  title: "Restyle del popup chat — troppo colore",
+  meta: { timestamp:"2026-06-27 14:02", messages:6, tokens:18420, cost_usd:0.41, model:"opus-4-8" },
+  messages: [
+    { role:"user", content:[
+      { type:"text", text:"Il popup della chat e troppo colorato e confuso. Puoi controllare come viene renderizzato un turn e dirmi quali file sono coinvolti?" }
+    ]},
+    { role:"assistant", tokens_in:9100, tokens_out:340, content:[
+      { type:"thinking", thinking:"" },
+      { type:"text", text:"Apro il file e controllo la struttura del rendering dei turn e dei sotto-turn." },
+      { type:"tool_use", id:"tu_01", name:"Read", input:{ file_path:"lav/static/interactions.html", offset:1787, limit:60, description:"Read renderInteractionDetail" } },
+      { type:"tool_use", id:"tu_02", name:"Bash", input:{ command:"grep -n \"tool-call\\|thinking-block\" lav/static/interactions.html", description:"Find color classes" } }
+    ]},
+    { role:"user", content:[
+      { type:"tool_result", tool_use_id:"tu_01", is_error:false, content:"function renderInteractionDetail(data){\n  const messages = data.messages || [];\n  messages.forEach(function(msg, idx){\n    const items = parseMessageContent(msg.content);\n    // ... renders text / thinking / tool_use / tool_result flat\n  });\n}" },
+      { type:"tool_result", tool_use_id:"tu_02", is_error:false, content:"596:        .tool-call { border-left: 3px solid #3498db; }\n556:        .thinking-block { border-left: 3px solid #9b59b6; }" }
+    ]},
+    { role:"assistant", tokens_in:9500, tokens_out:210, content:[
+      { type:"text", text:"Trovato: tutto il rendering e inline in interactions.html e ogni tipo ha il suo colore. Provo a editare un blocco di prova." },
+      { type:"tool_use", id:"tu_03", name:"Edit", input:{ file_path:"lav/static/interactions.html", old_string:".tool-call { border-left: 3px solid #3498db; }", new_string:".tool-call { border-left: 3px solid var(--border); }", description:"Neutralize tool color" } }
+    ]},
+    { role:"user", content:[
+      { type:"tool_result", tool_use_id:"tu_03", is_error:true, content:"Error: File has not been read in this session yet. Read it first before editing." }
+    ]},
+    { role:"assistant", tokens_in:9800, tokens_out:90, content:[
+      { type:"text", text:"Ok, prima rileggo il file e poi applico la modifica. Procedo con il restyle completo della palette." }
+    ]}
+  ]
+};
+
+/* ============================================================================
+   icons (monochrome line, currentColor)
+   ========================================================================== */
+const ICONS = {
+  Read:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 2.5h6l3 3V13.5H3z"/><path d="M9 2.5v3h3"/><path d="M5 8h5M5 10.5h5"/></svg>',
+  Bash:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M4.5 6l2 2-2 2M8.5 10h3"/></svg>',
+  Edit:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M10.5 2.5l3 3-7.5 7.5H3v-3z"/></svg>',
+  Grep:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="7" cy="7" r="4"/><path d="M10 10l3.5 3.5"/></svg>',
+  Write:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 2.5h6l3 3V13.5H3z"/><path d="M6 8.5h4M6 10.5h4"/></svg>',
+  _default:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3l2 1"/></svg>',
+  brain:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M6 3.2A2 2 0 0 0 3.4 5 2 2 0 0 0 3 8.6 2 2 0 0 0 4.6 12 2 2 0 0 0 8 12.6V3.4A2 2 0 0 0 6 3.2zM10 3.2A2 2 0 0 1 12.6 5 2 2 0 0 1 13 8.6 2 2 0 0 1 11.4 12 2 2 0 0 1 8 12.6"/></svg>',
+  ok:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3.5 8.5l3 3 6-6.5"/></svg>',
+  err:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8v4M8 11h.01"/></svg>',
+  caret:'<svg class="call-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 4l4 4-4 4"/></svg>',
+  chev:'<svg class="chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 6l4 4 4-4"/></svg>',
+  close:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
+  popup:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="3.5" width="11" height="9" rx="1.5"/></svg>',
+  dock:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5"/><path d="M10 2.5v11"/></svg>'
+};
+const esc = s => String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const toolIcon = n => ICONS[n] || ICONS._default;
+const fmtNum = n => Number(n).toLocaleString('en-US');
+const lineCount = s => String(s).split('\n').length;
+const firstLine = s => String(s).split('\n')[0];
+
+/* DRILLDOWN RULE: a genuine single line (even longish) renders inline; only
+   multi-line content (>2 lines) or a paragraph-sized blob collapses. */
+function isLong(s){
+  const t = String(s);
+  return lineCount(t) > 2 || t.length > 200;
+}
+
+/* short preview line for a tool call from its input */
+function callPreview(item){
+  const i = item.input || {};
+  if(i.command) return i.command;
+  if(i.file_path) return i.file_path + (i.offset!=null ? '  ·  L'+i.offset+(i.limit?('–'+(i.offset+i.limit)):'') : '');
+  if(i.pattern) return i.pattern;
+  if(i.description) return i.description;
+  return Object.keys(i).join(', ');
+}
+
+/* the input blob (description shown on the preview, so omit from detail) */
+function inputBlob(item){
+  const i = Object.assign({}, item.input || {});
+  delete i.description;
+  return JSON.stringify(i, null, 2);
+}
+function callIsLong(item){
+  const i = item.input || {};
+  const blob = inputBlob(item);
+  return lineCount(blob) > 2 || blob.length > 160 || ('old_string' in i) || ('new_string' in i);
+}
+function inputDetail(item){
+  const i = item.input || {};
+  if('old_string' in i && 'new_string' in i){
+    return (i.file_path?'<p class="detail-label">File</p><pre class="code">'+esc(i.file_path)+'</pre>':'')+
+           '<p class="detail-label">Replace</p><pre class="code">'+esc(i.old_string)+'</pre>'+
+           '<p class="detail-label">With</p><pre class="code">'+esc(i.new_string)+'</pre>';
+  }
+  return '<p class="detail-label">Input</p><pre class="code">'+esc(inputBlob(item))+'</pre>';
+}
+
+/* ============================================================================
+   map tool_use_id -> tool_result (results live in the NEXT user message)
+   ========================================================================== */
+function indexResults(messages){
+  const map = {};
+  messages.forEach(m => (m.content||[]).forEach(c => {
+    if(c.type === 'tool_result' && c.tool_use_id) map[c.tool_use_id] = c;
+  }));
+  return map;
+}
+
+/* render a single tool_use card WITH its paired result bound inside */
+function renderToolCard(item, results){
+  const res = results[item.id];
+  const long = callIsLong(item);
+  const preview = callPreview(item);
+  const inputLines = lineCount(inputBlob(item));
+  const sizeHint = long ? ('+'+inputLines+' lines') : '';
+
+  const headTag = long ? 'button' : 'div';
+  const head =
+    '<'+headTag+' class="call-row"'+(long?' type="button" aria-expanded="false"':'')+'>'+
+      '<span class="call-icon">'+toolIcon(item.name)+'</span>'+
+      '<span class="call-name">'+esc(item.name)+'</span>'+
+      '<span class="call-preview">'+esc(preview)+'</span>'+
+      (long ? '<span class="call-size">'+sizeHint+'</span>'+ICONS.caret : '')+
+    '</'+headTag+'>';
+
+  const detail = long ? '<div class="call-detail">'+inputDetail(item)+'</div>' : '';
+
+  /* bound result row */
+  let resultHtml = '';
+  if(res){
+    const isErr = !!res.is_error;
+    const txt = typeof res.content==='string' ? res.content : JSON.stringify(res.content,null,2);
+    const long2 = isLong(txt);
+    const extra = lineCount(txt) - 1;
+    resultHtml =
+      '<div class="result-row">'+
+        '<span class="result-icon">'+(isErr?ICONS.err:ICONS.ok)+'</span>'+
+        '<div class="result-body">'+
+          '<div class="result-meta"><span class="rk">'+(isErr?'Error':'Result')+'</span>'+
+            ' <span class="dot">·</span> '+esc(res.tool_use_id)+'</div>'+
+          '<pre class="result-text'+(long2?' clamp':'')+'">'+esc(txt)+'</pre>'+
+          (long2?'<button type="button" class="result-expand">Show full result (+'+extra+' lines)</button>':'')+
+        '</div>'+
+      '</div>';
+  }
+
+  return '<div class="step-card'+(res&&res.is_error?' is-error':'')+'">'+head+detail+resultHtml+'</div>';
+}
+
+/* ---- THINKING: three-way branch (fixes the truncation bug) ---- */
+function renderThinking(it){
+  const body = (it.thinking || '').trim();
+  if(!body){
+    /* empty / encrypted -> ONE muted italic line, NO control */
+    return '<div class="think-line">'+ICONS.brain+
+           'Extended thinking — encrypted, no readable content</div>';
+  }
+  if(!isLong(body)){
+    /* short readable thinking -> inline block, NO control, never truncated */
+    return '<div class="think-inline"><span class="lbl">Thinking</span>'+
+           '<div class="body">'+esc(body)+'</div></div>';
+  }
+  /* long readable thinking -> collapse-with-preview, reuses the card shell */
+  const lc = lineCount(body);
+  return '<div class="step-card">'+
+    '<button class="call-row" type="button" aria-expanded="false">'+
+      '<span class="call-icon">'+ICONS.brain+'</span>'+
+      '<span class="call-name">Thinking</span>'+
+      '<span class="call-preview">'+esc(firstLine(body))+'</span>'+
+      '<span class="call-size">+'+lc+' lines</span>'+ICONS.caret+
+    '</button>'+
+    '<div class="call-detail"><pre class="code">'+esc(body)+'</pre></div>'+
+  '</div>';
+}
+
+/* render one message's sub-items (thinking / tool_use) as substeps */
+function renderSubsteps(items, results){
+  let html = '';
+  items.forEach(it => {
+    if(it.type === 'thinking' || it.type === 'redacted_thinking'){
+      html += '<div class="substep">'+renderThinking(it)+'</div>';
+    } else if(it.type === 'tool_use'){
+      html += '<div class="substep">'+renderToolCard(it, results)+'</div>';
+    }
+    /* tool_result items are consumed via the pairing map, not rendered standalone */
+  });
+  return html;
+}
+
+/* render a full turn */
+function renderTurn(msg, results){
+  const items = msg.content || [];
+  const role = msg.role;
+
+  /* carrier turn: a user message that is ONLY tool_results — folded into the
+     preceding assistant's cards, so skip it here */
+  const onlyResults = role==='user' && items.length>0 && items.every(i => i.type==='tool_result');
+  if(onlyResults) return '';
+
+  const texts = items.filter(i => i.type === 'text' && i.text);
+  const subItems = items.filter(i => i.type === 'thinking' || i.type === 'redacted_thinking' || i.type === 'tool_use');
+
+  const thinkCount = subItems.filter(i => i.type!=='tool_use').length;
+  const toolItems = subItems.filter(i => i.type==='tool_use');
+  const showCollapse = (subItems.length) >= 2;   // collapse only genuinely noisy turns
+
+  const label = role === 'user'
+    ? '<span class="turn-label">You</span>'
+    : '<span class="turn-label">Agent</span>'+
+      (msg.tokens_in!=null ? '<span class="turn-sub">· '+fmtNum(msg.tokens_in)+' in / '+fmtNum(msg.tokens_out)+' out</span>' : '');
+
+  const collapseBtn = showCollapse
+    ? '<button class="turn-collapse" type="button" aria-expanded="true">'+ICONS.chev+'<span class="lbl">collapse</span></button>'
+    : '';
+
+  const textHtml = texts.map(t => '<div class="turn-text">'+esc(t.text)+'</div>').join('');
+  const subHtml = subItems.length ? '<div class="substeps">'+renderSubsteps(subItems, results)+'</div>' : '';
+
+  /* folded one-line summary */
+  const foldBits = [];
+  if(thinkCount) foldBits.push('thinking');
+  if(toolItems.length) foldBits.push(toolItems.length+' tool call'+(toolItems.length>1?'s':'')+
+    ' ('+toolItems.map(t=>'<code>'+esc(t.name)+'</code>').join(' ')+')');
+  const folded = '<div class="turn-folded">'+(foldBits.length?foldBits.join(' · '):'collapsed')+'</div>';
+
+  return '<div class="turn turn--'+role+'">'+
+      '<div class="turn-head">'+label+'<span class="grow"></span>'+collapseBtn+'</div>'+
+      '<div class="turn-content">'+textHtml+subHtml+'</div>'+
+      folded+
+    '</div>';
+}
+
+/* ============================================================================
+   render the whole transcript COMPONENT into a host element.
+   Container-agnostic: it does not know whether host is popup or dock.
+   ========================================================================== */
+let CURRENT_MODE = 'popup';   // 'popup' | 'dock'
+
+function renderTranscript(host){
+  const t = TRANSCRIPT, m = t.meta;
+  const results = indexResults(t.messages);
+  const narrow = CURRENT_MODE === 'dock';
+
+  const meta =
+    '<div class="tx-meta">'+
+      '<span>'+esc(m.timestamp)+'</span><span class="dot">·</span>'+
+      '<span><b>'+m.messages+'</b> messages</span><span class="dot">·</span>'+
+      '<span><b>'+fmtNum(m.tokens)+'</b> tokens</span><span class="dot">·</span>'+
+      '<span><b>$'+m.cost_usd.toFixed(2)+'</b></span>'+
+      '<span class="model">'+esc(m.model)+'</span>'+
+    '</div>';
+
+  const tools =
+    '<div class="tx-tools">'+
+      '<div class="seg" role="group" aria-label="Layout">'+
+        '<button type="button" data-mode="popup" aria-pressed="'+(CURRENT_MODE==='popup')+'">'+ICONS.popup+'Popup</button>'+
+        '<button type="button" data-mode="dock"  aria-pressed="'+(CURRENT_MODE==='dock')+'">'+ICONS.dock+'Docked</button>'+
+      '</div>'+
+      '<span class="spacer"></span>'+
+      '<button type="button" class="tx-action" data-act="collapse">Collapse steps</button>'+
+    '</div>';
+
+  const body = t.messages.map(msg => renderTurn(msg, results)).join('');
+
+  host.innerHTML =
+    '<div class="tx'+(narrow?' is-narrow':'')+'">'+
+      '<div class="tx-head">'+
+        '<div class="tx-head-top">'+
+          '<h2 class="tx-title">'+esc(t.title)+'</h2>'+
+          '<button class="tx-close" type="button" aria-label="Close">'+ICONS.close+'</button>'+
+        '</div>'+
+        meta + tools +
+      '</div>'+
+      '<div class="tx-body">'+body+'</div>'+
+    '</div>';
+
+  wireComponent(host);
+}
+
+/* ============================================================================
+   interactions inside the component
+   ========================================================================== */
+function wireComponent(host){
+  host.querySelector('.tx-close').addEventListener('click', closeAll);
+
+  host.querySelectorAll('.seg button').forEach(b => b.addEventListener('click', () => setMode(b.dataset.mode)));
+
+  /* expandable tool/thinking cards */
+  host.querySelectorAll('button.call-row').forEach(btn => btn.addEventListener('click', () => {
+    const card = btn.closest('.step-card');
+    const open = card.classList.toggle('open');
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }));
+
+  /* per-turn collapse */
+  host.querySelectorAll('.turn-collapse').forEach(btn => btn.addEventListener('click', () => {
+    const turn = btn.closest('.turn');
+    const collapsed = turn.classList.toggle('collapsed');
+    btn.setAttribute('aria-expanded', String(!collapsed));
+    const lbl = btn.querySelector('.lbl');
+    if(lbl) lbl.textContent = collapsed ? 'expand' : 'collapse';
+  }));
+
+  /* collapse-all steps action */
+  const act = host.querySelector('.tx-action[data-act="collapse"]');
+  if(act) act.addEventListener('click', () => {
+    const turns = host.querySelectorAll('.turn-collapse');
+    const anyOpen = [...turns].some(b => b.closest('.turn').classList.contains('collapsed') === false);
+    turns.forEach(b => {
+      const turn = b.closest('.turn');
+      turn.classList.toggle('collapsed', anyOpen);
+      b.setAttribute('aria-expanded', String(!anyOpen));
+      const lbl = b.querySelector('.lbl'); if(lbl) lbl.textContent = anyOpen ? 'expand' : 'collapse';
+    });
+    act.textContent = anyOpen ? 'Expand steps' : 'Collapse steps';
+  });
+
+  /* long result "show full" */
+  host.querySelectorAll('.result-expand').forEach(btn => btn.addEventListener('click', () => {
+    const pre = btn.parentElement.querySelector('.result-text');
+    pre.classList.remove('clamp');
+    btn.remove();
+  }));
+}
+
+/* ============================================================================
+   shells — open / close / switch. The component is rendered fresh into
+   whichever host is active, proving it is reusable.
+   ========================================================================== */
+const overlay   = document.getElementById('overlay');
+const shellPopup= document.getElementById('shellPopup');
+const shellDock = document.getElementById('shellDock');
+const page      = document.getElementById('page');
+let OPEN = false;
+
+function setMode(mode){
+  if(mode === CURRENT_MODE && OPEN) return;
+  CURRENT_MODE = mode;
+  open(mode);
+}
+
+function open(mode){
+  CURRENT_MODE = mode; OPEN = true;
+  if(mode === 'popup'){
+    shellDock.classList.remove('show');
+    page.classList.remove('docked');
+    renderTranscript(shellPopup);
+    overlay.classList.add('show'); overlay.setAttribute('aria-hidden','false');
+    shellDock.innerHTML='';
+  } else {
+    overlay.classList.remove('show'); overlay.setAttribute('aria-hidden','true');
+    shellPopup.innerHTML='';
+    renderTranscript(shellDock);
+    shellDock.classList.add('show');
+    page.classList.add('docked');
+  }
+}
+
+function closeAll(){
+  OPEN = false;
+  overlay.classList.remove('show'); overlay.setAttribute('aria-hidden','true');
+  shellDock.classList.remove('show');
+  page.classList.remove('docked');
+  setTimeout(function(){ shellPopup.innerHTML=''; shellDock.innerHTML=''; }, 300);
+}
+
+document.getElementById('openPopup').addEventListener('click', function(){ open('popup'); });
+document.getElementById('openDock').addEventListener('click', function(){ open('dock'); });
+overlay.addEventListener('click', function(e){ if(e.target === overlay) closeAll(); });
+document.addEventListener('keydown', function(e){ if(e.key === 'Escape' && OPEN) closeAll(); });
+
+/* open popup by default so the demo shows content immediately */
+open('popup');
+</script>
+</body>
+</html>
