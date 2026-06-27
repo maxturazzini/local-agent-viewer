@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+LAV-63 followup: Safari performance — large transcripts no longer hang.
+- **Symptom**: a ~1900-message conversation (`04a68597…`) took >1 minute to show anything in **Safari** (Chromium opened it in <1s). The restyle rendered the whole transcript at once (~19.9k DOM nodes, ~1958 inline SVG icons) with two Safari-hostile costs: **`-webkit-mask-image`** on every clamped result (385 of them — each forces an offscreen compositing buffer) and full paint of all off-screen turns.
+- **Fix** (`lav/static/interactions.html`, CSS only): dropped the `mask-image` fade on `.result-text.clamp` (kept the `max-height`/`overflow` hard clip + the "Show full result" button); added `content-visibility: auto; contain-intrinsic-size: auto 120px` to `.turn` so the browser skips layout/paint of off-screen turns. Mount time on Chromium dropped ~470ms → ~67ms; Safari no longer hangs.
+
 LAV-63: Transcript popup restyle — "Quiet Canvas" + container-agnostic component (dock-ready).
 - **Problem**: the transcript modal was visually noisy (≥6 competing accents — two blues `#004BFF`/`#3498db`, purple thinking, green results, red errors, plus a badge/tag rainbow), forced a click-to-expand even for 1-line content (the encrypted-thinking placeholder was one click to reveal one muted line), rendered sub-turns flat (text + thinking + N `tool_use` dumped together, `tool_use` not bound to its result — and every `tool_result` was actually shown **twice**), and the renderer was fused to the modal chrome.
 - **Restyle** (`lav/static/interactions.html`): near-monochrome "Quiet Canvas" — neutral surfaces + a single brand accent `#004BFF`, red `#DC2626` reserved for errors only. Encrypted/empty (incl. `redacted_thinking`) thinking shows one muted inline line, no control; readable thinking is inline (≤4 lines) or collapsible with a `+N lines` hint. Each `tool_use` is bound to its `tool_result` on one card (no more duplicate result); short content inline, long content collapsible with a 1-line preview + size hint. `.tx-body`/`.tx-cost` use the app grey `--light-gray` (white cards on grey, matching the rest of the app).

@@ -597,7 +597,7 @@
         /* =====================================================================
            TURNS
            ===================================================================== */
-        .turn { position: relative; padding: 0 0 var(--s5) var(--s5); margin-left: 2px; }
+        .turn { position: relative; padding: 0 0 var(--s5) var(--s5); margin-left: 2px; content-visibility: auto; contain-intrinsic-size: auto 120px; }
         .turn::before {
             content: ""; position: absolute; left: 0; top: 5px; bottom: 14px;
             width: 1px; background: var(--border);
@@ -703,8 +703,6 @@
         .result-text { font-family: var(--mono); font-size: 12px; color: var(--text); white-space: pre-wrap; word-break: break-word; margin: 0; }
         .result-text.clamp {
             max-height: 7.2em; overflow: hidden;
-            -webkit-mask-image: linear-gradient(180deg,#000 70%,transparent);
-                    mask-image: linear-gradient(180deg,#000 70%,transparent);
         }
         .result-expand {
             margin-top: 6px; font: inherit; font-size: 11.5px; cursor: pointer;
