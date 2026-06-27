@@ -49,10 +49,22 @@ from pathlib import Path
 # as via the venv python where `lav` is installed.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lav.config import UNIFIED_DB_PATH, SOURCE_COWORK_DESKTOP
+from lav.config import UNIFIED_DB_PATH, SOURCE_COWORK_DESKTOP, get_cowork_sessions_dirs
 from lav.parsers.jsonl import init_db, parse_cowork_sessions
 
 COWORK_PREFIX = "cowork:%"
+
+
+def _audit_file_count() -> int:
+    """How many Cowork conversations the reparse can actually reproduce (1 per audit.jsonl)."""
+    seen = set()
+    for d in get_cowork_sessions_dirs():
+        for p in d.rglob("audit.jsonl"):
+            try:
+                seen.add(str(p.resolve()))
+            except Exception:
+                seen.add(str(p))
+    return len(seen)
 
 
 def _cowork_counts(conn: sqlite3.Connection) -> dict:
@@ -90,6 +102,8 @@ def main() -> int:
     ap.add_argument("--no-backup", action="store_true", help="skip the pre-migration backup")
     ap.add_argument("--keep-empty-projects", action="store_true",
                     help="do not delete projects that end up with 0 interactions")
+    ap.add_argument("--force", action="store_true",
+                    help="override the audit-file coverage safety check (DANGEROUS)")
     args = ap.parse_args()
 
     db_path = Path(args.db).expanduser()
@@ -105,6 +119,24 @@ def main() -> int:
         tables = _tables_with_session_id(peek)
     print(f"cowork before: {before}")
     print(f"tables w/ session_id: {', '.join(tables)}")
+
+    # SAFETY: this migration purges all cowork rows and rebuilds them from the local
+    # audit logs. If those logs have rotated away (common on long-lived prod hosts),
+    # the reparse cannot reproduce the existing conversations and we would DESTROY data.
+    # Each audit.jsonl == one conversation; refuse if coverage is materially short.
+    audit_files = _audit_file_count()
+    existing_convs = before["masters"] + before["slaves"]
+    print(f"audit files on disk: {audit_files}   existing cowork conversations: {existing_convs}")
+    if existing_convs and audit_files < existing_convs * 0.95:
+        msg = (f"\nABORT: only {audit_files} audit files on disk but the DB has {existing_convs} "
+               f"cowork conversations. A purge+reparse would LOSE ~{existing_convs - audit_files} "
+               f"conversations whose logs have rotated away. This migration is only safe where the "
+               f"audit logs still fully cover the data (e.g. the machine that first parsed them).")
+        if not args.force:
+            print(msg + "\nRefusing. Re-run with --force ONLY if you understand the data loss.",
+                  file=sys.stderr)
+            return 4
+        print(msg + "\n--force given: proceeding despite the shortfall.", file=sys.stderr)
 
     if args.dry_run:
         print("\n[dry-run] would: backup -> purge cowork rows -> reparse --full -> "
