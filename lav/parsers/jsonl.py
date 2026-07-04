@@ -1500,30 +1500,59 @@ def update_interaction(session_id: str, project_name: str, conn: sqlite3.Connect
         print(f"DB error (interaction): {e}")
 
 
-def purge_acompact_children(conn: sqlite3.Connection, project_id: int) -> int:
-    """LAV-66: remove phantom '::agent-acompact-…' child sessions.
+def is_real_agent_id(agent_id: Optional[str]) -> bool:
+    """True only for genuine Task/workflow subagents.
 
-    Auto-compaction checkpoint files were mis-ingested as subagent conversations
-    by the pre-fix parser, duplicating a slice of the parent's messages/tokens.
-    The parser now skips those files, but rows created before the fix must be
-    swept. Deletes across all per-session tables; scoped by project (the synthetic
-    ids are globally unique, so this is safe regardless of host). Returns rows
-    removed from `messages`.
+    LAV-66: Claude Code writes several kinds of `agent-*.jsonl` files that all
+    reuse the parent's sessionId. Real subagents carry a single hexadecimal id
+    (e.g. 'a1e94cf', 'abb5998eb0fb92919'). Meta artifacts carry a non-hex first
+    segment — 'acompact-…' (auto-compaction checkpoints), 'aprompt_suggestion-…'
+    (prompt suggestions), 'aside_question-…' (side questions). Meta files are NOT
+    navigable subagents: some merely duplicate the parent's own messages (double
+    count), the rest are internal noise. Only hex ids are real subagents.
     """
+    if not agent_id:
+        return False
+    first = agent_id.split('-', 1)[0]
+    return bool(first) and all(c in '0123456789abcdef' for c in first)
+
+
+def purge_meta_children(conn: sqlite3.Connection, project_id: int) -> int:
+    """LAV-66: remove phantom meta '::agent-<non-hex>-…' child sessions.
+
+    Compaction/suggestion/side-question files were mis-ingested as subagent
+    conversations by the pre-fix parser (duplicating parent messages/tokens or
+    adding noise). The parser now skips those files; rows created before the fix
+    are swept here. Scoped by project (synthetic ids are globally unique, so this
+    is safe regardless of host). Returns rows removed from `messages`.
+    """
+    bad = []
+    for (sid,) in conn.execute(
+        "SELECT DISTINCT session_id FROM messages WHERE project_id = ? AND session_id LIKE '%::agent-%'",
+        (project_id,)
+    ):
+        agent_id = sid.split('::agent-', 1)[1] if '::agent-' in sid else ''
+        if not is_real_agent_id(agent_id):
+            bad.append(sid)
+    if not bad:
+        return 0
     tables = ("messages", "token_usage", "file_operations", "bash_commands",
               "search_operations", "skill_invocations", "subagent_invocations",
               "mcp_tool_calls", "interaction_metadata", "interactions")
     removed = 0
     for table in tables:
-        try:
-            n = conn.execute(
-                f"DELETE FROM {table} WHERE project_id = ? AND session_id LIKE '%::agent-acompact-%'",
-                (project_id,)
-            ).rowcount
-            if table == "messages":
-                removed = n
-        except sqlite3.Error:
-            pass
+        for i in range(0, len(bad), 500):
+            chunk = bad[i:i + 500]
+            placeholders = ",".join("?" * len(chunk))
+            try:
+                n = conn.execute(
+                    f"DELETE FROM {table} WHERE project_id = ? AND session_id IN ({placeholders})",
+                    (project_id, *chunk)
+                ).rowcount
+                if table == "messages":
+                    removed += n
+            except sqlite3.Error:
+                pass
     return removed
 
 
@@ -1659,13 +1688,13 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
         # <parent>::agent-<agentId> (the LAV-66 synthetic id) for subagents/**/agent-*.
         present_sids = set()
         for f in jsonl_files:
-            if f.name.startswith("agent-acompact-"):
-                continue  # LAV-66: compaction checkpoints are not sessions
             if f.name.startswith("agent-"):
+                f_agent_id = f.stem.replace("agent-", "")
+                if not is_real_agent_id(f_agent_id):
+                    continue  # LAV-66: meta artifact, not a subagent session
                 # Agent files can sit at the project root (older layout) or under
                 # subagents/**; their parent sessionId is only in the records, so
                 # read the first line (fall back to the subagents/ folder name).
-                f_agent_id = f.stem.replace("agent-", "")
                 f_parent = None
                 try:
                     with open(f, "r", encoding="utf-8") as fh:
@@ -1728,16 +1757,15 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
     print(f"  Found {len(jsonl_files)} interaction files")
 
     for jsonl_file in jsonl_files:
-        # LAV-66: auto-compaction checkpoints (agent-acompact-*.jsonl) carry the
-        # parent's sessionId + agentId="acompact-…" + isSidechain=true but merely
-        # DUPLICATE a slice of the parent's own messages (same uuids). They are not
-        # subagents: treating them as such created phantom child conversations that
-        # double-counted the parent's messages/tokens. Skip them entirely — the real
-        # messages already live in the parent's own <sid>.jsonl.
-        if jsonl_file.name.startswith("agent-acompact-"):
-            continue
         is_agent_file = jsonl_file.name.startswith("agent-")
         agent_id_from_filename = jsonl_file.stem.replace("agent-", "") if is_agent_file else None
+
+        # LAV-66: only hex-id agent files are real Task/workflow subagents. Meta
+        # artifacts (agent-acompact-*, agent-aprompt_suggestion-*, agent-aside_question-*)
+        # reuse the parent's sessionId but are NOT navigable subagents — some duplicate
+        # the parent's messages (double count), all are noise as child conversations.
+        if is_agent_file and not is_real_agent_id(agent_id_from_filename):
+            continue
 
         # Subagent/workflow files (agent-*.jsonl) inherit the PARENT session's
         # sessionId but carry the timestamps of when the subagent ran — which is
@@ -1847,13 +1875,12 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
         update_interaction(session_id, project_name, conn, project_id, user_id, host_id,
                             summary=summary, parent_session_id=parent_sid, agent_id=agent_id)
 
-    # LAV-66: sweep phantom acompact children left by the pre-fix parser. Their
-    # messages were duplicates of the parent's own (the parent keeps the real
-    # copies from its <sid>.jsonl), so removing the children fixes the double
-    # count without touching the parent's aggregates.
-    purged = purge_acompact_children(conn, project_id)
+    # LAV-66: sweep phantom meta children (compaction/suggestion/side-question)
+    # left by the pre-fix parser. Duplicated messages already live under the
+    # parent's own <sid>.jsonl, so removing the children fixes the double count.
+    purged = purge_meta_children(conn, project_id)
     if purged:
-        print(f"  Purged {purged} phantom acompact-child messages")
+        print(f"  Purged {purged} phantom meta-child messages")
 
     resolve_agent_parents(conn, project_id)
 
@@ -2547,9 +2574,10 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
         if not session_id:
             continue
 
-        # LAV-66: never ingest phantom acompact "children" (a pre-fix agent may
-        # still export them); they are duplicated parent messages, not a session.
-        if "::agent-acompact-" in session_id:
+        # LAV-66: never ingest phantom meta "children" (compaction/suggestion/
+        # side-question). A pre-fix agent may still export them; they are
+        # duplicated parent messages or noise, not real subagent sessions.
+        if "::agent-" in session_id and not is_real_agent_id(session_id.split("::agent-", 1)[1]):
             continue
 
         # Resolve project
