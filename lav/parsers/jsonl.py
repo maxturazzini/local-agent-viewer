@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS messages (
     tokens_out INTEGER DEFAULT 0,
     model TEXT,
     api_message_id TEXT DEFAULT '',
+    agent_id TEXT,
     UNIQUE(session_id, project_id, uuid)
 );
 
@@ -390,6 +391,18 @@ def _migrate_add_api_message_id(conn: sqlite3.Connection):
     conn.commit()
 
 
+def _migrate_add_agent_id(conn: sqlite3.Connection):
+    """LAV-66: add agent_id column to messages (subagent identity) + partial index."""
+    msg_cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+    if "agent_id" not in msg_cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN agent_id TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_msg_agent ON messages(agent_id) "
+        "WHERE agent_id IS NOT NULL"
+    )
+    conn.commit()
+
+
 def _migrate_conversations_to_interactions(conn: sqlite3.Connection, db_path: Path):
     """Migrate old 'conversations'/'conversation_metadata' tables to 'interactions'/'interaction_metadata'."""
     # Check if old 'conversations' table exists
@@ -448,6 +461,11 @@ def init_db(db_path: Path = UNIFIED_DB_PATH) -> sqlite3.Connection:
         _migrate_add_api_message_id(conn)
     except Exception as e:
         print(f"  api_message_id migration skipped: {e}")
+    # LAV-66: add agent_id column to messages
+    try:
+        _migrate_add_agent_id(conn)
+    except Exception as e:
+        print(f"  agent_id migration skipped: {e}")
     # Migrate conversations -> interactions
     try:
         _migrate_conversations_to_interactions(conn, db_path)
@@ -671,6 +689,35 @@ def smart_title(display: str) -> str:
         return cleaned[:80] + '...'
 
     return cleaned
+
+
+# LAV-66: Claude Code wraps injected context in pseudo-XML tags. A user message
+# can be entirely made of these wrappers (slash-command invocations, IDE state,
+# hook output) — using it as interaction display/summary shows noise like
+# "<local-command-caveat>Caveat: The messages below..." instead of real text.
+_SYSTEM_TAG_NAMES = (
+    "local-command-caveat", "local-command-stdout", "local-command-stderr",
+    "command-name", "command-message", "command-args", "command-contents",
+    "ide_opened_file", "ide_opened_files", "ide_selection", "ide_diagnostics",
+    "system-reminder", "session-start-hook",
+)
+_SYSTEM_TAG_BLOCK_RE = re.compile(
+    r"<(" + "|".join(_SYSTEM_TAG_NAMES) + r")(?:\s[^>]*)?>.*?</\1\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+_SYSTEM_TAG_LONE_RE = re.compile(
+    r"</?(?:" + "|".join(_SYSTEM_TAG_NAMES) + r")(?:\s[^>]*)?/?>",
+    re.IGNORECASE,
+)
+
+
+def strip_system_tags(text: str) -> str:
+    """Remove system wrapper tag blocks; returns '' if nothing real remains."""
+    if not text or "<" not in text:
+        return (text or "").strip()
+    cleaned = _SYSTEM_TAG_BLOCK_RE.sub("", text)
+    cleaned = _SYSTEM_TAG_LONE_RE.sub("", cleaned)
+    return cleaned.strip()
 
 
 def parse_jsonl_file(file_path: Path) -> Generator[dict, None, None]:
@@ -1033,12 +1080,19 @@ def process_tool_call(tool_call: dict, message: dict, conn: sqlite3.Connection,
                 except sqlite3.Error as e:
                     print(f"DB error (bash->file_ops): {e}")
 
+            # bash_commands has no UNIQUE constraint; agent files are reprocessed on
+            # every incremental run (LAV-65), so guard with NOT EXISTS (LAV-66).
             try:
                 conn.execute(
-                    """INSERT OR IGNORE INTO bash_commands
+                    """INSERT INTO bash_commands
                        (timestamp, session_id, project_id, user_id, host_id, command, description, target_file, cwd, git_branch)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (timestamp, session_id, project_id, user_id, host_id, command, description, target_file, cwd, git_branch)
+                       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                       WHERE NOT EXISTS (
+                           SELECT 1 FROM bash_commands
+                           WHERE timestamp = ? AND session_id = ? AND project_id = ? AND command = ?
+                       )""",
+                    (timestamp, session_id, project_id, user_id, host_id, command, description, target_file, cwd, git_branch,
+                     timestamp, session_id, project_id, command)
                 )
             except sqlite3.Error as e:
                 print(f"DB error (bash): {e}")
@@ -1048,12 +1102,18 @@ def process_tool_call(tool_call: dict, message: dict, conn: sqlite3.Connection,
         if pattern:
             path = tool_input.get("path", "")
             output_mode = tool_input.get("output_mode", "")
+            # No UNIQUE constraint — NOT EXISTS guard, see bash_commands (LAV-66).
             try:
                 conn.execute(
-                    """INSERT OR IGNORE INTO search_operations
+                    """INSERT INTO search_operations
                        (timestamp, session_id, project_id, user_id, host_id, tool, pattern, path, output_mode, cwd)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (timestamp, session_id, project_id, user_id, host_id, tool_name, pattern, path, output_mode, cwd)
+                       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                       WHERE NOT EXISTS (
+                           SELECT 1 FROM search_operations
+                           WHERE timestamp = ? AND session_id = ? AND project_id = ? AND tool = ? AND pattern = ?
+                       )""",
+                    (timestamp, session_id, project_id, user_id, host_id, tool_name, pattern, path, output_mode, cwd,
+                     timestamp, session_id, project_id, tool_name, pattern)
                 )
             except sqlite3.Error as e:
                 print(f"DB error (search): {e}")
@@ -1097,12 +1157,18 @@ def process_tool_call(tool_call: dict, message: dict, conn: sqlite3.Connection,
         else:
             server_name = ""
             mcp_tool = tool_name
+        # No UNIQUE constraint — NOT EXISTS guard, see bash_commands (LAV-66).
         try:
             conn.execute(
-                """INSERT OR IGNORE INTO mcp_tool_calls
+                """INSERT INTO mcp_tool_calls
                    (timestamp, session_id, project_id, user_id, host_id, tool_name, server_name, cwd, git_branch)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (timestamp, session_id, project_id, user_id, host_id, mcp_tool, server_name, cwd, git_branch)
+                   SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+                   WHERE NOT EXISTS (
+                       SELECT 1 FROM mcp_tool_calls
+                       WHERE timestamp = ? AND session_id = ? AND project_id = ? AND tool_name = ?
+                   )""",
+                (timestamp, session_id, project_id, user_id, host_id, mcp_tool, server_name, cwd, git_branch,
+                 timestamp, session_id, project_id, mcp_tool)
             )
         except sqlite3.Error as e:
             print(f"DB error (mcp): {e}")
@@ -1133,6 +1199,7 @@ def process_message_content(message: dict, conn: sqlite3.Connection, project_id:
     session_id = message.get("sessionId", "")
     timestamp = message.get("timestamp", "")
     uuid = message.get("uuid", "")
+    agent_id = message.get("agentId") or None
 
     tokens_in = 0
     tokens_out = 0
@@ -1158,9 +1225,9 @@ def process_message_content(message: dict, conn: sqlite3.Connection, project_id:
     try:
         conn.execute(
             """INSERT OR IGNORE INTO messages
-               (session_id, project_id, user_id, host_id, uuid, type, content, timestamp, tokens_in, tokens_out, model, api_message_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (session_id, project_id, user_id, host_id, uuid, msg_type, content_json, timestamp, tokens_in, tokens_out, model, api_message_id)
+               (session_id, project_id, user_id, host_id, uuid, type, content, timestamp, tokens_in, tokens_out, model, api_message_id, agent_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (session_id, project_id, user_id, host_id, uuid, msg_type, content_json, timestamp, tokens_in, tokens_out, model, api_message_id, agent_id)
         )
     except sqlite3.Error as e:
         print(f"DB error (messages): {e}")
@@ -1344,10 +1411,11 @@ def update_interaction(session_id: str, project_name: str, conn: sqlite3.Connect
         first_ts, msg_count, msg_tokens, model = row
 
         # total_tokens is cache-inclusive: the full token_usage breakdown
-        # (input + output + cache write + cache read). token_usage is deduplicated
-        # by api_message_id and includes subagent messages under the same session_id,
-        # so this matches the Cost Profile token total shown in the UI. Fall back to
-        # the messages' tokens_in+tokens_out only for sources without token_usage
+        # (input + output + cache write + cache read), deduplicated by
+        # api_message_id. Since LAV-66 subagents live under their own synthetic
+        # session_id, so this is the session's OWN total; the UI rolls up
+        # descendants via parent_session_id. Fall back to the messages'
+        # tokens_in+tokens_out only for sources without token_usage
         # (e.g. ChatGPT / claude.ai exports, which have no cache tokens).
         cursor = conn.execute("""
             SELECT
@@ -1361,28 +1429,42 @@ def update_interaction(session_id: str, project_name: str, conn: sqlite3.Connect
         if not model and trow and trow[1]:
             model = trow[1]
 
+        # LAV-66: pick the first user text that is NOT purely a system wrapper
+        # (<local-command-caveat>, <ide_opened_file>, ...). Keep the first raw
+        # text as fallback so sessions made only of wrappers still get a display.
         cursor = conn.execute("""
             SELECT content FROM messages
             WHERE session_id = ? AND project_id = ? AND type = 'user'
             ORDER BY timestamp ASC LIMIT 10
         """, (session_id, project_id))
         raw_display = ""
+        fallback_display = ""
         for (raw_content,) in cursor.fetchall():
             if not raw_content:
                 continue
+            texts = []
             try:
                 content_data = json.loads(raw_content)
                 if isinstance(content_data, list):
-                    for item in content_data:
-                        if isinstance(item, dict) and item.get('type') == 'text':
-                            raw_display = item.get('text', '')
-                            break
+                    texts = [item.get('text', '') for item in content_data
+                             if isinstance(item, dict) and item.get('type') == 'text']
                 elif isinstance(content_data, str):
-                    raw_display = content_data
+                    texts = [content_data]
             except (json.JSONDecodeError, TypeError):
-                raw_display = raw_content
+                texts = [raw_content]
+            for text in texts:
+                if not text:
+                    continue
+                if not fallback_display:
+                    fallback_display = text
+                cleaned = strip_system_tags(text)
+                if cleaned:
+                    raw_display = cleaned
+                    break
             if raw_display:
                 break
+        if not raw_display:
+            raw_display = fallback_display
 
         if not summary and raw_display:
             summary = smart_title(raw_display)
@@ -1535,26 +1617,66 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
     else:
         print("  Full parse")
 
+    jsonl_files = sorted(project_dir.rglob("*.jsonl"))
+
     if full_reparse:
         # LAV-39: wipe prior claude_code rows for this project/host so re-parse rebuilds clean
         # (without this, old duplicated token_usage rows with empty api_message_id would remain).
-        sid_subquery = (
-            "SELECT session_id FROM session_sources "
-            "WHERE project_id = ? AND source = ?"
-        )
-        deleted_msgs = conn.execute(
-            f"DELETE FROM messages WHERE project_id = ? AND host_id = ? "
-            f"AND session_id IN ({sid_subquery})",
-            (project_id, host_id, project_id, SOURCE_CLAUDE_CODE)
-        ).rowcount
-        deleted_tu = conn.execute(
-            f"DELETE FROM token_usage WHERE project_id = ? AND host_id = ? "
-            f"AND session_id IN ({sid_subquery})",
-            (project_id, host_id, project_id, SOURCE_CLAUDE_CODE)
-        ).rowcount
+        # LAV-66: extended to all child tables — subagent rows previously ingested under
+        # the parent's session_id would otherwise stay attributed to the parent (and
+        # tables without a UNIQUE constraint would accumulate duplicates on each --full).
+        # LAV-66: the wipe is restricted to sessions whose source files still exist on
+        # disk. Claude Code prunes files after cleanupPeriodDays; sessions whose files
+        # are gone can never be rebuilt, so wiping them would silently lose their data.
+        # Session ids are derived from filenames: <sid>.jsonl for top-level sessions,
+        # <parent>::agent-<agentId> (the LAV-66 synthetic id) for subagents/**/agent-*.
+        present_sids = set()
+        for f in jsonl_files:
+            if f.name.startswith("agent-"):
+                # Agent files can sit at the project root (older layout) or under
+                # subagents/**; their parent sessionId is only in the records, so
+                # read the first line (fall back to the subagents/ folder name).
+                f_agent_id = f.stem.replace("agent-", "")
+                f_parent = None
+                try:
+                    with open(f, "r", encoding="utf-8") as fh:
+                        first = fh.readline().strip()
+                    if first:
+                        rec = json.loads(first)
+                        f_parent = rec.get("sessionId") or None
+                        f_agent_id = rec.get("agentId") or f_agent_id
+                except (OSError, json.JSONDecodeError):
+                    pass
+                if not f_parent and "subagents" in f.parts:
+                    sub_idx = f.parts.index("subagents")
+                    if sub_idx > 0:
+                        cand = f.parts[sub_idx - 1]
+                        if len(cand) == 36 and cand.count("-") == 4:
+                            f_parent = cand
+                if f_parent and f_agent_id and "::agent-" not in f_parent:
+                    present_sids.add(f"{f_parent}::agent-{f_agent_id}")
+            else:
+                present_sids.add(f.stem)
+        wipe_tables = ("messages", "token_usage", "file_operations", "bash_commands",
+                       "search_operations", "skill_invocations", "subagent_invocations",
+                       "mcp_tool_calls")
+        sids = sorted(present_sids)
+        wiped = []
+        for table in wipe_tables:
+            count = 0
+            for i in range(0, len(sids), 500):
+                chunk = sids[i:i + 500]
+                placeholders = ",".join("?" * len(chunk))
+                count += conn.execute(
+                    f"DELETE FROM {table} WHERE project_id = ? AND host_id = ? "
+                    f"AND session_id IN ({placeholders})",
+                    (project_id, host_id, *chunk)
+                ).rowcount
+            if count:
+                wiped.append(f"{count} {table}")
         conn.commit()
-        if deleted_msgs or deleted_tu:
-            print(f"  Wiped {deleted_msgs} messages / {deleted_tu} token_usage rows (full reparse)")
+        if wiped:
+            print(f"  Wiped {', '.join(wiped)} rows (full reparse)")
 
     max_timestamp = last_ts or ""
     files_processed = 0
@@ -1563,8 +1685,6 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
     sessions_updated = set()
     session_summaries = {}
     session_agent_info = {}
-
-    jsonl_files = sorted(project_dir.rglob("*.jsonl"))
 
     # mtime optimization: skip files not modified since last parse
     files_skipped_mtime = 0
@@ -1615,6 +1735,25 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
             msg_type = message.get("type", "")
             msg_timestamp = message.get("timestamp", "")
 
+            if is_agent_file:
+                # LAV-66: agent files (agent-*.jsonl — root-level, subagents/ and
+                # subagents/workflows/wf_*/ alike) reuse the PARENT conversation's
+                # sessionId in every record; the agentId is the only distinguishing
+                # identity (verified across 7k+ files: none carries its own id).
+                # Left as-is they collapse into the parent interaction (inflated
+                # counts, corrupted parent agent_id). Rewrite the message identity
+                # to a synthetic per-agent session id so the whole pipeline
+                # (messages, token_usage, tool tables, session_sources,
+                # update_interaction) keys them as a separate child conversation,
+                # with the original sessionId as parent_session_id.
+                agent_id = message.get("agentId") or agent_id_from_filename
+                raw_sid = message.get("sessionId", "")
+                if agent_id and raw_sid and "::agent-" not in raw_sid:
+                    message["sessionId"] = f"{raw_sid}::agent-{agent_id}"
+                sid_for_agent = message.get("sessionId", "")
+                if agent_id and sid_for_agent:
+                    session_agent_info[sid_for_agent] = (raw_sid or parent_from_path, agent_id)
+
             if msg_type in ("summary", "ai-title", "custom-title"):
                 if msg_type == "custom-title":
                     title_text = message.get("customTitle", "")
@@ -1633,11 +1772,6 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
                 continue
 
             if msg_type not in ("user", "assistant"):
-                if is_agent_file and msg_type == "user":
-                    session_id = message.get("sessionId", "")
-                    agent_id = message.get("agentId", agent_id_from_filename)
-                    if session_id and agent_id:
-                        session_agent_info[session_id] = (parent_from_path, agent_id)
                 continue
 
             # Agent files bypass the incremental timestamp filter (see the
@@ -1659,11 +1793,6 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
                     client_version=str(message.get("version", "") or ""),
                 )
 
-            if is_agent_file and session_id:
-                agent_id = message.get("agentId", agent_id_from_filename)
-                if agent_id:
-                    session_agent_info[session_id] = (parent_from_path, agent_id)
-
             process_message_content(message, conn, project_id, user_id, host_id)
 
             tool_calls = extract_tool_calls(message)
@@ -1682,6 +1811,34 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
                             summary=summary, parent_session_id=parent_sid, agent_id=agent_id)
 
     resolve_agent_parents(conn, project_id)
+
+    # LAV-66: heal parent rows corrupted by the pre-fix parser (bug #4). The
+    # collapse signature: a non-agent session whose agent_id belongs to one of
+    # its OWN children. Normally update_interaction rewrites the parent clean,
+    # but a "husk" parent (its own .jsonl is empty/pruned — the row existed
+    # only because subagent messages were collapsed into it) has no messages,
+    # so update_interaction early-returns and the stale corruption survives.
+    # Clear it and re-derive the counts from what actually remains.
+    conn.execute("""
+        UPDATE interactions SET
+            agent_id = NULL,
+            parent_session_id = NULL,
+            message_count = (SELECT COUNT(*) FROM messages m
+                             WHERE m.session_id = interactions.session_id
+                               AND m.project_id = interactions.project_id),
+            total_tokens = COALESCE((SELECT SUM(input_tokens + output_tokens
+                                              + cache_creation_tokens + cache_read_tokens)
+                                     FROM token_usage t
+                                     WHERE t.session_id = interactions.session_id
+                                       AND t.project_id = interactions.project_id), 0)
+        WHERE project_id = ?
+          AND session_id NOT LIKE '%::agent-%'
+          AND agent_id IS NOT NULL
+          AND EXISTS (SELECT 1 FROM interactions ch
+                      WHERE ch.project_id = interactions.project_id
+                        AND ch.parent_session_id = interactions.session_id
+                        AND ch.agent_id = interactions.agent_id)
+    """, (project_id,))
 
     # Commit after each project for crash resilience
     conn.commit()
@@ -2398,8 +2555,8 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                 conn.execute("""
                     INSERT OR IGNORE INTO messages
                     (session_id, project_id, user_id, host_id, uuid, type, content,
-                     timestamp, tokens_in, tokens_out, model, api_message_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     timestamp, tokens_in, tokens_out, model, api_message_id, agent_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     session_id, project_id, r_user_id, r_host_id,
                     msg.get("uuid"), msg.get("type", ""),
@@ -2407,6 +2564,7 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                     msg.get("tokens_in", 0), msg.get("tokens_out", 0),
                     msg.get("model", ""),
                     msg.get("api_message_id", "") or "",
+                    msg.get("agent_id"),
                 ))
                 stats["messages"] += 1
             except sqlite3.Error:
@@ -2448,31 +2606,43 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                 pass
 
         for bc in session_data.get("bash_commands", []):
+            # No UNIQUE constraint — NOT EXISTS guard so re-pulls stay idempotent (LAV-66).
             try:
                 conn.execute("""
-                    INSERT OR IGNORE INTO bash_commands
+                    INSERT INTO bash_commands
                     (timestamp, session_id, project_id, user_id, host_id, command, description,
                      target_file, cwd, git_branch)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM bash_commands
+                        WHERE timestamp = ? AND session_id = ? AND project_id = ? AND command = ?
+                    )
                 """, (
                     bc.get("timestamp", ""), session_id, project_id, r_user_id, r_host_id,
                     bc.get("command", ""), bc.get("description", ""),
                     bc.get("target_file", ""), bc.get("cwd", ""), bc.get("git_branch", ""),
+                    bc.get("timestamp", ""), session_id, project_id, bc.get("command", ""),
                 ))
                 stats["bash_commands"] += 1
             except sqlite3.Error:
                 pass
 
         for so in session_data.get("search_operations", []):
+            # No UNIQUE constraint — NOT EXISTS guard so re-pulls stay idempotent (LAV-66).
             try:
                 conn.execute("""
-                    INSERT OR IGNORE INTO search_operations
+                    INSERT INTO search_operations
                     (timestamp, session_id, project_id, user_id, host_id, tool, pattern, path, output_mode, cwd)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM search_operations
+                        WHERE timestamp = ? AND session_id = ? AND project_id = ? AND tool = ? AND pattern = ?
+                    )
                 """, (
                     so.get("timestamp", ""), session_id, project_id, r_user_id, r_host_id,
                     so.get("tool", ""), so.get("pattern", ""),
                     so.get("path", ""), so.get("output_mode", ""), so.get("cwd", ""),
+                    so.get("timestamp", ""), session_id, project_id, so.get("tool", ""), so.get("pattern", ""),
                 ))
                 stats["search_operations"] += 1
             except sqlite3.Error:
@@ -2512,15 +2682,21 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                 pass
 
         for mc in session_data.get("mcp_tool_calls", []):
+            # No UNIQUE constraint — NOT EXISTS guard so re-pulls stay idempotent (LAV-66).
             try:
                 conn.execute("""
-                    INSERT OR IGNORE INTO mcp_tool_calls
+                    INSERT INTO mcp_tool_calls
                     (timestamp, session_id, project_id, user_id, host_id, tool_name, server_name, cwd, git_branch)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM mcp_tool_calls
+                        WHERE timestamp = ? AND session_id = ? AND project_id = ? AND tool_name = ?
+                    )
                 """, (
                     mc.get("timestamp", ""), session_id, project_id, r_user_id, r_host_id,
                     mc.get("tool_name", ""), mc.get("server_name", ""),
                     mc.get("cwd", ""), mc.get("git_branch", ""),
+                    mc.get("timestamp", ""), session_id, project_id, mc.get("tool_name", ""),
                 ))
                 stats["mcp_tool_calls"] += 1
             except sqlite3.Error:
@@ -2534,6 +2710,9 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
         # for a session that has since grown to 77M / 1780). Recompute here
         # from the collector's own messages/token_usage — the same canonical
         # formula update_interaction() uses — so growing sessions stay correct.
+        # LAV-66: also refresh the descriptive fields (display/summary when the
+        # agent ships a non-empty value, parent_session_id/agent_id always) so
+        # rows corrupted by the pre-fix parser self-heal on the next pull.
         try:
             mrow = conn.execute("""
                 SELECT COUNT(*), SUM(tokens_in + tokens_out), MAX(model)
@@ -2555,9 +2734,18 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                 conn.execute("""
                     UPDATE interactions
                     SET total_tokens = ?, message_count = ?,
-                        model = COALESCE(NULLIF(?, ''), model)
+                        model = COALESCE(NULLIF(?, ''), model),
+                        display = COALESCE(NULLIF(?, ''), display),
+                        summary = COALESCE(NULLIF(?, ''), summary),
+                        parent_session_id = ?,
+                        agent_id = ?
                     WHERE session_id = ? AND project_id = ?
-                """, (total_tokens, msg_count, model or "", session_id, project_id))
+                """, (total_tokens, msg_count, model or "",
+                      conv.get("display", "") or "",
+                      conv.get("summary", "") or "",
+                      conv.get("parent_session_id"),
+                      conv.get("agent_id"),
+                      session_id, project_id))
         except sqlite3.Error:
             pass
 

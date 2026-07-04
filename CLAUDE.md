@@ -149,6 +149,7 @@ Vanilla HTML/JS/CSS + Chart.js CDN. Three pages: dashboard (6 sub-tabs), interac
 - **`internal_docs/`** is gitignored — private notes, not shipped
 - **Jira project `LAV`** on aimaxplayground.atlassian.net tracks all TODO/backlog (epics + tasks). No local TODO files — use Jira as single source of truth
 - **Sentinel values**: `parse_state` uses `project_id=-1` and `source=''` (never NULL)
+- **Synthetic subagent session ids**: Claude Code agent files (`subagents/**/agent-*.jsonl`) reuse the parent's `sessionId`; the parser rekeys them as `<parent_session_id>::agent-<agentId>` (LAV-66). A `session_id` containing `::agent-` is a subagent child conversation, linked via `parent_session_id`.
 - **Per-project commits** in parsers for crash resilience
 - **`conversation_id`** in `chatgpt.py` is OpenAI's external field name — not a bug, don't rename
 - Migration code referencing old `conversations` table in `jsonl.py` and `qdrant/store.py` is intentional

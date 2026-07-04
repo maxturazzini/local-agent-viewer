@@ -710,25 +710,46 @@ def get_interactions_list(conn, project_id=None, user_id=None, host_id=None,
     if search:
         # If search looks like a UUID/session_id, match directly and drop date
         # filters so the result is always found regardless of date range.
+        # LAV-66: in grouped mode child sessions (subagents, parent_session_id set)
+        # are hidden from the list, so a match that lives only in a child (e.g. a
+        # term appearing only in a subagent transcript, or a pasted child session
+        # id) would return nothing. Also match masters that have a matching child.
         import re
         if re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-', search, re.IGNORECASE):
-            extra = "c.session_id = ?"
             # Rebuild filters without date constraints
             where, params = build_filters(
                 project_id=project_id, user_id=user_id, host_id=host_id,
                 client=client_source, table_alias='c'
             )
+            if grouped:
+                extra = """(c.session_id = ? OR EXISTS (
+                    SELECT 1 FROM interactions ch
+                    WHERE ch.parent_session_id = c.session_id AND ch.session_id = ?
+                ))"""
+                search_params = [search, search]
+            else:
+                extra = "c.session_id = ?"
+                search_params = [search]
         else:
-            extra = """c.session_id IN (
-                SELECT DISTINCT m.session_id FROM messages m
+            fts_subquery = """SELECT DISTINCT m.session_id FROM messages m
                 JOIN messages_fts ON messages_fts.rowid = m.id
-                WHERE messages_fts MATCH ?
-            )"""
+                WHERE messages_fts MATCH ?"""
+            if grouped:
+                extra = f"""(c.session_id IN ({fts_subquery})
+                    OR c.session_id IN (
+                        SELECT ch.parent_session_id FROM interactions ch
+                        WHERE ch.parent_session_id IS NOT NULL
+                          AND ch.session_id IN ({fts_subquery})
+                    ))"""
+                search_params = [search, search]
+            else:
+                extra = f"c.session_id IN ({fts_subquery})"
+                search_params = [search]
         if where:
             where += " AND " + extra
         else:
             where = " WHERE " + extra
-        params.append(search)
+        params.extend(search_params)
 
     if classification:
         extra = "cm.classification = ?"
