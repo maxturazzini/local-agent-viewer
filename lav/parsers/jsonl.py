@@ -1500,6 +1500,33 @@ def update_interaction(session_id: str, project_name: str, conn: sqlite3.Connect
         print(f"DB error (interaction): {e}")
 
 
+def purge_acompact_children(conn: sqlite3.Connection, project_id: int) -> int:
+    """LAV-66: remove phantom '::agent-acompact-…' child sessions.
+
+    Auto-compaction checkpoint files were mis-ingested as subagent conversations
+    by the pre-fix parser, duplicating a slice of the parent's messages/tokens.
+    The parser now skips those files, but rows created before the fix must be
+    swept. Deletes across all per-session tables; scoped by project (the synthetic
+    ids are globally unique, so this is safe regardless of host). Returns rows
+    removed from `messages`.
+    """
+    tables = ("messages", "token_usage", "file_operations", "bash_commands",
+              "search_operations", "skill_invocations", "subagent_invocations",
+              "mcp_tool_calls", "interaction_metadata", "interactions")
+    removed = 0
+    for table in tables:
+        try:
+            n = conn.execute(
+                f"DELETE FROM {table} WHERE project_id = ? AND session_id LIKE '%::agent-acompact-%'",
+                (project_id,)
+            ).rowcount
+            if table == "messages":
+                removed = n
+        except sqlite3.Error:
+            pass
+    return removed
+
+
 def resolve_agent_parents(conn: sqlite3.Connection, project_id: int):
     """Post-process to find real parent_session_id for agent interactions."""
     parent_mapping = {}
@@ -1632,6 +1659,8 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
         # <parent>::agent-<agentId> (the LAV-66 synthetic id) for subagents/**/agent-*.
         present_sids = set()
         for f in jsonl_files:
+            if f.name.startswith("agent-acompact-"):
+                continue  # LAV-66: compaction checkpoints are not sessions
             if f.name.startswith("agent-"):
                 # Agent files can sit at the project root (older layout) or under
                 # subagents/**; their parent sessionId is only in the records, so
@@ -1699,6 +1728,14 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
     print(f"  Found {len(jsonl_files)} interaction files")
 
     for jsonl_file in jsonl_files:
+        # LAV-66: auto-compaction checkpoints (agent-acompact-*.jsonl) carry the
+        # parent's sessionId + agentId="acompact-…" + isSidechain=true but merely
+        # DUPLICATE a slice of the parent's own messages (same uuids). They are not
+        # subagents: treating them as such created phantom child conversations that
+        # double-counted the parent's messages/tokens. Skip them entirely — the real
+        # messages already live in the parent's own <sid>.jsonl.
+        if jsonl_file.name.startswith("agent-acompact-"):
+            continue
         is_agent_file = jsonl_file.name.startswith("agent-")
         agent_id_from_filename = jsonl_file.stem.replace("agent-", "") if is_agent_file else None
 
@@ -1809,6 +1846,14 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
         parent_sid, agent_id = agent_info if agent_info else (None, None)
         update_interaction(session_id, project_name, conn, project_id, user_id, host_id,
                             summary=summary, parent_session_id=parent_sid, agent_id=agent_id)
+
+    # LAV-66: sweep phantom acompact children left by the pre-fix parser. Their
+    # messages were duplicates of the parent's own (the parent keeps the real
+    # copies from its <sid>.jsonl), so removing the children fixes the double
+    # count without touching the parent's aggregates.
+    purged = purge_acompact_children(conn, project_id)
+    if purged:
+        print(f"  Purged {purged} phantom acompact-child messages")
 
     resolve_agent_parents(conn, project_id)
 
@@ -2500,6 +2545,11 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
         conv = session_data.get("interaction", session_data.get("conversation", {}))
         session_id = conv.get("session_id")
         if not session_id:
+            continue
+
+        # LAV-66: never ingest phantom acompact "children" (a pre-fix agent may
+        # still export them); they are duplicated parent messages, not a session.
+        if "::agent-acompact-" in session_id:
             continue
 
         # Resolve project
