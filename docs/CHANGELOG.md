@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+LAV-65: Incremental parse no longer drops subagent messages.
+- **Problem**: subagent/workflow files (`subagents/**/agent-*.jsonl`) inherit the parent session's `sessionId` but carry the timestamps of when the subagent ran, which is typically *earlier* than the parent session's latest message. The parent's `last_parsed` watermark therefore sits after those timestamps, so both the file-mtime skip and the per-message timestamp skip dropped every subagent message on incremental runs — only a `--full` reparse recovered them.
+- **Fix** (`lav/parsers/jsonl.py`): agent files now bypass both incremental filters. They are small and write-once, and all inserts are `INSERT OR IGNORE` (`UNIQUE(session_id, project_id, uuid)`), so reprocessing them every run is idempotent and cheap. Non-agent files still honor the mtime/timestamp skip.
+- **Verified**: incremental parse (not `--full`) recovers 1010/1010 subagent messages for a session whose watermark was ahead of the subagent timestamps; a second run is a no-op (no duplicates).
+
 LAV-63 followup: Safari performance — large transcripts no longer hang.
 - **Symptom**: a ~1900-message conversation (`04a68597…`) took >1 minute to show anything in **Safari** (Chromium opened it in <1s). The restyle rendered the whole transcript at once (~19.9k DOM nodes, ~1958 inline SVG icons) with two Safari-hostile costs: **`-webkit-mask-image`** on every clamped result (385 of them — each forces an offscreen compositing buffer) and full paint of all off-screen turns.
 - **Fix** (`lav/static/interactions.html`, CSS only): dropped the `mask-image` fade on `.result-text.clamp` (kept the `max-height`/`overflow` hard clip + the "Show full result" button); added `content-visibility: auto; contain-intrinsic-size: auto 120px` to `.turn` so the browser skips layout/paint of off-screen turns. Mount time on Chromium dropped ~470ms → ~67ms; Safari no longer hangs.
