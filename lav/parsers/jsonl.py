@@ -2526,6 +2526,41 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
             except sqlite3.Error:
                 pass
 
+        # Re-materialize the interaction summary from the child rows just
+        # ingested. The INSERT OR IGNORE above only writes total_tokens /
+        # message_count on the FIRST pull of a session; on later pulls the PK
+        # already exists so the agent's newer aggregates are dropped, leaving
+        # the summary frozen at first-seen values (e.g. 130K tokens / 15 msgs
+        # for a session that has since grown to 77M / 1780). Recompute here
+        # from the collector's own messages/token_usage — the same canonical
+        # formula update_interaction() uses — so growing sessions stay correct.
+        try:
+            mrow = conn.execute("""
+                SELECT COUNT(*), SUM(tokens_in + tokens_out), MAX(model)
+                FROM messages WHERE session_id = ? AND project_id = ?
+            """, (session_id, project_id)).fetchone()
+            if mrow and mrow[0]:
+                msg_count = mrow[0]
+                msg_tokens = mrow[1] or 0
+                model = mrow[2]
+                trow = conn.execute("""
+                    SELECT SUM(input_tokens + output_tokens
+                               + cache_creation_tokens + cache_read_tokens),
+                           MAX(model)
+                    FROM token_usage WHERE session_id = ? AND project_id = ?
+                """, (session_id, project_id)).fetchone()
+                total_tokens = trow[0] if (trow and trow[0] is not None) else msg_tokens
+                if not model and trow and trow[1]:
+                    model = trow[1]
+                conn.execute("""
+                    UPDATE interactions
+                    SET total_tokens = ?, message_count = ?,
+                        model = COALESCE(NULLIF(?, ''), model)
+                    WHERE session_id = ? AND project_id = ?
+                """, (total_tokens, msg_count, model or "", session_id, project_id))
+        except sqlite3.Error:
+            pass
+
     conn.commit()
     return stats
 
