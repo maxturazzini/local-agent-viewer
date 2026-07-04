@@ -1579,7 +1579,19 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
     print(f"  Found {len(jsonl_files)} interaction files")
 
     for jsonl_file in jsonl_files:
-        if last_ts_epoch is not None:
+        is_agent_file = jsonl_file.name.startswith("agent-")
+        agent_id_from_filename = jsonl_file.stem.replace("agent-", "") if is_agent_file else None
+
+        # Subagent/workflow files (agent-*.jsonl) inherit the PARENT session's
+        # sessionId but carry the timestamps of when the subagent ran — which is
+        # typically EARLIER than the parent session's latest message. The parent
+        # session's watermark (last_parsed) therefore sits AFTER these timestamps,
+        # so both the file-mtime skip and the per-message timestamp skip below
+        # would drop every subagent message on incremental runs (only --full
+        # recovered them). Agent files are small and write-once, and all inserts
+        # are INSERT OR IGNORE (idempotent), so we always process them fully and
+        # let dedup handle re-runs. See UNIQUE(session_id, project_id, uuid).
+        if not is_agent_file and last_ts_epoch is not None:
             try:
                 if jsonl_file.stat().st_mtime <= last_ts_epoch:
                     files_skipped_mtime += 1
@@ -1588,9 +1600,6 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
                 pass  # file disappeared, let downstream handle it
 
         files_processed += 1
-
-        is_agent_file = jsonl_file.name.startswith("agent-")
-        agent_id_from_filename = jsonl_file.stem.replace("agent-", "") if is_agent_file else None
 
         parent_from_path = None
         if is_agent_file and "subagents" in jsonl_file.parts:
@@ -1631,7 +1640,10 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
                         session_agent_info[session_id] = (parent_from_path, agent_id)
                 continue
 
-            if last_ts and msg_timestamp <= last_ts:
+            # Agent files bypass the incremental timestamp filter (see the
+            # is_agent_file note above the file-mtime skip): their messages
+            # predate the parent session watermark and would otherwise be lost.
+            if last_ts and msg_timestamp <= last_ts and not is_agent_file:
                 continue
 
             messages_processed += 1
