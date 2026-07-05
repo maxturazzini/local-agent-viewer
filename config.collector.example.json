@@ -1,6 +1,7 @@
 {
   "role": "both",
   "port": 8764,
+  "hostname": "my-canonical-host",
   "agents": [
     {
       "name": "laptop",

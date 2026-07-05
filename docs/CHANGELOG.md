@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+LAV-68: Stabilize `detect_host()` — stop creating duplicate/corrupted host records.
+- **Problem**: host identity was derived from `socket.gethostname()`, which on macOS is volatile — depending on network/Bonjour/DHCP state it returns the canonical name, the generic `Mac`, or an undecodable byte string that surfaces as mojibake (`U+FFFD`) / surrogate-escaped chars. `_normalize_hostname()` only stripped `.local`/`.localdomain`, so every transient value became its own `hosts` row and split one machine's sessions across host ids (~1600 cross-host duplicate messages). Observed on **macChia** (`Mac`, corrupted) and **minimacs** (`Mac`, corrupted) — each node's own parser hits it.
+- **Fix** (`lav/parsers/jsonl.py`, `lav/server.py`):
+  - New `_is_valid_hostname()` rejects empty, generic-fallback (`mac`/`imac`/`localhost`/…), control chars, surrogates, and `U+FFFD`.
+  - New `_canonical_hostname()` with precedence `LAV_HOSTNAME` env → `config.json` `hostname` key → validated `socket.gethostname()` → `unknown` sentinel; a corrupted/generic detected name is discarded, never turned into a host record. `detect_host()`/`detect_host_from_path()` use it.
+  - `ingest_remote_sessions()` validates the remote hostname too (a pre-fix agent can't pollute the collector), and `/api/export` ships the canonical hostname so cross-node identity is stable.
+- **Config**: set a stable `"hostname"` key in each node's `config.json` (macChia → `macChia`, minimacs → `miniMacs`); documented in `config.*.example.json`.
+- **Verified** (macChia): unit checks for the validators; monkeypatched volatile `socket.gethostname()` (`Mac`, mojibake, surrogates, `localhost`) all resolve to `macChia` via config; real incremental `lav-parse` attaches every project to `macChia (id=2)`, hosts stay `{1,2,8}`, no new host rows, duplicate session_ids stay 0, `PRAGMA quick_check` ok. macChia DB was first cleaned by hand (relabel host {3,4,5,6,7,9}→2 + keep-fuller dedup of 152 dup session_ids; report at `~/.local/share/local-agent-viewer/hosthygiene-report-20260705.txt`).
+- **Follow-up (separate)**: one-time cleanup of the minimacs DB (keep `miniMacs`=4 and `cloud`=5, consolidate `Mac`+corrupted, dedup 128 sessions keep-fuller); consider a `lav hosts merge <src> <dst>` maintenance command.
+
 LAV-66: Workflow/Task subagents get their own child conversation; parent identity no longer corrupted; display cleaned of system tags.
 - **Problem (bug #3)**: current Claude Code writes every `subagents/**/agent-*.jsonl` record (both Task- and Workflow-spawned) with the **parent's** `sessionId`; only `agentId` distinguishes the subagent. The parser keyed everything by `sessionId`, so all subagent messages collapsed into the parent interaction: no child rows in `interactions`, parent `message_count`/`total_tokens` inflated with the whole tree (reference session `cb76ec06…`, Arcipelago: 1905 msgs / 95M tokens instead of 861 / 85M + 35 children). Measured blast radius on macChia: **748 parent sessions across 26 projects, 7184 agent files, 0 old-style files** with their own sessionId.
 - **Problem (bug #4, consequence)**: `session_agent_info` was keyed by that shared sessionId, so the **parent's** `interactions` row got a subagent's `agent_id` and then a bogus `parent_session_id` from the ±120s proximity fallback in `resolve_agent_parents`.

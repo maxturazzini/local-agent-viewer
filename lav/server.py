@@ -53,6 +53,7 @@ from lav.parsers.jsonl import (
     get_or_create_host,
     detect_user_from_path,
     detect_host_from_path,
+    _canonical_hostname,
     get_parse_state,
     set_parse_state,
     ingest_remote_sessions,
@@ -1059,7 +1060,7 @@ class APIHandler(SimpleHTTPRequestHandler):
             if not conn:
                 self.send_json({
                     "schema_version": 1,
-                    "host": {"hostname": socket.gethostname()},
+                    "host": {"hostname": _canonical_hostname()},
                     "user": {},
                     "exported_at": datetime.now().isoformat(),
                     "sessions": [],
@@ -1071,7 +1072,7 @@ class APIHandler(SimpleHTTPRequestHandler):
                 package = {
                     "schema_version": 1,
                     "host": {
-                        "hostname": socket.gethostname(),
+                        "hostname": _canonical_hostname(),
                         "os_type": _platform.system(),
                         "home_dir": str(Path.home()),
                     },

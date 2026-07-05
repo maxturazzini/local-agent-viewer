@@ -17,6 +17,7 @@ import getpass
 import hashlib
 import io
 import json
+import os
 import platform
 import re
 import socket
@@ -492,6 +493,14 @@ def detect_user_from_path(source_path: Path) -> str:
     return getpass.getuser()
 
 
+# Generic placeholder names macOS/BSD hand out when the real host name is not
+# resolvable (DHCP/Bonjour transients). Never worth a distinct host record.
+_GENERIC_HOSTNAMES = {
+    "", "mac", "macbook", "macbookpro", "macbook-pro", "macbookair",
+    "macbook-air", "imac", "localhost", "unknown",
+}
+
+
 def _normalize_hostname(hostname: str) -> str:
     """Strip .local, .localdomain etc. to avoid duplicate host records."""
     for suffix in ('.localdomain', '.local'):
@@ -500,9 +509,53 @@ def _normalize_hostname(hostname: str) -> str:
     return hostname
 
 
+def _is_valid_hostname(hostname: str) -> bool:
+    """Reject empty, generic-fallback, or corrupted (mojibake/surrogate) names.
+
+    LAV-68: socket.gethostname() on macOS is volatile — it transiently
+    returns the generic 'Mac' or an undecodable byte string that surfaces as
+    mojibake (U+FFFD) or surrogate-escaped chars (U+DC80..). Such values must
+    never become host records, or one machine's sessions get split across hosts.
+    """
+    if not hostname or not hostname.strip():
+        return False
+    for ch in hostname:
+        o = ord(ch)
+        # control chars (C0/DEL/C1) or replacement/surrogate => corrupted encoding
+        if o < 0x20 or o == 0x7f or 0x80 <= o <= 0x9f:
+            return False
+        if ch == "�" or 0xd800 <= o <= 0xdfff:
+            return False
+    if hostname.strip().lower() in _GENERIC_HOSTNAMES:
+        return False
+    return True
+
+
+def _canonical_hostname() -> str:
+    """Stable host identity, immune to socket.gethostname() volatility (LAV-68).
+
+    Precedence: LAV_HOSTNAME env > config.json 'hostname' key > validated
+    socket.gethostname() > 'unknown' sentinel. A corrupted or generic detected
+    name is discarded rather than turned into a spurious host record.
+    """
+    env = os.environ.get("LAV_HOSTNAME", "").strip()
+    if _is_valid_hostname(env):
+        return _normalize_hostname(env)
+    try:
+        cfg_host = str(load_runtime_config().get("hostname", "")).strip()
+        if _is_valid_hostname(cfg_host):
+            return _normalize_hostname(cfg_host)
+    except Exception:
+        pass
+    sock = _normalize_hostname(socket.gethostname())
+    if _is_valid_hostname(sock):
+        return sock
+    return "unknown"
+
+
 def detect_host() -> tuple[str, str, str]:
     """Detect current host info. Returns (hostname, os_type, home_dir)."""
-    hostname = _normalize_hostname(socket.gethostname())
+    hostname = _canonical_hostname()
     os_type = platform.system().lower()
     home_dir = str(Path.home())
     return (hostname, os_type, home_dir)
@@ -510,7 +563,7 @@ def detect_host() -> tuple[str, str, str]:
 
 def detect_host_from_path(source_path: Path) -> tuple[str, str, str]:
     """Detect host info from path + runtime. Returns (hostname, os_type, home_dir)."""
-    hostname = _normalize_hostname(socket.gethostname())
+    hostname = _canonical_hostname()
     path_str = str(source_path)
 
     if '/Users/' in path_str:
@@ -2559,8 +2612,11 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
     if not sessions:
         return stats
 
-    # Resolve host and user IDs
+    # Resolve host and user IDs. Guard against a pre-fix agent exporting a
+    # corrupted/generic hostname (LAV-68) — never create a mojibake host record.
     hostname = _normalize_hostname(host_info.get("hostname", "unknown"))
+    if not _is_valid_hostname(hostname):
+        hostname = "unknown"
     os_type = host_info.get("os_type", "")
     home_dir = host_info.get("home_dir", "")
     host_id = get_or_create_host(conn, hostname, os_type, home_dir)

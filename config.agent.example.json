@@ -1,5 +1,6 @@
 {
   "role": "agent",
   "port": 8764,
+  "hostname": "my-canonical-host",
   "collector_url": "http://collector.local:8764"
 }

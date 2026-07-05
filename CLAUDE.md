@@ -149,6 +149,7 @@ Vanilla HTML/JS/CSS + Chart.js CDN. Three pages: dashboard (6 sub-tabs), interac
 - **`internal_docs/`** is gitignored — private notes, not shipped
 - **Jira project `LAV`** on aimaxplayground.atlassian.net tracks all TODO/backlog (epics + tasks). No local TODO files — use Jira as single source of truth
 - **Sentinel values**: `parse_state` uses `project_id=-1` and `source=''` (never NULL)
+- **Canonical hostname** (LAV-68): `socket.gethostname()` is volatile on macOS (transiently `Mac`/mojibake), so host identity comes from `_canonical_hostname()` in `jsonl.py` — precedence `LAV_HOSTNAME` env → `config.json` `"hostname"` key → validated socket name → `unknown`. **Set a stable `"hostname"` in each node's `config.json`** (macChia → `macChia`, minimacs → `miniMacs`) or new host rows split one machine's sessions. Corrupted/generic names are rejected by `_is_valid_hostname()` and never inserted.
 - **Synthetic subagent session ids**: Claude Code agent files (`subagents/**/agent-*.jsonl`) reuse the parent's `sessionId`; the parser rekeys them as `<parent_session_id>::agent-<agentId>` (LAV-66). A `session_id` containing `::agent-` is a subagent child conversation, linked via `parent_session_id`.
 - **Per-project commits** in parsers for crash resilience
 - **`conversation_id`** in `chatgpt.py` is OpenAI's external field name — not a bug, don't rename
