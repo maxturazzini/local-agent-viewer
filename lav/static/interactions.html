@@ -337,6 +337,26 @@
             background: var(--light-gray);
         }
 
+        /* Phase 3 — docked (narrow) list: horizontal scroll with timestamp + summary
+           pinned left. .is-pinned is toggled by applyStickyPins() in dock mode. */
+        .interactions-container.is-pinned { overflow-x: auto; }
+        .interactions-container.is-pinned .interaction-header,
+        .interactions-container.is-pinned .interaction-item { width: max-content; min-width: 100%; }
+        .interactions-container.is-pinned .interaction-header { gap: 12px; }  /* match rows so pins align */
+        .interactions-container.is-pinned [data-col="timestamp"],
+        .interactions-container.is-pinned [data-col="summary"] {
+            position: sticky; z-index: 3;
+            align-self: stretch; display: flex; align-items: center;
+            background: var(--white);
+        }
+        .interactions-container.is-pinned [data-col="timestamp"] { left: 0; }
+        .interactions-container.is-pinned [data-col="summary"] {
+            left: var(--pin2, 140px);
+            box-shadow: 8px 0 8px -6px rgba(0,0,0,0.12);
+        }
+        .interactions-container.is-pinned .interaction-item:hover [data-col="timestamp"],
+        .interactions-container.is-pinned .interaction-item:hover [data-col="summary"] { background: var(--light-gray); }
+
         .conv-timestamp {
             font-size: 0.8rem;
             color: var(--dim-gray);
@@ -437,14 +457,83 @@
         .modal {
             background: var(--white);
             border-radius: 12px;
-            max-width: 900px;
-            width: 100%;
+            width: 80vw;
+            max-width: 80vw;
             max-height: 90vh;
             display: flex;
             flex-direction: column;
             overflow: hidden;
             box-shadow: 0 8px 32px rgba(0,0,0,0.2);
         }
+
+        /* =====================================================================
+           DOCK: split layout + divider + right-hand transcript panel (LAV-67)
+           Closed by default → list is full-width (today's behaviour untouched).
+           Open → flex row: list (flex) | divider | dock (fixed width, persisted).
+           ===================================================================== */
+        .workspace-split { display: flex; align-items: stretch; gap: 0; }
+        .interactions-container { flex: 1 1 auto; min-width: 0; }   /* min-width:0 lets the grid overflow-scroll when narrow */
+        .workspace-split--closed .dock-divider,
+        .workspace-split--closed .dock-panel { display: none; }
+
+        .dock-divider {
+            flex: 0 0 10px;
+            align-self: stretch;
+            position: relative;
+            cursor: col-resize;
+        }
+        .dock-divider::before {
+            content: "";
+            position: absolute; left: 4px; top: 0; bottom: 0;
+            width: 1px;
+            background: var(--border);
+            transition: background 0.12s, width 0.12s;
+        }
+        .dock-divider:hover::before, .dock-divider.dragging::before {
+            background: var(--accent);
+            width: 2px;
+        }
+        body.dock-resizing, body.dock-resizing * {
+            cursor: col-resize !important;
+            user-select: none !important;
+        }
+
+        .dock-panel {
+            flex: 0 0 auto;              /* width set inline by JS (persisted) */
+            min-width: 360px;
+            align-self: stretch;         /* match the grid column height (LAV-67) */
+            position: sticky;
+            top: 12px;
+            max-height: calc(100vh - 24px);
+            background: var(--white);
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+            overflow: hidden;
+        }
+        /* Transcript fills the docked frame WITHOUT inflating the row: absolute so
+           the frame's height is driven by the grid, and .tx-body scrolls inside. */
+        .dock-panel > .tx { position: absolute; inset: 0; }
+        /* .tx inside the dock already sets height:100%/flex:1 and scrolls its own
+           .tx-body, so it fills the panel with no extra rules (LAV-63). */
+
+        /* expand-to-popup / collapse-to-dock affordance in the .tx-aux chrome */
+        .tx-surface-toggle {
+            margin-left: auto;
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 4px 10px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: var(--surface);
+            color: var(--muted);
+            font-size: 12px; font-weight: 600;
+            cursor: pointer;
+        }
+        .tx-surface-toggle:hover { background: var(--surface-2); color: var(--text); }
+        .tx-surface-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+        .tx-surface-toggle.is-active { border-color: var(--accent); color: var(--text); background: var(--surface-2); }
+        .tx-compact-toggle { margin-left: auto; }
+        .tx-surface-icon { margin-left: 0; padding: 4px 7px; }
+        .tx-surface-icon svg { width: 15px; height: 15px; display: block; }
 
         .kb-enrichment {
             padding: 12px 16px;
@@ -584,15 +673,19 @@
         .tx-derived-item {
             width: 100%; text-align: left; font: inherit; color: var(--text);
             background: none; border: none;
-            display: flex; align-items: center; gap: var(--s2);
+            display: flex; flex-direction: column; align-items: stretch; gap: 4px;
             padding: 6px var(--s2); border-radius: var(--radius-sm);
             cursor: pointer; font-size: 13px;
         }
         .tx-derived-item:hover { background: var(--surface); }
         .tx-derived-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+        .tx-derived-item .di-top { display: flex; align-items: center; gap: var(--s2); width: 100%; }
         .tx-derived-item .di-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .tx-derived-item .di-agent { color: var(--muted); }
         .tx-derived-item .di-meta { flex: 0 0 auto; color: var(--muted); font-size: 12px; }
+        .tx-derived-item .di-chips { display: flex; flex-wrap: wrap; gap: 4px; padding-left: 14px; }
+        .di-chip { font-size: 11px; line-height: 1.5; padding: 0 7px; border-radius: 10px; background: var(--surface-2); color: var(--muted); white-space: nowrap; }
+        .di-chip--more { background: transparent; }
 
         /* =====================================================================
            TURNS
@@ -602,7 +695,15 @@
             content: ""; position: absolute; left: 0; top: 5px; bottom: 14px;
             width: 1px; background: var(--border);
         }
-        .turn--user::before { background: var(--accent); opacity: .5; }
+        /* "You" turns as white cards on the app-gray body — clearer at a glance (LAV-67) */
+        .turn--user {
+            background: var(--white);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: var(--s3) var(--s4);
+            margin-left: 0; margin-bottom: var(--s3);
+        }
+        .turn--user::before { display: none; }
 
         .turn-label {
             display: flex; align-items: center; gap: var(--s2);
@@ -619,6 +720,38 @@
         }
         .turn-text + .turn-text { margin-top: var(--s2); }
         .turn-text.is-empty { color: var(--muted); font-style: italic; }
+
+        /* Compact mode (LAV-67 Phase 5): collapse every turn to one skimmable line
+           so long conversations scroll fast. Toggled via .tx--compact on .tx root. */
+        .tx--compact .turn { padding-bottom: var(--s2); }
+        .tx--compact .turn-text {
+            display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical;
+            overflow: hidden; white-space: normal;
+        }
+        .tx--compact .turn-text ~ .turn-text { display: none; }   /* keep only the first line of text */
+        .tx--compact .substeps { display: none; }                /* hide tool detail; count shown on the label */
+        .turn-steps { display: none; color: var(--muted); font-weight: 500; text-transform: none; letter-spacing: normal; }
+        .tx--compact .turn-steps { display: inline; }
+
+        /* inline subagent-spawn markers woven into the turn stream (LAV-67 Phase 4) */
+        .tx-agent-marker {
+            display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+            margin: 2px 0 var(--s3);
+            padding: 4px 10px;
+            border-left: 2px solid var(--accent);
+            background: rgba(0, 75, 255, 0.06);
+            border-radius: 0 6px 6px 0;
+        }
+        .tam-head { font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: .04em; font-size: 10.5px; }
+        .tam-agents { display: flex; flex-wrap: wrap; gap: 4px; }
+        .tam-agent {
+            font: inherit; font-size: 12px; cursor: pointer;
+            background: var(--white); border: 1px solid var(--border); border-radius: 10px;
+            padding: 1px 8px; color: var(--text);
+            max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .tam-agent:hover { border-color: var(--accent); color: var(--accent); }
+        .tx--compact .tx-agent-marker { margin: 0 0 var(--s2); }
 
         /* =====================================================================
            SUB-STEPS (thinking / tool_use+result)
@@ -986,30 +1119,38 @@
         </div>
     </div>
 
-    <!-- ===== INTERACTIONS LIST ===== -->
-    <div class="interactions-container">
-        <div class="interaction-header" id="interactionHeader">
-            <div data-col="timestamp">Timestamp</div>
-            <div data-col="summary">Summary</div>
-            <div data-col="project">Project</div>
-            <div data-col="user">User</div>
-            <div data-col="host">Host</div>
-            <div data-col="source">Source</div>
-            <div data-col="class">Class</div>
-            <div data-col="sens">Sens</div>
-            <div data-col="tokens">Tokens</div>
-            <div data-col="cost">Cost</div>
-            <div data-col="messages">Messages</div>
-            <div data-col="session">Session</div>
+    <!-- ===== INTERACTIONS LIST + DOCK (LAV-67) =====
+         .workspace-split is a flex row: list (left) | divider | dock panel (right).
+         Default --closed → list full-width, divider + dock hidden (today's layout).
+         Opening a row adds --docked and shows the dock; the popup overlay below is
+         reused for the "expand to popup" path. -->
+    <div class="workspace-split workspace-split--closed" id="workspaceSplit">
+        <div class="interactions-container">
+            <div class="interaction-header" id="interactionHeader">
+                <div data-col="timestamp">Timestamp</div>
+                <div data-col="summary">Summary</div>
+                <div data-col="project">Project</div>
+                <div data-col="user">User</div>
+                <div data-col="host">Host</div>
+                <div data-col="source">Source</div>
+                <div data-col="class">Class</div>
+                <div data-col="sens">Sens</div>
+                <div data-col="tokens">Tokens</div>
+                <div data-col="cost">Cost</div>
+                <div data-col="messages">Messages</div>
+                <div data-col="session">Session</div>
+            </div>
+            <div id="interactionsList">
+                <div class="loading">Loading interactions</div>
+            </div>
+            <div class="pagination" id="pagination" style="display: none;">
+                <button id="prevBtn">Previous</button>
+                <span class="page-info" id="pageInfo">Page 1</span>
+                <button id="nextBtn">Next</button>
+            </div>
         </div>
-        <div id="interactionsList">
-            <div class="loading">Loading interactions</div>
-        </div>
-        <div class="pagination" id="pagination" style="display: none;">
-            <button id="prevBtn">Previous</button>
-            <span class="page-info" id="pageInfo">Page 1</span>
-            <button id="nextBtn">Next</button>
-        </div>
+        <div class="dock-divider" id="dockDivider" role="separator" aria-orientation="vertical" aria-label="Resize transcript panel"></div>
+        <div class="dock-panel" id="dockPanel" role="region" aria-label="Transcript" tabindex="-1"></div>
     </div>
 
     <div class="footer">
@@ -1080,10 +1221,7 @@
     let visibleColumns = getVisibleColumns();
 
     function applyColumnVisibility() {
-        const gridCols = COLUMNS
-            .filter(c => visibleColumns.includes(c.key))
-            .map(c => c.width)
-            .join(' ');
+        const gridCols = computeGridCols();
         document.querySelectorAll('.interaction-header, .interaction-item').forEach(el => {
             el.style.gridTemplateColumns = gridCols;
         });
@@ -1091,6 +1229,7 @@
             el.style.display = visibleColumns.includes(el.dataset.col) ? '' : 'none';
         });
         installColumnResizers();
+        applyStickyPins();
     }
 
     function installColumnResizers() {
@@ -1135,13 +1274,66 @@
     }
 
     function applyColumnGridOnly() {
-        const gridCols = COLUMNS
-            .filter(c => visibleColumns.includes(c.key))
-            .map(c => c.width)
-            .join(' ');
+        const gridCols = computeGridCols();
         document.querySelectorAll('.interaction-header, .interaction-item').forEach(el => {
             el.style.gridTemplateColumns = gridCols;
         });
+        applyStickyPins();
+    }
+
+    // --- LAV-67 Phase 3: sticky pinned columns when the list is docked (narrow) ---
+    function isDocked() {
+        var s = document.getElementById('workspaceSplit');
+        return !!(s && s.classList.contains('workspace-split--docked'));
+    }
+    // Grid template for header/rows. In dock-mode the flexible summary (1fr) becomes
+    // a fixed width so the row overflows the narrow list → horizontal scroll + pins.
+    const DOCK_SUMMARY_WIDTH = '300px';
+    function computeGridCols() {
+        var docked = isDocked();
+        return COLUMNS
+            .filter(function(c){ return visibleColumns.includes(c.key); })
+            .map(function(c){ return (docked && c.width === '1fr') ? DOCK_SUMMARY_WIDTH : c.width; })
+            .join(' ');
+    }
+    function applyStickyPins() {
+        var container = document.querySelector('.interactions-container');
+        if (!container) return;
+        var docked = isDocked();
+        container.classList.toggle('is-pinned', docked);
+        if (!docked) { container.style.removeProperty('--pin2'); return; }
+        // summary pins flush against the timestamp column (its measured width), so no
+        // sliver of scrolling content shows between the two frozen columns.
+        var tsCell = container.querySelector('.interaction-header [data-col="timestamp"]');
+        var w = (tsCell && tsCell.getBoundingClientRect().width) || 0;
+        container.style.setProperty('--pin2', (w > 0 ? Math.round(w) : 0) + 'px');
+    }
+
+    // Phase 5 — compact transcript: flip .tx--compact so every turn collapses to a
+    // single skimmable line (label + first line + tool-step count), for agile scroll.
+    function _setCompact(root, on) {
+        if (!root) return;
+        root.classList.toggle('tx--compact', on);
+        var btn = root.querySelector('.tx-compact-toggle');
+        if (btn) {
+            btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+            btn.classList.toggle('is-active', on);
+        }
+    }
+    function wireCompactToggle(mount) {
+        if (!mount || !mount.root) return;
+        var btn = mount.root.querySelector('.tx-compact-toggle');
+        if (!btn) return;
+        btn.addEventListener('click', function() {
+            var on = !mount.root.classList.contains('tx--compact');
+            _setCompact(mount.root, on);
+            try { localStorage.setItem('lav.txCompact', on ? '1' : '0'); } catch (e) {}
+        });
+    }
+    function applyCompactPref(root) {
+        var on = false;
+        try { on = localStorage.getItem('lav.txCompact') === '1'; } catch (e) {}
+        _setCompact(root, on);
     }
 
     function initColumnToggle() {
@@ -1771,7 +1963,9 @@
         ok:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3.5 8.5l3 3 6-6.5"/></svg>',
         err:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 4.5v4M8 11h.01"/><circle cx="8" cy="8" r="6.2"/></svg>',
         caret:'<svg class="call-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 4l4 4-4 4"/></svg>',
-        close:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg>'
+        close:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
+        popup:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9.5 2.5H13.5V6.5"/><path d="M13.5 2.5L8 8"/><path d="M11.5 9v3.5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h3.5"/></svg>',
+        dock:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="3" width="11" height="10" rx="1"/><path d="M9.5 3v10"/></svg>'
     };
     function toolIcon(name){
         if (TX_ICONS[name]) return TX_ICONS[name];
@@ -1923,7 +2117,10 @@
         const tk = (msg.tokens_in || msg.tokens_out)
             ? ' <span class="role-sub">\u00B7 ' + formatNumber(msg.tokens_in || 0) + ' in / ' + formatNumber(msg.tokens_out || 0) + ' out</span>'
             : '';
-        const label = '<div class="turn-label">' + roleName + tk + '</div>';
+        const stepsHtml = subItems.length
+            ? ' <span class="turn-steps">· ' + subItems.length + (subItems.length === 1 ? ' step' : ' steps') + '</span>'
+            : '';
+        const label = '<div class="turn-label">' + roleName + tk + stepsHtml + '</div>';
 
         let textHtml = texts.map(function(t){ return '<div class="turn-text">' + escapeHtml(t.text) + '</div>'; }).join('');
         const subInner = renderSubsteps(subItems, results, consumed);
@@ -1958,23 +2155,82 @@
         children.forEach(function(child){
             const sid = child.session_id || '';
             const projId = (child.project_id != null) ? child.project_id : (interaction.project_id != null ? interaction.project_id : '');
-            const label = child.summary || child.display || child.agent_id || '(derived session)';
+            const label = child.meta_summary || child.summary || child.display || child.agent_id || '(derived session)';
             const agentTag = child.agent_id ? '<span class="di-agent">\u00B7 ' + escapeHtml(child.agent_id) + '</span>' : '';
             const tokens = formatNumber(child.total_tokens) + ' tokens';
             const cost = '$' + (child.cost_usd || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            // tool-name chips from tools_used (JSON array string), de-duped, capped
+            let tools = [];
+            try { tools = JSON.parse(child.tools_used || '[]'); } catch (e) { tools = []; }
+            if (!Array.isArray(tools)) tools = [];
+            const seen = {}, uniq = [];
+            tools.forEach(function(t){ if (t && !seen[t]) { seen[t] = 1; uniq.push(t); } });
+            const MAXC = 6;
+            let chips = uniq.slice(0, MAXC).map(function(t){
+                return '<span class="di-chip">' + escapeHtml(String(t).replace(/^mcp__/, '')) + '</span>';
+            }).join('');
+            if (uniq.length > MAXC) chips += '<span class="di-chip di-chip--more">+' + (uniq.length - MAXC) + '</span>';
+            const chipsHtml = chips ? '<span class="di-chips">' + chips + '</span>' : '';
             items += '<button type="button" class="tx-derived-item" data-nav-session="' + escapeAttr(sid) + '" data-nav-project="' + escapeAttr(String(projId)) + '">' +
-                '<span class="di-label">\u21B3 ' + escapeHtml(label) + ' ' + agentTag + '</span>' +
-                '<span class="di-meta">' + tokens + ' \u00B7 ' + cost + '</span>' +
+                '<span class="di-top">' +
+                    '<span class="di-label">\u21B3 ' + escapeHtml(label) + ' ' + agentTag + '</span>' +
+                    '<span class="di-meta">' + tokens + ' \u00B7 ' + cost + '</span>' +
+                '</span>' + chipsHtml +
                 '</button>';
         });
         return '<div class="tx-derived"><button type="button" class="tx-derived-head" aria-expanded="false">Derived sessions (' + children.length + ')' + TX_ICONS.caret + '</button>' +
             '<div class="tx-derived-list">' + items + '</div></div>';
     }
 
+    /* group subagent children whose start timestamps fall within a window (parallel
+       fan-out). Returns [{ t, items:[child,...] }] sorted by time. */
+    function groupChildrenByTime(children, windowMs){
+        const withT = (children || [])
+            .map(function(c){ return { c: c, t: c.timestamp ? Date.parse(c.timestamp) : NaN }; })
+            .filter(function(x){ return !isNaN(x.t); })
+            .sort(function(a, b){ return a.t - b.t; });
+        const groups = [];
+        withT.forEach(function(x){
+            const last = groups[groups.length - 1];
+            if (last && x.t - last.t <= windowMs) { last.items.push(x.c); }
+            else { groups.push({ t: x.t, items: [x.c] }); }
+        });
+        return groups;
+    }
+
+    /* inline marker anchored where one or more subagents were spawned */
+    function renderAgentMarker(group, interaction){
+        const pid = (interaction.project_id != null) ? interaction.project_id : '';
+        const agents = group.items.map(function(c){
+            const sid = c.session_id || '';
+            const projId = (c.project_id != null) ? c.project_id : pid;
+            const name = c.meta_summary || c.summary || c.display || c.agent_id || 'subagent';
+            return '<button type="button" class="tam-agent" data-nav-session="' + escapeAttr(sid) +
+                '" data-nav-project="' + escapeAttr(String(projId)) + '" title="' + escapeAttr(name) + '">' +
+                '↳ ' + escapeHtml(String(name).slice(0, 60)) + '</button>';
+        }).join('');
+        const n = group.items.length;
+        return '<div class="tx-agent-marker">' +
+            '<span class="tam-head">⇉ ' + n + (n === 1 ? ' subagent started' : ' subagents started') + '</span>' +
+            '<span class="tam-agents">' + agents + '</span>' +
+            '</div>';
+    }
+
     /* assemble the turn-stream body (breadcrumb + derived + turns + orphans) */
     function buildTranscriptBody(messages, results, consumed, interaction){
         let html = renderBreadcrumb(interaction) + renderDerived(interaction);
-        messages.forEach(function(msg){ html += renderTurn(msg, results, consumed); });
+        // subagent-spawn markers woven in by timestamp (fan-out grouped in a 2s window)
+        const markerGroups = groupChildrenByTime((interaction && interaction.children) || [], 2000);
+        let mi = 0;
+        messages.forEach(function(msg){
+            const mt = msg.timestamp ? Date.parse(msg.timestamp) : NaN;
+            while (mi < markerGroups.length && !isNaN(mt) && markerGroups[mi].t <= mt) {
+                html += renderAgentMarker(markerGroups[mi], interaction);
+                mi++;
+            }
+            html += renderTurn(msg, results, consumed);
+        });
+        while (mi < markerGroups.length) { html += renderAgentMarker(markerGroups[mi], interaction); mi++; }
         // any UNCONSUMED tool_result (orphan / unpaired) must still render
         let orphans = '';
         messages.forEach(function(msg){
@@ -2077,28 +2333,148 @@
     }
 
     // ===== POPUP SHELL \u2014 owns overlay/backdrop/ESC, fetches, KB band + tabs =====
+    // One transcript is open at a time on ONE surface. _openMode tracks which
+    // ('dock' | 'popup' | null). ESC/backdrop key off #modalOverlay.active, which
+    // only the popup path sets, so the dock is inherently immune to them.
     var _txMount = null;
     var _modalTrigger = null;
     var _openSeq = 0;
+    var _openMode = null;
+    var _currentData = null;   // last fetched payload — reused by expand/collapse without a refetch
+    var _currentIds = null;    // {sessionId, projectId} of the open transcript
 
-    async function openInteraction(sessionId, projectId) {
-        var overlay = document.getElementById('modalOverlay');
-        var host = document.getElementById('modalHost');
-        var _seq = ++_openSeq;   // supersede any in-flight open (stale-render guard)
-        // Only capture the page trigger on a fresh open. When openInteraction is
-        // called from inside the modal (breadcrumb / derived nav) the modal is
-        // already active, so we keep the original trigger for focus-return on close.
-        if (!overlay.classList.contains('active')) { _modalTrigger = document.activeElement; }
-        overlay.classList.add('active');
-        // Destroy any previous mount BEFORE resetting host.innerHTML, so its delegated
-        // listener is removed from a still-attached node and a concurrent open cannot
-        // clobber a newly-mounted transcript when an earlier fetch resolves.
+    // --- localStorage: dock width + preferred open mode (Section E) ---
+    function loadDockWidth(){
+        var v = parseInt(localStorage.getItem('lav.dockWidth'), 10);
+        if (!isNaN(v) && v >= 360) return v;
+        return Math.round(window.innerWidth * 0.66);
+    }
+    function saveDockWidth(w){ try { localStorage.setItem('lav.dockWidth', String(Math.round(w))); } catch (_) {} }
+    function loadOpenMode(){ return (localStorage.getItem('lav.openMode') === 'popup') ? 'popup' : 'dock'; }
+    function saveOpenMode(m){ try { localStorage.setItem('lav.openMode', m); } catch (_) {} }
+
+    var DOCK_LOADING_HTML = '<div class="tx"><div class="tx-head"><div class="tx-head-top"><h2 class="tx-title" id="txDialogTitle">Loading transcript...</h2><button class="tx-close" type="button" aria-label="Close">' + TX_ICONS.close + '</button></div></div><div class="tx-body"><div class="loading">Loading transcript</div></div></div>';
+
+    // Open the dock: reveal the split panel, apply persisted width. Idempotent.
+    function openDock(){
+        var split = document.getElementById('workspaceSplit');
+        var panel = document.getElementById('dockPanel');
+        panel.style.width = loadDockWidth() + 'px';
+        split.classList.remove('workspace-split--closed');
+        split.classList.add('workspace-split--docked');
+        applyColumnGridOnly();   // summary -> fixed width + pins on
+    }
+    function closeDock(){
+        var split = document.getElementById('workspaceSplit');
+        split.classList.remove('workspace-split--docked');
+        split.classList.add('workspace-split--closed');
+        applyColumnGridOnly();   // summary -> 1fr + pins off
         if (_txMount) { _txMount.destroy(); _txMount = null; }
-        host.innerHTML = '<div class="tx"><div class="tx-head"><div class="tx-head-top"><h2 class="tx-title" id="txDialogTitle">Loading transcript…</h2><button class="tx-close" type="button" aria-label="Close">' + TX_ICONS.close + '</button></div></div><div class="tx-body"><div class="loading">Loading transcript</div></div></div>';
-        // Keep a close affordance during the fetch and move keyboard/AT focus onto it
-        // (host has tabindex="-1"); otherwise focus would stay on the page trigger.
+        if (_costProfileChart) { _costProfileChart.destroy(); _costProfileChart = null; }
+        _openMode = null;
+        if (_modalTrigger && _modalTrigger.focus) { try { _modalTrigger.focus(); } catch (_) {} }
+        _modalTrigger = null;
+    }
+
+    // Resolve host + open-hook + liveness for a surface.
+    function surfaceTarget(mode){
+        if (mode === 'popup') {
+            return {
+                host: document.getElementById('modalHost'),
+                open: function(){ document.getElementById('modalOverlay').classList.add('active'); },
+                isLive: function(){ return document.getElementById('modalOverlay').classList.contains('active'); },
+                onClose: closeModal
+            };
+        }
+        return {
+            host: document.getElementById('dockPanel'),
+            open: openDock,
+            isLive: function(){ return document.getElementById('workspaceSplit').classList.contains('workspace-split--docked'); },
+            onClose: closeDock
+        };
+    }
+
+    // Attach shell chrome (KB band + tabs + Cost panel + compact/surface toggles)
+    // around a freshly-mounted .tx. Shared by BOTH surfaces (was inline before).
+    function renderIntoHost(host, data, mode, restore){
+        if (_txMount) { _txMount.destroy(); _txMount = null; }
+        // Clear the OTHER surface's host so a stale .tx (and its duplicate toggle
+        // buttons / delegated listeners) never lingers off-screen.
+        var otherHost = (mode === 'dock')
+            ? document.getElementById('modalHost')
+            : document.getElementById('dockPanel');
+        if (otherHost) otherHost.innerHTML = '';
+        var target = surfaceTarget(mode);
+        _txMount = mountTranscript(host, data, {
+            onClose: target.onClose,
+            onOpenInteraction: openInteraction,
+            copySessionId: copySessionId,
+            container: mode
+        });
+
+        var isDock = (mode === 'dock');
+        var toggleIcon = isDock ? TX_ICONS.popup : TX_ICONS.dock;
+        var toggleTitle = isDock ? 'Open in popup' : 'Back to docked panel';
+        _txMount.auxEl.innerHTML =
+            '<div class="kb-enrichment" id="kbEnrichment" style="display:none;"></div>' +
+            '<div class="tx-tabs" role="tablist" aria-label="Transcript views">' +
+                '<button type="button" class="tx-tab active" id="txTabTranscript" role="tab" aria-selected="true" tabindex="0" aria-controls="txPanelTranscript" data-modal-tab="transcript">Transcript</button>' +
+                '<button type="button" class="tx-tab" id="txTabCost" role="tab" aria-selected="false" tabindex="-1" aria-controls="costProfileBody" data-modal-tab="cost">Cost</button>' +
+                '<button type="button" class="tx-compact-toggle tx-surface-toggle" aria-pressed="false" title="Collapse turns for quick scanning">Compact</button>' +
+                '<button type="button" class="tx-surface-toggle tx-surface-icon" data-surface-toggle title="' + toggleTitle + '" aria-label="' + toggleTitle + '">' + toggleIcon + '</button>' +
+            '</div>';
+
+        _txMount.bodyEl.id = 'txPanelTranscript';
+        _txMount.bodyEl.setAttribute('data-modal-panel', 'transcript');
+        _txMount.bodyEl.setAttribute('role', 'tabpanel');
+        _txMount.bodyEl.setAttribute('aria-labelledby', 'txTabTranscript');
+        _txMount.bodyEl.setAttribute('tabindex', '0');
+        var costPanel = document.createElement('div');
+        costPanel.id = 'costProfileBody';
+        costPanel.className = 'tx-cost';
+        costPanel.setAttribute('data-modal-panel', 'cost');
+        costPanel.setAttribute('role', 'tabpanel');
+        costPanel.setAttribute('aria-labelledby', 'txTabCost');
+        costPanel.setAttribute('tabindex', '0');
+        costPanel.style.display = 'none';
+        _txMount.root.appendChild(costPanel);
+
+        renderKbEnrichment(document.getElementById('kbEnrichment'), data._kbData, data._sqlMeta);
+        renderCostProfile(document.getElementById('costProfileBody'), data.cost_profile);
+        wireModalTabs(_txMount);
+        wireCompactToggle(_txMount);
+        wireSurfaceToggle(_txMount);
+        applyCompactPref(_txMount.root);
+
+        if (restore) {
+            if (restore.compact) { _setCompact(_txMount.root, true); }
+            if (restore.activeTab === 'cost') {
+                var costTab = _txMount.auxEl.querySelector('#txTabCost');
+                if (costTab) costTab.click();
+            }
+            if (restore.scrollTop && _txMount.bodyEl) { _txMount.bodyEl.scrollTop = restore.scrollTop; }
+        }
+
+        var closeBtn = _txMount.headEl.querySelector('.tx-close');
+        if (closeBtn) closeBtn.focus();
+        return _txMount;
+    }
+
+    // Fetch + mount for a surface. mode defaults to the current/persisted preference.
+    async function openInteraction(sessionId, projectId, mode) {
+        mode = mode || _openMode || loadOpenMode();
+        var target = surfaceTarget(mode);
+        var host = target.host;
+        var _seq = ++_openSeq;   // supersede any in-flight open (stale-render guard)
+
+        if (!target.isLive()) { _modalTrigger = document.activeElement; }
+        target.open();
+        _openMode = mode;
+
+        if (_txMount) { _txMount.destroy(); _txMount = null; }
+        host.innerHTML = DOCK_LOADING_HTML;
         var _loadClose = host.querySelector('.tx-close');
-        if (_loadClose) { _loadClose.addEventListener('click', closeModal); _loadClose.focus(); } else { host.focus(); }
+        if (_loadClose) { _loadClose.addEventListener('click', target.onClose); _loadClose.focus(); } else { host.focus(); }
 
         try {
             var qs = projectId ? '?project=' + encodeURIComponent(projectId) : '';
@@ -2107,63 +2483,89 @@
             var sqlMetaPromise = apiFetchRaw(API_BASE + '/api/interaction/' + encodeURIComponent(sessionId) + '/metadata' + qs).catch(function() { return null; });
             var results = await Promise.all([convPromise, kbPromise, sqlMetaPromise]);
             var data = results[0];
-            var kbData = results[1];
-            var sqlMeta = results[2];
+            data._kbData = results[1];
+            data._sqlMeta = results[2];
 
-            // guard: modal closed during the fetch, or a newer open superseded this one
-            if (!overlay.classList.contains('active') || _seq !== _openSeq) return;
+            // guard: surface closed during the fetch, or a newer open/mode superseded this one
+            if (!target.isLive() || _seq !== _openSeq || _openMode !== mode) return;
 
-            // A concurrent open during this fetch may have set up a fresh mount; destroy
-            // it before mounting so we never leak a listener (the loading-state reset
-            // above already cleared the pre-open mount).
-            if (_txMount) { _txMount.destroy(); _txMount = null; }
-            _txMount = mountTranscript(host, data, {
-                onClose: closeModal,
-                onOpenInteraction: openInteraction,
-                copySessionId: copySessionId,
-                container: 'popup'
-            });
-
-            // fill the .tx-aux slot with shell chrome: KB band + Transcript/Cost tabs
-            _txMount.auxEl.innerHTML =
-                '<div class="kb-enrichment" id="kbEnrichment" style="display:none;"></div>' +
-                '<div class="tx-tabs" role="tablist" aria-label="Transcript views">' +
-                    '<button type="button" class="tx-tab active" id="txTabTranscript" role="tab" aria-selected="true" tabindex="0" aria-controls="txPanelTranscript" data-modal-tab="transcript">Transcript</button>' +
-                    '<button type="button" class="tx-tab" id="txTabCost" role="tab" aria-selected="false" tabindex="-1" aria-controls="costProfileBody" data-modal-tab="cost">Cost</button>' +
-                '</div>';
-
-            // append the Cost panel after .tx-body, toggled by the tabs
-            _txMount.bodyEl.id = 'txPanelTranscript';
-            _txMount.bodyEl.setAttribute('data-modal-panel', 'transcript');
-            _txMount.bodyEl.setAttribute('role', 'tabpanel');
-            _txMount.bodyEl.setAttribute('aria-labelledby', 'txTabTranscript');
-            _txMount.bodyEl.setAttribute('tabindex', '0');
-            var costPanel = document.createElement('div');
-            costPanel.id = 'costProfileBody';
-            costPanel.className = 'tx-cost';
-            costPanel.setAttribute('data-modal-panel', 'cost');
-            costPanel.setAttribute('role', 'tabpanel');
-            costPanel.setAttribute('aria-labelledby', 'txTabCost');
-            costPanel.setAttribute('tabindex', '0');
-            costPanel.style.display = 'none';
-            _txMount.root.appendChild(costPanel);
-
-            renderKbEnrichment(document.getElementById('kbEnrichment'), kbData, sqlMeta);
-            renderCostProfile(document.getElementById('costProfileBody'), data.cost_profile);
-            wireModalTabs(_txMount);
-
-            var closeBtn = _txMount.headEl.querySelector('.tx-close');
-            if (closeBtn) closeBtn.focus();
+            _currentData = data;
+            _currentIds = { sessionId: sessionId, projectId: projectId };
+            renderIntoHost(host, data, mode);
         } catch (err) {
             console.error('Failed to load interaction:', err);
-            if (!overlay.classList.contains('active') || _seq !== _openSeq) return;
+            if (!target.isLive() || _seq !== _openSeq) return;
             host.innerHTML = '<div class="tx"><div class="tx-head"><div class="tx-head-top">' +
                 '<h2 class="tx-title" id="txDialogTitle">Interaction</h2>' +
                 '<button class="tx-close" type="button" aria-label="Close">' + TX_ICONS.close + '</button>' +
                 '</div></div><div class="tx-body"><div class="empty-state"><h3>Error loading interaction</h3></div></div></div>';
             var eb = host.querySelector('.tx-close');
-            if (eb) { eb.addEventListener('click', closeModal); eb.focus(); }
+            if (eb) { eb.addEventListener('click', target.onClose); eb.focus(); }
         }
+    }
+
+    // Move the open transcript to the OTHER surface, carrying UI state.
+    // Re-renders from the cached payload — no refetch, no live-DOM reparenting.
+    function switchSurface(toMode){
+        if (!_txMount || !_currentData) return;
+        var activeTabEl = _txMount.auxEl.querySelector('.tx-tab.active');
+        var restore = {
+            compact: _txMount.root.classList.contains('tx--compact'),
+            scrollTop: _txMount.bodyEl ? _txMount.bodyEl.scrollTop : 0,
+            activeTab: (activeTabEl && activeTabEl.dataset) ? activeTabEl.dataset.modalTab : 'transcript'
+        };
+        var fromMode = _openMode;
+        if (fromMode === 'popup') {
+            document.getElementById('modalOverlay').classList.remove('active');
+        } else {
+            var split = document.getElementById('workspaceSplit');
+            split.classList.remove('workspace-split--docked');
+            split.classList.add('workspace-split--closed');
+            applyColumnGridOnly();   // leaving dock -> summary back to 1fr, pins off
+        }
+        if (_txMount) { _txMount.destroy(); _txMount = null; }
+        if (_costProfileChart) { _costProfileChart.destroy(); _costProfileChart = null; }
+        var target = surfaceTarget(toMode);
+        target.open();
+        _openMode = toMode;
+        saveOpenMode(toMode);
+        renderIntoHost(target.host, _currentData, toMode, restore);
+    }
+
+    function wireSurfaceToggle(mount){
+        var btn = mount.auxEl.querySelector('[data-surface-toggle]');
+        if (!btn) return;
+        btn.addEventListener('click', function(){
+            switchSurface(_openMode === 'dock' ? 'popup' : 'dock');
+        });
+    }
+
+    // Divider drag — clone of startColumnResize with inverted sign (dock is on the
+    // RIGHT, so dragging left grows it). Persists width on mouseup only.
+    function startDockResize(e){
+        e.preventDefault();
+        var panel = document.getElementById('dockPanel');
+        var divider = document.getElementById('dockDivider');
+        var startX = e.clientX;
+        var startWidth = panel.getBoundingClientRect().width;
+        var MIN_DOCK = 360, MIN_LIST = 280;
+        var maxDock = window.innerWidth - MIN_LIST;
+        divider.classList.add('dragging');
+        document.body.classList.add('dock-resizing');
+        function onMove(ev){
+            var delta = ev.clientX - startX;
+            var w = Math.min(maxDock, Math.max(MIN_DOCK, Math.round(startWidth - delta)));
+            panel.style.width = w + 'px';
+        }
+        function onUp(){
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+            divider.classList.remove('dragging');
+            document.body.classList.remove('dock-resizing');
+            saveDockWidth(panel.getBoundingClientRect().width);
+        }
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
     }
 
     function wireModalTabs(mount){
@@ -2520,6 +2922,9 @@
         document.getElementById('startDate').value = state.startDate;
         document.getElementById('endDate').value = state.endDate;
         initColumnToggle();
+        // LAV-67: divider drag to resize the docked transcript panel
+        var dockDivider = document.getElementById('dockDivider');
+        if (dockDivider) dockDivider.addEventListener('mousedown', startDockResize);
         await initFilters();
         await loadInteractions();
 

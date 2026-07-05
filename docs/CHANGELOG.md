@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+LAV-67: Transcript docking + sticky list columns + subagent interleaving + compact mode (`interactions.html`, `queries.py`).
+- **Dock + popup** (Phase 2): clicking a list row opens the transcript in a right-hand docked panel (resizable divider, width persisted `lav.dockWidth`); a **popup icon** (was a text "Expand" button) opens it as an overlay at **80vw**, with a dock icon to return. The docked panel height now matches the grid column (transcript scrolls inside the frame instead of overrunning the list).
+- **Sticky list columns** (Phase 3): when docked, the narrow list scrolls horizontally with **timestamp + summary pinned left** (`position:sticky`). Summary flips from `1fr` to a fixed width in dock mode so the row overflows; `applyStickyPins()` toggles `.is-pinned` and computes the summary pin offset. Integrated with the existing LAV-34 column resize/visibility via a shared `computeGridCols()`.
+- **Subagenti** (Phase 4): the "Derived sessions (N)" list now shows the AI `meta_summary` + **tool-name chips** (from `tools_used`) + tokens/cost; and **inline markers** are woven into the turn stream at the timestamp where each subagent was spawned ("⇉ N subagents started", parallel fan-out grouped in a 2s window, names click through to the child). Server: `get_interaction_children()` (`queries.py`) returns `meta_summary` (LEFT JOIN `interaction_metadata`) + `tools_used`.
+- **Compact mode** (Phase 5): a Compact toggle flips `.tx--compact` so every turn collapses to one skimmable line (label + first line + "· N steps" tool count); preference persisted `lav.txCompact`. "You" turns render as white cards for at-a-glance scanning.
+- New localStorage keys: `lav.dockWidth`, `lav.openMode`, `lav.txCompact`. Light-theme only; static file (no server restart for the HTML), `queries.py` change needs a server restart.
+
 LAV-68: Stabilize `detect_host()` — stop creating duplicate/corrupted host records.
 - **Problem**: host identity was derived from `socket.gethostname()`, which on macOS is volatile — depending on network/Bonjour/DHCP state it returns the canonical name, the generic `Mac`, or an undecodable byte string that surfaces as mojibake (`U+FFFD`) / surrogate-escaped chars. `_normalize_hostname()` only stripped `.local`/`.localdomain`, so every transient value became its own `hosts` row and split one machine's sessions across host ids (~1600 cross-host duplicate messages). Observed on **macChia** (`Mac`, corrupted) and **minimacs** (`Mac`, corrupted) — each node's own parser hits it.
 - **Fix** (`lav/parsers/jsonl.py`, `lav/server.py`):

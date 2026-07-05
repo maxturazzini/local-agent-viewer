@@ -1027,7 +1027,9 @@ def get_interaction_children(conn, session_id, project_id=None):
 
     One level deep, ordered oldest-first. Reuses the per-session cost subquery
     shape. Returns a list of dicts with keys: session_id, project_id, summary,
-    display, agent_id, timestamp, total_tokens, message_count, cost_usd.
+    display, agent_id, timestamp, total_tokens, message_count, cost_usd,
+    meta_summary (AI classification summary, may be NULL), tools_used (JSON
+    string of tool-name list, may be NULL).
 
     Matching is project-AGNOSTIC on the parent link: a Cowork master sits in
     cowork_default while its slaves land in per-event inferred projects, so the
@@ -1035,6 +1037,10 @@ def get_interaction_children(conn, session_id, project_id=None):
     unique UUID, so matching on parent_session_id alone is safe. The project_id
     argument is accepted for call-site compatibility but intentionally not used as
     a filter.
+
+    meta_summary + tools_used feed the enriched derived-sessions list and the
+    inline subagent markers in the transcript (LAV-67). Both are additive and may
+    be NULL for unclassified children; callers read them defensively.
     """
     cost_sql = _per_session_cost_subquery()
     return run_query(conn, f"""
@@ -1047,8 +1053,12 @@ def get_interaction_children(conn, session_id, project_id=None):
             c.timestamp,
             c.total_tokens,
             c.message_count,
+            c.tools_used,
+            cm.summary as meta_summary,
             {cost_sql} as cost_usd
         FROM interactions c
+        LEFT JOIN interaction_metadata cm
+            ON cm.session_id = c.session_id AND cm.project_id = c.project_id
         WHERE c.parent_session_id = ?
         ORDER BY c.timestamp ASC
     """, [session_id])
