@@ -562,7 +562,11 @@
         .kb-enrichment-classification.brainstorm { background: rgba(255, 122, 32, 0.1); color: var(--orange); }
         .kb-enrichment-classification.support { background: rgba(255, 76, 83, 0.1); color: var(--red); }
         .kb-enrichment-classification.learning { background: rgba(110, 135, 255, 0.15); color: var(--lilla); }
-        .kb-enrichment-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+        .kb-enrichment-tags { display: flex; gap: 6px 16px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+        /* LAV-71: labeled category groups */
+        .kb-tag-group { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+        .kb-tag-label { font-size: 0.6rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--dark-gray); }
+        .kb-tag-empty { font-size: 0.75rem; color: var(--dark-gray); }
         .kb-tag { padding: 2px 8px; background: var(--light-gray); border-radius: 4px; font-size: 0.75rem; color: var(--dim-gray); }
         .kb-tag.topic { background: rgba(53, 194, 255, 0.15); color: var(--deep-sky-blue); }
         .kb-tag.client { background: rgba(255, 157, 203, 0.2); color: #c06; }
@@ -2693,25 +2697,42 @@
             target.appendChild(metaDiv);
             return metaDiv;
         }
+        // LAV-71: render each category as a labeled group (Topics/People/Clients/Tags),
+        // all shown together; empty categories still show their label with a muted "—".
         function appendTags(target, p) {
             var tagsDiv = document.createElement('div');
             tagsDiv.className = 'kb-enrichment-tags';
-            var hasTags = false;
-            ['topics', 'clients', 'people', 'tags'].forEach(function(key) {
+            var GROUPS = [
+                ['topics', 'Topics', 'topic'],
+                ['people', 'People', 'person'],
+                ['clients', 'Clients', 'client'],
+                ['tags', 'Tags', '']
+            ];
+            GROUPS.forEach(function(g) {
+                var key = g[0], label = g[1], mod = g[2];
                 var arr = p[key];
+                var group = document.createElement('span');
+                group.className = 'kb-tag-group';
+                var lbl = document.createElement('span');
+                lbl.className = 'kb-tag-label';
+                lbl.textContent = label;
+                group.appendChild(lbl);
                 if (arr && arr.length > 0) {
-                    hasTags = true;
                     arr.forEach(function(t) {
                         var tagSpan = document.createElement('span');
-                        tagSpan.className = key === 'topics' ? 'kb-tag topic' :
-                                            key === 'clients' ? 'kb-tag client' :
-                                            key === 'people' ? 'kb-tag person' : 'kb-tag';
+                        tagSpan.className = mod ? ('kb-tag ' + mod) : 'kb-tag';
                         tagSpan.textContent = t;
-                        tagsDiv.appendChild(tagSpan);
+                        group.appendChild(tagSpan);
                     });
+                } else {
+                    var dash = document.createElement('span');
+                    dash.className = 'kb-tag-empty';
+                    dash.textContent = '—';
+                    group.appendChild(dash);
                 }
+                tagsDiv.appendChild(group);
             });
-            if (hasTags) target.appendChild(tagsDiv);
+            target.appendChild(tagsDiv);
         }
 
         // --- BASE CARD: SQL classification (source of truth; carries `process`) ---
