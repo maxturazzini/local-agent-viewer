@@ -567,6 +567,7 @@
         .kb-tag-group { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
         .kb-tag-label { font-size: 0.6rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--dark-gray); }
         .kb-tag-empty { font-size: 0.75rem; color: var(--dark-gray); }
+        .kb-process-value { font-size: 0.8rem; font-style: italic; color: var(--dodger-blue); }
         .kb-tag { padding: 2px 8px; background: var(--light-gray); border-radius: 4px; font-size: 0.75rem; color: var(--dim-gray); }
         .kb-tag.topic { background: rgba(53, 194, 255, 0.15); color: var(--deep-sky-blue); }
         .kb-tag.client { background: rgba(255, 157, 203, 0.2); color: #c06; }
@@ -2699,7 +2700,8 @@
         }
         // LAV-71: render each category as a labeled group (Topics/People/Clients/Tags),
         // all shown together; empty categories still show their label with a muted "—".
-        function appendTags(target, p) {
+        // processVal (SQL-only): appended as a trailing "Process" group when provided.
+        function appendTags(target, p, processVal) {
             var tagsDiv = document.createElement('div');
             tagsDiv.className = 'kb-enrichment-tags';
             var GROUPS = [
@@ -2732,6 +2734,19 @@
                 }
                 tagsDiv.appendChild(group);
             });
+            if (processVal) {
+                var pg = document.createElement('span');
+                pg.className = 'kb-tag-group';
+                var plbl = document.createElement('span');
+                plbl.className = 'kb-tag-label';
+                plbl.textContent = 'Process';
+                pg.appendChild(plbl);
+                var pval = document.createElement('span');
+                pval.className = 'kb-process-value';
+                pval.textContent = processVal;
+                pg.appendChild(pval);
+                tagsDiv.appendChild(pg);
+            }
             target.appendChild(tagsDiv);
         }
 
@@ -2740,7 +2755,6 @@
             var sp = sqlMeta.metadata;
             appendText(el, 'kb-enrichment-summary', sp.summary);
             appendText(el, 'kb-enrichment-abstract', sp.abstract);
-            appendText(el, 'kb-enrichment-process', sp.process);
             var meta = appendMeta(el, sp, 'SQL Classification');
             if (sp.model_used) {
                 var mu = document.createElement('span');
@@ -2754,7 +2768,7 @@
                 ua.textContent = 'updated ' + formatTimestamp(sp.updated_at);
                 meta.appendChild(ua);
             }
-            appendTags(el, sp);
+            appendTags(el, sp, sp.process);
         }
 
         // --- APPENDIX: Qdrant KB snapshot (search index; may be stale) ---
