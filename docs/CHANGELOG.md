@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+LAV-69: Interaction view — SQL metadata is the base card, Qdrant KB moved to a separate appendix (stop the silent override). Frontend only (`lav/static/interactions.html`).
+- **Problem**: `renderKbEnrichment()` preferred the Qdrant KB payload over SQL metadata whenever both existed. Qdrant is a search index that can lag (indexed once, not refreshed after re-classification), so the card rendered a **stale** summary/classification labelled "Qdrant KB" while the title came from fresh data → internally-inconsistent card. Repro: session `dd3d362f-…` (AiMaxAcademy) showed KB `development`/AWS instead of the SQL truth `analysis`/academy-certificate.
+- **Fix**: SQL classification (`interaction_metadata`) is now the **always-visible base card** (source of truth; carries `process`, plus quiet `model_used`/`updated_at` provenance chips). The Qdrant payload renders in a collapsed **"Search-index snapshot" appendix** (`<details class="kb-appendix">`) below it, labelled with its `indexed_at` and carrying the KB-only fields (`message_count`, `tools_used`, `host`, `source`, `project`, `user`, `timestamp`, `session_id`). No priority and no divergence logic — both blocks render independently when both sources exist, so the stale index can no longer hide fresh data. KB-only sessions (no SQL row) still surface via the appendix (no regression).
+- **Not affected**: the interactions **list grid** already read CLASS/SENS/summary from SQL only (`LEFT JOIN interaction_metadata`, `queries.py`) — never Qdrant. Blank `–` rows there are simply unclassified sessions, not a source bug.
+- **Verified** (macChia temp `both`-role server): repro session — base card shows SQL `analysis`/academy; KB `development`/AWS only in the collapsed appendix. SQL-only → no appendix; SQL+KB → both.
+- **Out of scope**: Qdrant re-indexing / KB staleness fix.
+- **Deploy**: static pull + hard refresh, no server restart.
+
 LAV-67: Transcript docking + sticky list columns + subagent interleaving + compact mode (`interactions.html`, `queries.py`).
 - **Dock + popup** (Phase 2): clicking a list row opens the transcript in a right-hand docked panel (resizable divider, width persisted `lav.dockWidth`); a **popup icon** (was a text "Expand" button) opens it as an overlay at **80vw**, with a dock icon to return. The docked panel height now matches the grid column (transcript scrolls inside the frame instead of overrunning the list).
 - **Sticky list columns** (Phase 3): when docked, the narrow list scrolls horizontally with **timestamp + summary pinned left** (`position:sticky`). Summary flips from `1fr` to a fixed width in dock mode so the row overflows; `applyStickyPins()` toggles `.is-pinned` and computes the summary pin offset. Integrated with the existing LAV-34 column resize/visibility via a shared `computeGridCols()`.

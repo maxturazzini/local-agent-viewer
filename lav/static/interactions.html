@@ -573,6 +573,34 @@
         .kb-sensitivity.confidential { background: rgba(255, 165, 0, 0.15); color: #cc8400; }
         .kb-sensitivity.restricted { background: rgba(255, 76, 83, 0.15); color: var(--red); }
 
+        /* LAV-69: quiet provenance chips on the SQL base card */
+        .kb-enrichment-provenance { font-size: 0.65rem; color: #999; font-style: italic; }
+
+        /* LAV-69: Qdrant KB snapshot appendix — a secondary, muted panel under the base card */
+        .kb-appendix { margin-top: 10px; border-top: 1px dashed var(--border); }
+        .kb-appendix-summary {
+            cursor: pointer; list-style: none;
+            padding: 8px 0 4px; font-size: 0.72rem; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 0.4px; color: var(--dim-gray);
+            display: flex; align-items: center; gap: 6px;
+        }
+        .kb-appendix-summary::-webkit-details-marker { display: none; }
+        .kb-appendix-summary::before { content: '▸'; font-size: 0.7rem; transition: transform .15s; }
+        .kb-appendix[open] .kb-appendix-summary::before { transform: rotate(90deg); }
+        .kb-appendix-summary:hover { color: var(--dark-gray); }
+        .kb-appendix-body {
+            margin-top: 6px; padding: 10px 12px;
+            background: rgba(0,0,0,0.03); border-radius: 6px;
+        }
+        .kb-appendix-fields {
+            display: grid; grid-template-columns: auto 1fr; gap: 3px 12px;
+            margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(0,0,0,0.06);
+            font-size: 0.75rem;
+        }
+        .kb-appendix-field { display: contents; }
+        .kb-appendix-field-label { color: var(--dim-gray); font-weight: 600; white-space: nowrap; }
+        .kb-appendix-field-value { color: var(--dark-gray); word-break: break-word; }
+
         /* =====================================================================
            TRANSCRIPT COMPONENT (.tx) — "Quiet Canvas" (LAV-63)
            Container-agnostic: knows nothing about the modal/dock shell.
@@ -2618,106 +2646,149 @@
         }
     }
 
+    // LAV-69: SQL classification is the source of truth and renders as the always-visible
+    // base card. The Qdrant KB payload is a search-index snapshot that can lag, so it is shown
+    // in a separate collapsible appendix — never allowed to override/shadow the fresh SQL data.
     function renderKbEnrichment(el, kbData, sqlMeta) {
         el.textContent = '';
         el.style.display = 'none';
 
-        // Use Qdrant data if available, otherwise fall back to SQL metadata
-        var p = null;
-        var sourceLabel = '';
-        if (kbData && kbData.indexed && kbData.payload) {
-            p = kbData.payload;
-            sourceLabel = 'Qdrant KB';
-        } else if (sqlMeta && sqlMeta.classified && sqlMeta.metadata) {
-            p = sqlMeta.metadata;
-            sourceLabel = 'SQL Classification';
-        }
-
-        if (!p) return;
+        var sqlClassified = !!(sqlMeta && sqlMeta.classified && sqlMeta.metadata);
+        var kbIndexed = !!(kbData && kbData.indexed && kbData.payload);
+        if (!sqlClassified && !kbIndexed) return;
         el.style.display = 'block';
 
-        if (p.summary) {
-            var summaryDiv = document.createElement('div');
-            summaryDiv.className = 'kb-enrichment-summary';
-            summaryDiv.textContent = p.summary;
-            el.appendChild(summaryDiv);
+        // --- shared field builders (reused by SQL base card and KB appendix) ---
+        function appendText(target, cls, val) {
+            if (!val) return;
+            var d = document.createElement('div');
+            d.className = cls;
+            d.textContent = val;
+            target.appendChild(d);
         }
-
-        if (p.abstract) {
-            var abstractDiv = document.createElement('div');
-            abstractDiv.className = 'kb-enrichment-abstract';
-            abstractDiv.textContent = p.abstract;
-            el.appendChild(abstractDiv);
-        }
-
-        if (p.process) {
-            var processDiv = document.createElement('div');
-            processDiv.className = 'kb-enrichment-process';
-            processDiv.textContent = p.process;
-            el.appendChild(processDiv);
-        }
-
-        var metaDiv = document.createElement('div');
-        metaDiv.className = 'kb-enrichment-meta';
-
-        if (sourceLabel) {
-            var srcSpan2 = document.createElement('span');
-            srcSpan2.style.cssText = 'font-size:0.65rem;color:#999;font-style:italic';
-            srcSpan2.textContent = sourceLabel;
-            metaDiv.appendChild(srcSpan2);
-        }
-
-        if (p.classification) {
-            var classSpan = document.createElement('span');
-            classSpan.className = 'kb-enrichment-classification ' + p.classification;
-            classSpan.textContent = p.classification;
-            metaDiv.appendChild(classSpan);
-        }
-
-        if (p.data_sensitivity) {
-            var sensSpan = document.createElement('span');
-            sensSpan.className = 'kb-sensitivity ' + p.data_sensitivity;
-            sensSpan.textContent = p.data_sensitivity;
-            if (p.sensitive_data_types && p.sensitive_data_types.length > 0) {
-                sensSpan.title = p.sensitive_data_types.join(', ');
+        function appendMeta(target, p, sourceLabel) {
+            var metaDiv = document.createElement('div');
+            metaDiv.className = 'kb-enrichment-meta';
+            if (sourceLabel) {
+                var s = document.createElement('span');
+                s.style.cssText = 'font-size:0.65rem;color:#999;font-style:italic';
+                s.textContent = sourceLabel;
+                metaDiv.appendChild(s);
             }
-            metaDiv.appendChild(sensSpan);
-        }
-
-        if (p.host) {
-            var hostSpan = document.createElement('span');
-            hostSpan.textContent = p.host;
-            metaDiv.appendChild(hostSpan);
-        }
-
-        if (p.source) {
-            var srcSpan = document.createElement('span');
-            srcSpan.textContent = p.source;
-            metaDiv.appendChild(srcSpan);
-        }
-
-        el.appendChild(metaDiv);
-
-        var tagsDiv = document.createElement('div');
-        tagsDiv.className = 'kb-enrichment-tags';
-        var hasTags = false;
-
-        ['topics', 'clients', 'people', 'tags'].forEach(function(key) {
-            var arr = p[key];
-            if (arr && arr.length > 0) {
-                hasTags = true;
-                arr.forEach(function(t) {
-                    var tagSpan = document.createElement('span');
-                    tagSpan.className = key === 'topics' ? 'kb-tag topic' :
-                                        key === 'clients' ? 'kb-tag client' :
-                                        key === 'people' ? 'kb-tag person' : 'kb-tag';
-                    tagSpan.textContent = t;
-                    tagsDiv.appendChild(tagSpan);
-                });
+            if (p.classification) {
+                var c = document.createElement('span');
+                c.className = 'kb-enrichment-classification ' + p.classification;
+                c.textContent = p.classification;
+                metaDiv.appendChild(c);
             }
-        });
+            if (p.data_sensitivity) {
+                var sens = document.createElement('span');
+                sens.className = 'kb-sensitivity ' + p.data_sensitivity;
+                sens.textContent = p.data_sensitivity;
+                if (p.sensitive_data_types && p.sensitive_data_types.length > 0) {
+                    sens.title = p.sensitive_data_types.join(', ');
+                }
+                metaDiv.appendChild(sens);
+            }
+            target.appendChild(metaDiv);
+            return metaDiv;
+        }
+        function appendTags(target, p) {
+            var tagsDiv = document.createElement('div');
+            tagsDiv.className = 'kb-enrichment-tags';
+            var hasTags = false;
+            ['topics', 'clients', 'people', 'tags'].forEach(function(key) {
+                var arr = p[key];
+                if (arr && arr.length > 0) {
+                    hasTags = true;
+                    arr.forEach(function(t) {
+                        var tagSpan = document.createElement('span');
+                        tagSpan.className = key === 'topics' ? 'kb-tag topic' :
+                                            key === 'clients' ? 'kb-tag client' :
+                                            key === 'people' ? 'kb-tag person' : 'kb-tag';
+                        tagSpan.textContent = t;
+                        tagsDiv.appendChild(tagSpan);
+                    });
+                }
+            });
+            if (hasTags) target.appendChild(tagsDiv);
+        }
 
-        if (hasTags) el.appendChild(tagsDiv);
+        // --- BASE CARD: SQL classification (source of truth; carries `process`) ---
+        if (sqlClassified) {
+            var sp = sqlMeta.metadata;
+            appendText(el, 'kb-enrichment-summary', sp.summary);
+            appendText(el, 'kb-enrichment-abstract', sp.abstract);
+            appendText(el, 'kb-enrichment-process', sp.process);
+            var meta = appendMeta(el, sp, 'SQL Classification');
+            if (sp.model_used) {
+                var mu = document.createElement('span');
+                mu.className = 'kb-enrichment-provenance';
+                mu.textContent = shortenModel(sp.model_used);
+                meta.appendChild(mu);
+            }
+            if (sp.updated_at) {
+                var ua = document.createElement('span');
+                ua.className = 'kb-enrichment-provenance';
+                ua.textContent = 'updated ' + formatTimestamp(sp.updated_at);
+                meta.appendChild(ua);
+            }
+            appendTags(el, sp);
+        }
+
+        // --- APPENDIX: Qdrant KB snapshot (search index; may be stale) ---
+        if (kbIndexed) {
+            var kp = kbData.payload;
+            var details = document.createElement('details');
+            details.className = 'kb-appendix';
+            var summary = document.createElement('summary');
+            summary.className = 'kb-appendix-summary';
+            var label = 'Search-index snapshot · Qdrant KB';
+            if (kp.indexed_at) label += ' · indexed ' + formatTimestamp(kp.indexed_at);
+            summary.textContent = label;
+            details.appendChild(summary);
+
+            var body = document.createElement('div');
+            body.className = 'kb-appendix-body';
+            appendText(body, 'kb-enrichment-summary', kp.summary);
+            appendText(body, 'kb-enrichment-abstract', kp.abstract);
+            appendMeta(body, kp, null);   // no source label — the <summary> header already names it
+            appendTags(body, kp);
+
+            // KB-only identity / snapshot fields (not present in SQL metadata)
+            var fields = [
+                ['Messages (at index)', kp.message_count],
+                ['Tools', Array.isArray(kp.tools_used) ? kp.tools_used.join(', ') : kp.tools_used],
+                ['Host', kp.host],
+                ['Source', kp.source],
+                ['Project', kp.project],
+                ['User', kp.user],
+                ['Interaction time', kp.timestamp ? formatTimestamp(kp.timestamp) : null],
+                ['Session', kp.session_id]
+            ];
+            var dl = document.createElement('div');
+            dl.className = 'kb-appendix-fields';
+            var hasField = false;
+            fields.forEach(function(f) {
+                if (f[1] === undefined || f[1] === null || f[1] === '') return;
+                hasField = true;
+                var row = document.createElement('div');
+                row.className = 'kb-appendix-field';
+                var k = document.createElement('span');
+                k.className = 'kb-appendix-field-label';
+                k.textContent = f[0];
+                var v = document.createElement('span');
+                v.className = 'kb-appendix-field-value';
+                v.textContent = String(f[1]);
+                row.appendChild(k);
+                row.appendChild(v);
+                dl.appendChild(row);
+            });
+            if (hasField) body.appendChild(dl);
+
+            details.appendChild(body);
+            el.appendChild(details);
+        }
     }
 
     // ===== MODAL EVENT HANDLERS (shell-owned: backdrop, ESC, focus trap) =====
