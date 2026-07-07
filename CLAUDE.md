@@ -118,12 +118,16 @@ Vanilla HTML/JS/CSS + Chart.js CDN. Three pages: dashboard (6 sub-tabs), interac
 - Version lives in `pyproject.toml` only, read via `importlib.metadata` in `lav/__init__.__version__`
 
 **Classification env vars** (all optional, in `.env`):
-- `LAV_CLASSIFY_BACKEND` — `auto` (default), `openai`, `ollama`. Auto: openai when no BASE_URL, ollama otherwise.
-- `LAV_CLASSIFY_MODEL` — model name (default: `gpt-4.1-mini`)
-- `LAV_CLASSIFY_BASE_URL` — OpenAI-compatible endpoint for Ollama/vLLM/Azure (empty = OpenAI default)
+- `LAV_CLASSIFY_BACKEND` — `auto` (default), `openai`, `ollama`, `foundry` (opt-in only, never auto-selected). Auto: openai when no BASE_URL, ollama otherwise.
+- `LAV_CLASSIFY_MODEL` — model name (default: `gpt-4.1-mini`; prod runs `deepseek-v4-flash` on foundry)
+- `LAV_CLASSIFY_BASE_URL` — OpenAI-compatible endpoint for Ollama/vLLM (empty = OpenAI default; foundry uses `LAV_FOUNDRY_*` instead)
 - `LAV_CLASSIFY_SYSTEM_PROMPT` — custom prompt: inline text or file path (empty = built-in)
 - `LAV_CLASSIFY_MAX_CHARS` — max chars of interaction text sent to the model (default: `12000`)
 - `LAV_CLASSIFY_LANGUAGE` — language for summary/abstract/process output (default: `en`)
+- `LAV_SENSITIVITY_FLOOR` — `1` enables the deterministic minimum-sensitivity floor (regex + entity detectors; can only raise the model's guess)
+- `LAV_FOUNDRY_ENDPOINT` / `LAV_FOUNDRY_KEY` / `LAV_FOUNDRY_API_VERSION` — Azure AI Foundry endpoint config (per-deployment overrides: suffix the uppercased deployment name)
+- `LAV_FOUNDRY_TIMEOUT` / `LAV_FOUNDRY_MAX_RETRIES` — per-request deadline in seconds (default `40`) and SDK retries (default `3`)
+- `LAV_AUTO_CLASSIFY` — `1` re-enables post-sync auto-classification in the server (`_auto_classify_new`). **Default OFF**: this path classified on every agent pull and swept the whole unclassified backlog (the LAV-72 gpt-4.1 "reactivation"). Controlled runs go through `lav-classify` (supports `--meta-since`/`--meta-model` for surgical reclassification of already-classified rows).
 
 ### Key conventions
 
