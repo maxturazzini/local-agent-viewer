@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+LAV-72: production hardening for the foundry classify runner.
+- **Foundry client timeout/retry** (`foundry/client.py`): per-request deadline `LAV_FOUNDRY_TIMEOUT` (default 40s) + `LAV_FOUNDRY_MAX_RETRIES` (default 3, SDK-level on timeout/429/5xx). A bulk run had hung 13 min on a single Azure call with no client-side deadline — now impossible.
+- **`lav-classify` foundry-aware** (`sql_classifier.py`): with `LAV_CLASSIFY_BACKEND=foundry` the runner now builds the client via `foundry.client.make_client()` (Azure endpoint + key) instead of the OpenAI default — previously a foundry-configured run would have called api.openai.com with the deployment name and 404'd. `OPENAI_API_KEY` is no longer required for the foundry backend.
+- **Surgical reclassification**: new `lav-classify --meta-since <ISO-TS> --meta-model <LIKE>` selects ALREADY-classified rows by metadata `updated_at` / `model_used` (e.g. replace last-24h gpt-4.1 labels with deepseek) — the opposite of the incremental default.
+
 LAV-72: Azure AI Foundry classifier backend (deepseek) + tightened taxonomy + input cleaning + sensitivity floor.
 - **New backend `foundry`** (`lav/classifiers/foundry/`): `client.py` builds an OpenAI-SDK client for an Azure AI Foundry endpoint (`LAV_FOUNDRY_ENDPOINT`/`_KEY`/`_API_VERSION`, per-deployment overrides); `classify.py` does the full single-call strict-json_schema classification (reuses `openai_strict.SYSTEM_PROMPT` + `CLASSIFICATION_SCHEMA` so the task never drifts), with Foundry quirks handled: `max_completion_tokens` headroom for reasoning models, optional `LAV_FOUNDRY_REASONING_EFFORT`, json_schema→json_object fallback, and per-call `usage` capture. Dispatcher gains `LAV_CLASSIFY_BACKEND=foundry` (opt-in, never auto-selected).
 - **Decision**: benchmarked 4 Foundry models on golden_set_v2 (98) — **deepseek-v4-flash wins** (classification ~68%, +9pt over gpt-4.1-mini; €0.00063/task ≈ €10.6 for the full 17k backfill; reasoning 0). gpt-5.1 is the EU-DataZone alternative (~62%, ~10× the cost). gpt-oss-120b excluded (43% classification). Residency: staying on deepseek (Global) is coherent with the already-US stack; zero-retention available via Modified Abuse Monitoring.

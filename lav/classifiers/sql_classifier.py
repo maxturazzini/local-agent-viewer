@@ -60,8 +60,15 @@ def _fetch_candidates(
     min_messages: int = 0,
     since: str = "",
     limit: int = 0,
+    meta_since: str = "",
+    meta_model: str = "",
 ) -> list:
-    """Fetch interactions to classify."""
+    """Fetch interactions to classify.
+
+    ``meta_since``/``meta_model`` select ALREADY-classified rows (by metadata
+    updated_at / model_used LIKE) for surgical reclassification — the opposite
+    of the incremental default, which picks rows with no metadata at all.
+    """
     sql = """
         SELECT
             c.session_id,
@@ -80,7 +87,13 @@ def _fetch_candidates(
                                      AND ss.project_id = c.project_id
     """
 
-    if not full:
+    reclassify = bool(meta_since or meta_model)
+    if reclassify:
+        sql += """
+        JOIN interaction_metadata cm
+            ON cm.session_id = c.session_id AND cm.project_id = c.project_id
+        """
+    elif not full:
         sql += """
         LEFT JOIN interaction_metadata cm
             ON cm.session_id = c.session_id AND cm.project_id = c.project_id
@@ -90,7 +103,14 @@ def _fetch_candidates(
 
     params = []
 
-    if not full:
+    if reclassify:
+        if meta_since:
+            sql += " AND cm.updated_at >= ?"
+            params.append(meta_since)
+        if meta_model:
+            sql += " AND cm.model_used LIKE ?"
+            params.append(meta_model)
+    elif not full:
         sql += " AND cm.session_id IS NULL"
 
     if project:
@@ -194,6 +214,8 @@ def run(
     min_messages: int = 0,
     since: str = "",
     model: str = "",
+    meta_since: str = "",
+    meta_model: str = "",
 ):
     model = model or config.CLASSIFY_MODEL
     print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] sql_classifier START")
@@ -204,16 +226,19 @@ def run(
     filters = {k: v for k, v in {
         "project": project, "source": source, "host": host,
         "username": username, "min_messages": min_messages, "since": since,
-        "limit": limit,
+        "limit": limit, "meta_since": meta_since, "meta_model": meta_model,
     }.items() if v}
     if filters:
         print(f"  Filters: {filters}")
     if dry_run:
         print("  DRY RUN — no writes")
 
-    # Check OpenAI key
+    from lav.classifiers.openai_classifier import _resolve_backend
+    backend = _resolve_backend()
+
+    # Check OpenAI key (the foundry backend uses LAV_FOUNDRY_* instead)
     api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key and not dry_run:
+    if backend != "foundry" and not api_key and not dry_run:
         print("ERROR: OPENAI_API_KEY not set. Set it in .env or environment.")
         sys.exit(1)
 
@@ -231,6 +256,8 @@ def run(
             min_messages=min_messages,
             since=since,
             limit=limit,
+            meta_since=meta_since,
+            meta_model=meta_model,
         )
     finally:
         read_conn.close()
@@ -242,14 +269,19 @@ def run(
         print("  Nothing to do.")
         return
 
-    # Initialize OpenAI client (only if not dry-run)
+    # Initialize the client (only if not dry-run). The foundry backend points at
+    # the Azure endpoint with its own key/timeout/retry — NOT at api.openai.com.
     openai_client = None
     if not dry_run:
-        import openai
-        client_kwargs = {"api_key": api_key}
-        if config.CLASSIFY_BASE_URL:
-            client_kwargs["base_url"] = config.CLASSIFY_BASE_URL
-        openai_client = openai.OpenAI(**client_kwargs)
+        if backend == "foundry":
+            from lav.classifiers.foundry.client import make_client
+            openai_client = make_client(model)
+        else:
+            import openai
+            client_kwargs = {"api_key": api_key}
+            if config.CLASSIFY_BASE_URL:
+                client_kwargs["base_url"] = config.CLASSIFY_BASE_URL
+            openai_client = openai.OpenAI(**client_kwargs)
 
     from lav.classifiers.openai_classifier import classify_interaction
 
@@ -353,6 +385,12 @@ Examples:
         help="Skip interactions with fewer than N messages")
     parser.add_argument("--since", metavar="YYYY-MM-DD",
         help="Only classify from this date onward")
+    parser.add_argument("--meta-since", metavar="ISO-TS",
+        help="Reclassify rows whose metadata was updated at/after this timestamp "
+             "(selects already-classified rows, e.g. 2026-07-06T14:00)")
+    parser.add_argument("--meta-model", metavar="LIKE",
+        help="With/without --meta-since: reclassify rows whose model_used matches "
+             "this SQL LIKE pattern (e.g. 'gpt-4.1%%')")
     parser.add_argument("--limit", type=int, default=0, metavar="N",
         help="Process at most N interactions (0 = no limit)")
     parser.add_argument("--model", default="",
@@ -376,6 +414,8 @@ def main():
         min_messages=args.min_messages,
         since=args.since or "",
         model=args.model,
+        meta_since=args.meta_since or "",
+        meta_model=args.meta_model or "",
     )
 
 

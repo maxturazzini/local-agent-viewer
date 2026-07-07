@@ -9,6 +9,8 @@ Config (in .env), shared across models:
     LAV_FOUNDRY_ENDPOINT      base URL from the deployment's "Target URI"
     LAV_FOUNDRY_KEY           deployment key
     LAV_FOUNDRY_API_VERSION   e.g. 2024-12-01-preview (leave empty for /openai/v1/ route)
+    LAV_FOUNDRY_TIMEOUT       per-request timeout in seconds (default 40)
+    LAV_FOUNDRY_MAX_RETRIES   SDK retries on timeout/429/5xx (default 3)
 
 Per-model overrides (when a model lives on a different endpoint/key) — suffix the
 deployment name uppercased, non-alnum → '_'. For deployment `gpt-oss-120b`:
@@ -39,7 +41,14 @@ def make_client(deployment: str):
             f"and LAV_FOUNDRY_KEY (or the per-model *_{re.sub(r'[^A-Z0-9]', '_', deployment.upper())} "
             f"overrides) in .env"
         )
-    kwargs = {"base_url": endpoint, "api_key": key}
+    # Azure calls can hang for many minutes without a client-side deadline; a bulk
+    # run must never block on one request. The SDK retries timeouts/429/5xx itself.
+    kwargs = {
+        "base_url": endpoint,
+        "api_key": key,
+        "timeout": float(os.getenv("LAV_FOUNDRY_TIMEOUT", "40")),
+        "max_retries": int(os.getenv("LAV_FOUNDRY_MAX_RETRIES", "3")),
+    }
     if api_version:
         kwargs["default_query"] = {"api-version": api_version}
     return openai.OpenAI(**kwargs)
