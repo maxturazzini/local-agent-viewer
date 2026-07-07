@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  macOS LaunchAgent template for scheduled interaction classification (LAV-73).
+  Runs utils/services/lav-classify.sh every hour: incremental lav-classify over
+  rows with no metadata yet. Replace __HOME__ with your home directory before
+  installing.
+
+  Install:
+    cp com.aimax.lav-classify.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.aimax.lav-classify.plist
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.aimax.lav-classify.plist
+    rm ~/Library/LaunchAgents/com.aimax.lav-classify.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aimax.lav-classify</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HOME__/.local/bin/lav-classify.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StartInterval</key>
+    <integer>3600</integer>
+    <key>StandardOutPath</key>
+    <string>__HOME__/.local/logs/lav-classify-cron.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.local/logs/lav-classify-cron-err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin</string>
+        <key>HOME</key>
+        <string>__HOME__</string>
+    </dict>
+</dict>
+</plist>

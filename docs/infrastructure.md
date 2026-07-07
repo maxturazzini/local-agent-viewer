@@ -61,10 +61,12 @@ conditional step:
 On the `prod-host` machine:
 
 - **venv**: `~/.local/lav-venv/`
-- **LaunchAgents**: a KeepAlive server, a parser (every 15 min), and an MCP server
-  (if streamable-http is enabled). See
+- **LaunchAgents**: a KeepAlive server, a parser (every 15 min), a classifier
+  (hourly, incremental — the only automatic classification; LAV-73), and an MCP
+  server (if streamable-http is enabled). See
   [utils/services/README.md](../utils/services/README.md) for the plist templates.
-- **Wrapper scripts**: `~/.local/bin/lav-server.sh`, `~/.local/bin/lav-parser.sh`
+- **Wrapper scripts**: `~/.local/bin/lav-server.sh`, `~/.local/bin/lav-parser.sh`,
+  `~/.local/bin/lav-classify.sh`
 
 ## Canonical hostname
 

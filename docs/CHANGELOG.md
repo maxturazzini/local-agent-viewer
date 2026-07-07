@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+LAV-73: scheduled classification as an explicit cron (replaces in-server auto-classify).
+- New templates in `utils/services/`: `lav-classify.sh` (incremental `lav-classify --min-messages 2`, concurrency guard so it never overlaps a manual bulk/reclassification run, logs to `~/.local/logs/lav-classify-cron.log`) + `com.aimax.lav-classify.plist` (hourly LaunchAgent, `__HOME__` placeholder). Documented in `utils/services/README.md` and `docs/infrastructure.md`.
+
 LAV-73: post-sync auto-classification REMOVED from the server.
 - `_auto_classify_new` + the `_bg_classify` thread + the pre/post-sync id snapshots deleted from `lav/server.py` (−185 lines). It was leftover machinery: it classified on every agent pull and swept the whole unclassified backlog, and had already been gated off. Classification is now always an explicit `lav-classify` run; the `LAV_AUTO_CLASSIFY` env var introduced earlier the same day is gone with it.
 - Decision (Max): no 17k backfill — the historical rows keep their existing labels; deepseek applies to explicit runs only.

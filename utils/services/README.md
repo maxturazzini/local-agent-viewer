@@ -1,8 +1,10 @@
 # Service templates
 
-Long-running deployment templates for LAV components. Currently:
+Deployment templates for LAV components. Currently:
 
 - **lav-mcp** — MCP server in `streamable-http` mode for remote consumption (port 8765 by default).
+- **lav-parser** — scheduled incremental parse (+ remote-agent pull trigger on collector hosts).
+- **lav-classify** — scheduled incremental classification (LAV-73). There is NO in-server auto-classification: this hourly job (or a manual `lav-classify`) is the only way rows get classified. Uses the backend configured in `.env` (`LAV_CLASSIFY_BACKEND` etc.); skips if another `lav-classify` is already running.
 
 ## Files
 
@@ -11,7 +13,19 @@ Long-running deployment templates for LAV components. Currently:
 | `bin/lav-mcp.sh` | Wrapper script — sets `LAV_MCP_TRANSPORT`, exec the venv binary |
 | `com.aimax.lav-mcp.plist` | macOS LaunchAgent template (placeholder `__HOME__`) |
 | `lav-mcp.service` | Linux systemd `--user` unit |
+| `lav-parser.sh` | Parse wrapper — incremental parse + agent-pull trigger, schedule every 15 min |
+| `lav-classify.sh` | Classify wrapper — incremental `lav-classify --min-messages 2`, concurrency guard |
+| `com.aimax.lav-classify.plist` | macOS LaunchAgent template for the classify job (hourly, placeholder `__HOME__`) |
 | `install.sh` | Detects platform, copies wrapper + service file, prints activation commands |
+
+## lav-classify quick install (macOS)
+
+```bash
+cp utils/services/lav-classify.sh ~/.local/bin/lav-classify.sh && chmod +x ~/.local/bin/lav-classify.sh
+sed "s|__HOME__|$HOME|g" utils/services/com.aimax.lav-classify.plist > ~/Library/LaunchAgents/com.aimax.lav-classify.plist
+launchctl load ~/Library/LaunchAgents/com.aimax.lav-classify.plist
+# log: ~/.local/logs/lav-classify-cron.log
+```
 
 ## Quick install
 
