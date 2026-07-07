@@ -10,17 +10,19 @@ Usage:
 """
 
 import argparse
+import csv
 import json
 import os
 import random
 import sqlite3
 import sys
 import time
+from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 
-# Ensure lav package is importable
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# Ensure lav package is importable (repo root — this file lives at tests/evals/)
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import lav  # noqa: F401 — triggers .env loading
 from lav import config
@@ -97,16 +99,36 @@ def _make_client(model_name):
         return openai.OpenAI(api_key="ollama", base_url=OLLAMA_BASE_URL), True
 
 
-def _classify_with_model(messages, model_name):
-    """Classify interaction with a specific model. Returns (result_dict, elapsed_secs, error_str)."""
-    client, is_ollama = _make_client(model_name)
+def _classify_with_model(messages, model_name, session_key=None):
+    """Classify interaction with a specific model. Returns (result_dict, elapsed_secs, error_str).
 
-    # Temporarily override config to control strict vs json_object path
+    A ``model@<backend>`` suffix overrides LAV_CLASSIFY_BACKEND for that run; the
+    real model name is everything before the '@'. A ``foundry:<deployment>`` prefix
+    routes the call through Azure AI Foundry (foundry backend, full single call).
+    """
+    backend = None
+    if "@" in model_name:
+        model_name, backend = model_name.split("@", 1)
+
+    is_foundry = model_name.startswith("foundry:")
+    if is_foundry:
+        model_name = model_name.split(":", 1)[1]  # deployment name
+        backend = backend or "foundry"
+
+    # Temporarily override config to control strict vs json_object vs foundry path
     orig_base_url = config.CLASSIFY_BASE_URL
+    orig_backend = config.CLASSIFY_BACKEND
+    t0 = time.time()
     try:
+        if is_foundry:
+            from lav.classifiers.foundry.client import make_client
+            client, is_ollama = make_client(model_name), False
+        else:
+            client, is_ollama = _make_client(model_name)
         config.CLASSIFY_BASE_URL = OLLAMA_BASE_URL if is_ollama else ""
-        t0 = time.time()
-        result = classify_interaction(messages, client, model=model_name)
+        if backend:
+            config.CLASSIFY_BACKEND = backend
+        result = classify_interaction(messages, client, model=model_name, session_key=session_key)
         elapsed = time.time() - t0
         return result, elapsed, None
     except Exception as e:
@@ -114,6 +136,7 @@ def _classify_with_model(messages, model_name):
         return None, elapsed, str(e)
     finally:
         config.CLASSIFY_BASE_URL = orig_base_url
+        config.CLASSIFY_BACKEND = orig_backend
 
 
 def _format_field(value):
@@ -255,19 +278,157 @@ def _generate_report(interactions_data, models, timestamp):
     return "\n".join(lines)
 
 
+# ===========================================================================
+# GOLD SCORING — evaluate models against human labels (ground truth), not a
+# baseline model. Reads the golden-set CSV (internal_docs/golden_set_v1.csv).
+# ===========================================================================
+
+GOLD_DEFAULT = Path(__file__).resolve().parents[2] / "internal_docs" / "golden_set_v1.csv"
+
+
+def _load_gold(path):
+    """Read the golden-set CSV → {(session_id, project_id): {classification, data_sensitivity, verdict}}.
+
+    Ground truth per row: gold_* if the annotator set it, else the AI label — an empty
+    gold cell means "confirmed the AI". Only annotated rows (any gold_* or a verdict) count.
+    """
+    gold = {}
+    with open(path, newline="", encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            gc = (r.get("gold_classification") or "").strip()
+            gs = (r.get("gold_data_sensitivity") or "").strip()
+            verdict = (r.get("verdict") or "").strip()
+            if not (gc or gs or verdict):
+                continue  # not annotated yet
+            try:
+                pid = int(r["project_id"])
+            except (KeyError, ValueError):
+                continue
+            gold[(r["session_id"], pid)] = {
+                "classification": gc or (r.get("ai_classification") or "").strip(),
+                "data_sensitivity": gs or (r.get("ai_data_sensitivity") or "").strip(),
+                "verdict": verdict,
+            }
+    return gold
+
+
+def _prf(pairs):
+    """pairs = [(gold, pred), ...] → per-class P/R/F1/support, macro-F1, accuracy, confusion."""
+    labels = sorted({g for g, _ in pairs} | {p for _, p in pairs})
+    tp, fp, fn = Counter(), Counter(), Counter()
+    confusion = defaultdict(Counter)
+    correct = 0
+    for g, p in pairs:
+        confusion[g][p] += 1
+        if g == p:
+            tp[g] += 1
+            correct += 1
+        else:
+            fp[p] += 1
+            fn[g] += 1
+    per = {}
+    f1s = []
+    for lab in labels:
+        dp, dr = tp[lab] + fp[lab], tp[lab] + fn[lab]
+        prec = tp[lab] / dp if dp else 0.0
+        rec = tp[lab] / dr if dr else 0.0
+        f1 = 2 * prec * rec / (prec + rec) if (prec + rec) else 0.0
+        per[lab] = {"precision": prec, "recall": rec, "f1": f1, "support": tp[lab] + fn[lab]}
+        if per[lab]["support"]:
+            f1s.append(f1)
+    return {
+        "per_class": per,
+        "macro_f1": sum(f1s) / len(f1s) if f1s else 0.0,
+        "accuracy": correct / len(pairs) if pairs else 0.0,
+        "confusion": confusion,
+        "labels": labels,
+        "n": len(pairs),
+    }
+
+
+def _pairs_for(interactions_data, model, field, gold):
+    """Collect (gold, pred) pairs for one model/field; count rows dropped for model error/empty."""
+    pairs, dropped = [], 0
+    for idata in interactions_data:
+        key = (idata["session_id"], idata["project_id"])
+        g = gold.get(key, {}).get(field)
+        if not g:
+            continue
+        res = idata["results"].get(model, {})
+        pred = (res.get("result") or {}).get(field) if res.get("result") else None
+        if pred:
+            pairs.append((g, pred))
+        else:
+            dropped += 1
+    return pairs, dropped
+
+
+def _gold_report(interactions_data, models, gold):
+    """Markdown: per-model P/R/F1 vs gold for classification + data_sensitivity, with confusions."""
+    lines = ["# Gold scoring — vs human labels\n"]
+    lines.append("Ground truth = the `gold_*` columns of the golden set (empty = AI confirmed). "
+                 "For `data_sensitivity`, recall on the higher levels matters most (missing sensitive data is the costly error).\n")
+    for model in models:
+        lines.append(f"## {model}\n")
+        for field, title in (("classification", "Classification"), ("data_sensitivity", "Data sensitivity")):
+            pairs, dropped = _pairs_for(interactions_data, model, field, gold)
+            m = _prf(pairs)
+            drop_note = f" · {dropped} dropped (model error/empty)" if dropped else ""
+            lines.append(f"**{title}** — n={m['n']} · accuracy={m['accuracy']*100:.0f}% · macro-F1={m['macro_f1']:.2f}{drop_note}\n")
+            lines.append("| class | precision | recall | F1 | support |")
+            lines.append("|-------|-----------|--------|----|---------|")
+            for lab in m["labels"]:
+                pc = m["per_class"][lab]
+                lines.append(f"| {lab} | {pc['precision']*100:.0f}% | {pc['recall']*100:.0f}% | {pc['f1']:.2f} | {pc['support']} |")
+            lines.append("")
+            conf = []
+            for g in m["labels"]:
+                wrong = {p: c for p, c in m["confusion"].get(g, {}).items() if p != g}
+                if wrong:
+                    conf.append(f"- gold **{g}** → " + ", ".join(f"{p}×{c}" for p, c in sorted(wrong.items(), key=lambda x: -x[1])))
+            if conf:
+                lines.append("Confusions (gold → predicted):")
+                lines.extend(conf)
+                lines.append("")
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Classification model eval")
-    parser.add_argument("--limit", type=int, default=10, help="Number of random interactions (default: 10)")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="Cap the number of interactions (random mode default: 10; "
+                             "in --gold mode: screen on the first N gold sessions instead of all)")
     parser.add_argument("--models", default=",".join(DEFAULT_MODELS),
                         help=f"Comma-separated model list (default: {','.join(DEFAULT_MODELS)})")
     parser.add_argument("--session-id", default="",
                         help="Comma-separated session IDs (overrides --limit)")
     parser.add_argument("--min-messages", type=int, default=5,
                         help="Minimum messages per interaction (default: 5)")
+    parser.add_argument("--gold", nargs="?", const=str(GOLD_DEFAULT), default=None,
+                        help="Score against human gold labels from a golden-set CSV "
+                             f"(bare flag uses {GOLD_DEFAULT.name}). Uses the CSV's annotated "
+                             "sessions as the eval set and reports P/R/F1 per class vs the gold_* columns.")
     args = parser.parse_args()
 
     models = [m.strip() for m in args.models.split(",") if m.strip()]
     session_ids = [s.strip() for s in args.session_id.split(",") if s.strip()] if args.session_id else None
+
+    gold = None
+    if args.gold is not None:
+        gold_path = Path(args.gold)
+        if not gold_path.exists():
+            print(f"ERROR: gold file not found: {gold_path}")
+            sys.exit(1)
+        gold = _load_gold(gold_path)
+        if not gold:
+            print(f"ERROR: no annotated rows in {gold_path}")
+            sys.exit(1)
+        session_ids = sorted({sid for sid, _ in gold})
+        if args.limit:  # screening subset
+            session_ids = session_ids[:args.limit]
+        args.min_messages = 0  # exact gold sessions, no min filter
+        note = f" (screening first {len(session_ids)})" if args.limit else ""
+        print(f"  Gold: {len(gold)} annotated rows from {gold_path.name}; using {len(session_ids)} sessions{note}")
 
     print(f"Classification Eval")
     print(f"  Models: {', '.join(models)}")
@@ -275,13 +436,21 @@ def main():
 
     conn = _get_db()
     interactions = _fetch_random_interactions(
-        conn, limit=args.limit, min_messages=args.min_messages, session_ids=session_ids
+        conn, limit=(args.limit or 10), min_messages=args.min_messages, session_ids=session_ids
     )
 
     if not interactions:
         print("  No interactions found matching criteria.")
         conn.close()
         return
+
+    if gold is not None:
+        requested = set(session_ids)
+        found_sids = {r["session_id"] for r in interactions}
+        missing = requested - found_sids
+        if missing:
+            print(f"  ⚠ {len(missing)}/{len(requested)} requested gold sessions not in this DB (skipped) — "
+                  f"run on the machine holding these sessions (e.g. minimacs).")
 
     print(f"  Interactions: {len(interactions)}")
     print()
@@ -314,7 +483,7 @@ def main():
 
         for model in models:
             print(f"  {model}...", end="", flush=True)
-            result, elapsed, error = _classify_with_model(messages, model)
+            result, elapsed, error = _classify_with_model(messages, model, session_key=(sid, pid))
             if error:
                 print(f" ERROR ({elapsed:.1f}s): {error}")
                 idata["results"][model] = {"result": None, "elapsed": elapsed, "error": error}
@@ -332,6 +501,17 @@ def main():
     # Generate report
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     report = _generate_report(interactions_data, models, timestamp)
+
+    if gold is not None:
+        # Gold scoring goes first (it's the point of the run), then the baseline detail.
+        report = _gold_report(interactions_data, models, gold) + "\n\n---\n\n" + report
+        print()
+        print("Gold scoring (vs human labels):")
+        for model in models:
+            for field in ("classification", "data_sensitivity"):
+                pairs, _ = _pairs_for(interactions_data, model, field, gold)
+                m = _prf(pairs)
+                print(f"  {model:22s} {field:16s} acc {m['accuracy']*100:3.0f}%  macro-F1 {m['macro_f1']:.2f}  (n={m['n']})")
 
     results_dir = Path(__file__).resolve().parent / "results"
     results_dir.mkdir(exist_ok=True)

@@ -100,23 +100,10 @@ CLASSIFY_BACKEND = os.getenv("LAV_CLASSIFY_BACKEND", "auto")  # auto, openai, ol
 CLASSIFY_MAX_CHARS = int(os.getenv("LAV_CLASSIFY_MAX_CHARS", "12000"))
 CLASSIFY_LANGUAGE = os.getenv("LAV_CLASSIFY_LANGUAGE", "en")
 
-CLASSIFICATIONS = [
-    "development",
-    "meeting",
-    "analysis",
-    "brainstorm",
-    "support",
-    "learning",
-    "marketing",
-    "operations",
-]
-
-SENSITIVITIES = [
-    "public",
-    "internal",
-    "confidential",
-    "restricted",
-]
+# Taxonomy is centralized in lav/taxonomy.json (single source of truth, loaded
+# with stdlib json — no new dependency). Descriptions for the classifier prompts
+# live there too. See lav/taxonomy.py.
+from lav.taxonomy import CLASSIFICATIONS, SENSITIVITIES, SENSITIVE_DATA_TYPES  # noqa: E402,F401
 
 
 def get_openai_key() -> Optional[str]:

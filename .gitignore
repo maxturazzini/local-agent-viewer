@@ -8,6 +8,11 @@ __pycache__/
 *.db-shm
 .DS_Store
 internal_docs/
+# Real taxonomies (user context + labeling rules) are private/sensitive.
+# Only the public lav/taxonomy.example.json is committed. See lav/taxonomy.py.
+# Covers the canonical taxonomy.json + eval variants (e.g. taxonomy_v1.json).
+lav/taxonomy*.json
+!lav/taxonomy.example.json
 .vscode/
 build/
 *.egg-info/

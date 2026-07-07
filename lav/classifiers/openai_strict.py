@@ -7,7 +7,7 @@ System prompt with full instructions + language instruction.
 
 from typing import Any, Dict, List
 
-from lav import config
+from lav import config, taxonomy
 from lav.classifiers.openai_classifier import (
     CLASSIFICATION_SCHEMA,
     _EMPTY_RESULT,
@@ -23,42 +23,32 @@ Write summary, abstract, and process in {config.CLASSIFY_LANGUAGE}. All other fi
 
 SYSTEM_PROMPT = f"""You classify user-AI interactions into structured JSON metadata. All fields are required.
 
-Fields (output in this order):
-1. summary: 1 sentence describing what the user did or asked
-2. abstract: 2-3 sentences with context, problem, decisions
-3. process: concrete workflow name (e.g. "debug deploy pipeline"), empty string if unclear
-4. topics: 1-5 specific keywords (e.g. "Azure architecture", "sales pipeline"), avoid generic terms
-5. people: third-party names mentioned (exclude the user and the assistant), empty array if none
-6. clients: companies or clients mentioned, empty array if none
-7. classification: one value from the list below
-8. data_sensitivity: one value from the list below
-9. sensitive_data_types: relevant types from the list below, empty array if data_sensitivity is "public"
+Context — {taxonomy.USER_CONTEXT}
 
-## classification — based on what the user DOES in the conversation
+{taxonomy.FIELDS_INSTRUCTION}
+{taxonomy.fields_block(numbered=True)}
 
-- development: actively writing, editing, or committing code
-- analysis: reviewing, researching, evaluating, comparing data or options
-- brainstorm: generating ideas, planning strategy, creating content (blogs, presentations)
-- meeting: meetings, calls, scheduling, role-play conversations, sales simulations
-- support: fixing something broken, debugging errors, troubleshooting
-- learning: studying, tutorials, asking how something works
-- marketing: sales activities, marketing content, outreach, campaigns, product pages, SEO, social media
-- operations: admin, finance, HR, procurement, invoicing, non-code business workflows
+{taxonomy.FIELDS_ENTITIES_NOTE}
 
-Important: reviewing or discussing code/architecture without editing it = analysis, writing new code = development.
+## {taxonomy.CLASSIFICATION_HEADER}
 
-Examples: review a technical spec → analysis | plan courses to sell → marketing | analyze a transcript → analysis | write a function → development | simulate a sales call → meeting | draft a campaign email → marketing | process an invoice → operations
+{taxonomy.classification_block()}
+
+Important: {taxonomy.CLASSIFICATION_GUIDANCE}
+
+Rules:
+{taxonomy.classification_rules_block()}
+
+Examples: {taxonomy.CLASSIFICATION_EXAMPLES}
 
 ## data_sensitivity
-- public: generic discussion, no names, no internal details
-- internal: internal work, architecture, tools
-- confidential: client data, strategies, pricing
-- restricted: credentials, tokens, API keys, financial data
+{taxonomy.sensitivity_block()}
 
-Rule: if people is non-empty, data_sensitivity must be at least "internal".
+Rules:
+{taxonomy.sensitivity_rules_block()}
 
 ## sensitive_data_types (when applicable)
-credentials, api_keys, financial, personal_data, client_strategy, pricing, contracts, internal_architecture, employee_data{_LANGUAGE_INSTRUCTION}"""
+{taxonomy.sensitive_data_types_line()}{_LANGUAGE_INSTRUCTION}"""
 
 
 def classify(

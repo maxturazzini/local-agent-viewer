@@ -2541,8 +2541,10 @@ def main():
 
     conn.close()
 
-    # Run classification in background (non-blocking async subprocess)
-    _launch_background_classify()
+    # Auto-classification on parse is DISABLED — gpt-4.1 auto-classify was too costly
+    # and the taxonomy is being reworked; future classification runs on-demand (local).
+    # Re-enable by uncommenting the call below.
+    # _launch_background_classify()
 
     # Notify collector to pull from this agent (if configured)
     notify_collector(load_runtime_config())

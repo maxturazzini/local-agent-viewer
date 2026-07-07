@@ -7,6 +7,7 @@ The classify_interaction() dispatcher routes to the correct backend.
 """
 
 import json
+import os
 import re
 from typing import Any, Dict, List
 
@@ -131,41 +132,72 @@ def _parse_json_response(content: str) -> dict:
     return json.loads(text)
 
 
+# Noise that pollutes the classification input: base64 image/data blobs and
+# injected system-wrapper tags. Stripped in ALL modes ("cleaner context").
+_DATAURI_RE = re.compile(r"data:[^;,\s]+;base64,[A-Za-z0-9+/=]+")
+_B64_RE = re.compile(r"[A-Za-z0-9+/]{300,}={0,2}")
+_WRAP_RE = re.compile(
+    r"</?(?:command-[a-z-]+|local-command-[a-z-]+|ide_[a-z_]+|system-reminder|thinking)[^>]*>",
+    re.I,
+)
+
+
+def _clean(text: str) -> str:
+    if not text:
+        return text
+    text = _DATAURI_RE.sub("[image]", text)
+    text = _B64_RE.sub("[blob]", text)
+    text = _WRAP_RE.sub(" ", text)
+    return text
+
+
 def prepare_messages_for_classification(messages: List[Dict]) -> str:
-    """Extract user intent messages for classification. Skips tool results and
-    assistant responses to focus on what the user asked/did."""
+    """Build the classifier input.
+
+    Always cleans out base64 blobs and injected system-wrapper tags. Default mode
+    keeps the user intent (full) + assistant first line, and drops tool results.
+    With env LAV_CLASSIFY_RICH=1, it also includes full assistant text, tool names,
+    and truncated tool results — the ACTIONS, not just the intent. Truncated to
+    config.CLASSIFY_MAX_CHARS (env LAV_CLASSIFY_MAX_CHARS, default 12000)."""
+    rich = os.getenv("LAV_CLASSIFY_RICH", "").strip().lower() in ("1", "true", "yes")
     parts = []
     for msg in messages:
         msg_type = msg.get("type", "")
         content = msg.get("content", "")
 
         if isinstance(content, list):
-            # Check if this is a tool_result (noise for classification)
-            if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+            is_tool_result = any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+            if is_tool_result and not rich:
                 continue
             text_parts = []
             for block in content:
                 if isinstance(block, dict):
-                    if block.get("type") == "text":
+                    bt = block.get("type")
+                    if bt == "text":
                         text_parts.append(block.get("text", ""))
-                    elif block.get("type") == "tool_use":
+                    elif bt == "tool_use":
                         text_parts.append(f"[tool: {block.get('name', '')}]")
+                    elif bt == "tool_result" and rich:
+                        tr = block.get("content", "")
+                        if isinstance(tr, list):
+                            tr = " ".join(b.get("text", "") for b in tr if isinstance(b, dict))
+                        text_parts.append(f"[result: {_clean(str(tr))[:500]}]")
                 elif isinstance(block, str):
                     text_parts.append(block)
             content = " ".join(text_parts)
         elif isinstance(content, str) and content.lstrip().startswith("[{") and "tool_result" in content[:200]:
-            # tool_result stored as JSON string
-            continue
+            if not rich:
+                continue
+            content = _clean(content)[:500]
 
-        content = str(content).strip()
+        content = _clean(str(content)).strip()
         if not content:
             continue
 
         if msg_type == "user":
             parts.append(f"User: {content}")
         elif msg_type == "assistant":
-            first_line = content.split("\n")[0][:300]
-            parts.append(f"Assistant: {first_line}")
+            parts.append(f"Assistant: {content[:3000] if rich else content.split(chr(10))[0][:300]}")
 
     text = "\n\n".join(parts)
     return text[:config.CLASSIFY_MAX_CHARS]
@@ -183,13 +215,19 @@ def classify_interaction(
     messages: List[Dict],
     openai_client,
     model: str = "",
+    session_key=None,
 ) -> Dict[str, Any]:
     """Classify an interaction, dispatching to the correct backend.
 
-    Backend is determined by LAV_CLASSIFY_BACKEND (auto/openai/ollama).
-    When auto: uses openai if no BASE_URL, ollama otherwise.
+    Backend is determined by LAV_CLASSIFY_BACKEND (auto/openai/ollama/foundry).
+    When auto: uses openai if no BASE_URL, ollama otherwise. ``session_key`` is a
+    (session_id, project_id) tuple accepted for callers that pass it; no current
+    backend uses it.
     """
     backend = _resolve_backend()
+    if backend == "foundry":
+        from lav.classifiers.foundry.classify import classify
+        return classify(messages, openai_client, model)
     if backend == "openai":
         from lav.classifiers.openai_strict import classify
     else:

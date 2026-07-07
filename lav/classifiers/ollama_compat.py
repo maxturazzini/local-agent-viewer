@@ -6,9 +6,10 @@ Language instruction embedded in user message. Always uses max_tokens.
 Strips thinking tags (Qwen, DeepSeek) via shared _parse_json_response.
 """
 
+import os
 from typing import Any, Dict, List
 
-from lav import config
+from lav import config, taxonomy
 from lav.classifiers.openai_classifier import (
     _EMPTY_RESULT,
     _parse_json_response,
@@ -23,36 +24,28 @@ if config.CLASSIFY_LANGUAGE and config.CLASSIFY_LANGUAGE != "en":
         f"All other fields (topics, people, clients, classification, data_sensitivity, sensitive_data_types) must stay in English.\n"
     )
 
-_SAMPLE_JSON = (
-    '{"classification": "support", '
-    '"data_sensitivity": "internal", '
-    '"summary": "User debugged a Python import error", '
-    '"abstract": "User encountered a ModuleNotFoundError. The fix was reinstalling the package.", '
-    '"process": "debug python dependency", '
-    '"topics": ["python", "import", "debugging"], '
-    '"people": [], "clients": [], '
-    '"sensitive_data_types": []}'
-)
+_SAMPLE_JSON = taxonomy.sample_json_str()
 
-_SYSTEM_PROMPT = """You classify user-AI interactions into structured JSON metadata.
+_SYSTEM_PROMPT = f"""You classify user-AI interactions into structured JSON metadata.
+
+Context — {taxonomy.USER_CONTEXT}
+
+{taxonomy.FIELDS_INSTRUCTION}
+{taxonomy.fields_block(numbered=False)}
+
+{taxonomy.FIELDS_ENTITIES_NOTE}
 
 ## classification values (pick ONE based on what the user DOES)
-- development: actively writing, editing, or committing code
-- analysis: reviewing, researching, evaluating, comparing data or options
-- brainstorm: generating ideas, planning strategy, creating content
-- meeting: meetings, calls, scheduling, role-play conversations
-- support: fixing something broken, debugging errors, troubleshooting
-- learning: studying, tutorials, asking how something works
-- marketing: sales, marketing content, outreach, campaigns, product pages, SEO
-- operations: admin, finance, HR, procurement, invoicing, non-code business workflows
+{taxonomy.classification_block()}
+
+Classification rules:
+{taxonomy.classification_rules_block()}
 
 ## data_sensitivity values (pick ONE)
-- public: generic discussion, no names, no internal details
-- internal: internal work, architecture, tools
-- confidential: client data, strategies, pricing
-- restricted: credentials, tokens, API keys, financial data
+{taxonomy.sensitivity_block()}
 
-Rule: if people is non-empty, data_sensitivity must be at least "internal".
+Sensitivity rules:
+{taxonomy.sensitivity_rules_block()}
 
 Respond with ONLY a valid JSON object. No markdown, no explanation, no ```json blocks."""
 
@@ -81,6 +74,10 @@ def classify(
         f"Your JSON:"
     )
 
+    # Classification wants determinism. Ollama defaults to temperature 0.8 (high),
+    # so set it explicitly when LAV_CLASSIFY_TEMPERATURE is provided (e.g. 0).
+    _temp = os.getenv("LAV_CLASSIFY_TEMPERATURE")
+    _extra = {"temperature": float(_temp)} if _temp not in (None, "") else {}
     response = openai_client.chat.completions.create(
         model=model,
         messages=[
@@ -88,6 +85,7 @@ def classify(
             {"role": "user", "content": user_content},
         ],
         max_tokens=2000,
+        **_extra,
     )
 
     raw = _parse_json_response(response.choices[0].message.content)

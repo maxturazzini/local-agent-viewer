@@ -16,7 +16,7 @@ all = ["qdrant-client", "openai", "anthropic", "fastmcp"]
 include = ["lav*"]
 
 [tool.setuptools.package-data]
-lav = ["static/**/*"]
+lav = ["static/**/*", "taxonomy.example.json"]
 
 [project.scripts]
 lav = "lav.cli:main"

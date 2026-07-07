@@ -1,0 +1,86 @@
+{
+  "context": {
+    "user": "The user is a technology professional who writes and reviews code, does research, produces written content, and communicates with clients. Role-plays, fake names/roles, and demo prompts may appear as workshop or test material rather than literal interactions."
+  },
+  "fields": {
+    "instruction": "Output a JSON object with these fields, in this order:",
+    "items": [
+      { "name": "summary", "desc": "1 sentence describing what the user did or asked" },
+      { "name": "abstract", "desc": "2-3 sentences with context, problem, decisions" },
+      { "name": "process", "desc": "the concrete workflow/activity being run (e.g. \"debug deploy pipeline\", \"client workshop prep\"). Empty string only if truly unclear." },
+      { "name": "topics", "desc": "1-5 SPECIFIC keywords — technologies, domains, subjects (e.g. \"Azure architecture\", \"RAG evaluation\", \"sales pipeline\"). Avoid generic terms (\"AI\", \"code\", \"help\", \"question\")." },
+      { "name": "people", "desc": "individual PERSONS mentioned who are third parties (humans, NOT companies). Write the full proper name exactly as it appears, in a stable canonical form — no roles, titles, or pronouns (\"the client\", \"il CEO\"). Exclude the user and the assistant. Empty array if none." },
+      { "name": "clients", "desc": "ORGANIZATIONS / companies mentioned (NOT individuals). Write the name as it appears; do not abbreviate or expand it. Empty array if none." },
+      { "name": "classification", "desc": "one value from the classification list below" },
+      { "name": "data_sensitivity", "desc": "one value from the data_sensitivity list below" },
+      { "name": "sensitive_data_types", "desc": "relevant types from the list below; empty array if data_sensitivity is \"public\"" }
+    ],
+    "entities_note": "Entities: people = WHO (individual humans), clients = WHICH ORGANIZATION. Keep them separate — a person belongs to a client, they are not interchangeable. Write each name identically across interactions so entities can be linked later.",
+    "sample_json": {
+      "classification": "meeting",
+      "data_sensitivity": "confidential",
+      "summary": "Prepared an AI-adoption workshop for a client",
+      "abstract": "Planned the agenda and demos for an AI-adoption workshop with Acme Corp, mapping use cases discussed with Laura Bianchi.",
+      "process": "client workshop preparation",
+      "topics": ["AI adoption", "workshop design", "use-case mapping"],
+      "people": ["Laura Bianchi"],
+      "clients": ["Acme Corp"],
+      "sensitive_data_types": ["client_strategy"]
+    }
+  },
+  "classification": {
+    "header": "classification — based on what the user DOES in the conversation",
+    "values": [
+      { "name": "development", "description": "actively writing, editing, or committing code" },
+      { "name": "analysis", "description": "reviewing, researching, evaluating, comparing data or options" },
+      { "name": "brainstorm", "description": "generating ideas, planning strategy" },
+      { "name": "content_production", "description": "producing content — blogs, posts, newsletters, slides, books, copy (usually pre-work, not yet published)" },
+      { "name": "meeting", "description": "meetings, calls, scheduling, role-play conversations, sales simulations, workshop demos" },
+      { "name": "support", "description": "fixing something broken, debugging errors, troubleshooting" },
+      { "name": "learning", "description": "studying, tutorials, asking how something works, asking for meanings or summaries of public content" },
+      { "name": "marketing", "description": "sales activities, marketing content, outreach, campaigns, product pages, SEO, social media" },
+      { "name": "operations", "description": "admin, finance, HR, procurement, invoicing, non-code business workflows, routine tooling and environment maintenance" }
+    ],
+    "guidance": "reviewing or discussing code/architecture without editing it = analysis, writing new code = development.",
+    "rules": [
+      "Writing or reworking content — blogs, posts, newsletters, slides, books, copy — is content_production, not brainstorm or development.",
+      "Maintaining or operating local tooling, thematic commits, and routine environment or admin work → operations.",
+      "Sales or promotional content, offers, proposals, and drafting contracts → marketing.",
+      "Client meetings and calls → meeting.",
+      "Role-plays, fake names/roles, and obvious demo prompts are usually workshop or test material → meeting (demos) or learning (LLM tests) — do not take them literally.",
+      "Asking for meanings, explanations, tutorials, or summaries of public content → learning.",
+      "analysis is broad — prefer operations / learning / content_production / marketing when they fit better."
+    ],
+    "examples": "review a technical spec → analysis | plan courses to sell → marketing | write a blog post → content_production | prepare workshop slides → content_production | analyze a transcript → analysis | write a function → development | simulate a sales call → meeting | draft a campaign email → marketing | maintain local tooling → operations | process an invoice → operations"
+  },
+  "data_sensitivity": {
+    "values": [
+      { "name": "public", "description": "generic discussion, no names, no internal details" },
+      { "name": "internal", "description": "internal work, architecture, tools" },
+      { "name": "confidential", "description": "client data, strategies, pricing" },
+      { "name": "restricted", "description": "credentials, tokens, API keys, financial data" }
+    ],
+    "rules": [
+      "Third-party personal data (names, surnames, emails, opinions about people) → at least confidential.",
+      "Health data → restricted.",
+      "Client meetings and calls → restricted (may be under NDA).",
+      "New or unpublished content — drafts, books, slides, pre-work → confidential.",
+      "Analysis of a new or unreleased software or product → confidential.",
+      "Private contracts, offers, and proposals → confidential.",
+      "Credentials, tokens, API keys, and financial data → restricted.",
+      "Public articles, public video summaries, casual chit-chat, and obvious LLM tests → public.",
+      "If any people are referenced, data_sensitivity must be at least internal."
+    ]
+  },
+  "sensitive_data_types": [
+    "credentials",
+    "api_keys",
+    "financial",
+    "personal_data",
+    "client_strategy",
+    "pricing",
+    "contracts",
+    "internal_architecture",
+    "employee_data"
+  ]
+}
