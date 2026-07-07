@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+LAV-72: post-sync auto-classification gated off (root cause of the gpt-4.1 "reactivation").
+- **Root cause**: disabling auto-classify on parse (LAV-70, `jsonl.py`) missed a second path — `lav/server.py:_auto_classify_new`, spawned after EVERY sync/pull, which classified the pulled sessions AND swept all unclassified rows in the DB. That sweep is what re-classified ~7k rows with gpt-4.1-mini after the LAV-66 repropagation, plus a steady trickle on every agent pull.
+- **Fix**: `_auto_classify_new` is now opt-in via `LAV_AUTO_CLASSIFY=1` (default OFF, consistent with the LAV-70 decision) and foundry-aware (builds the Azure client via `foundry.client.make_client()` when `LAV_CLASSIFY_BACKEND=foundry`; `OPENAI_API_KEY` no longer required in that case).
+
 LAV-72: production hardening for the foundry classify runner.
 - **Foundry client timeout/retry** (`foundry/client.py`): per-request deadline `LAV_FOUNDRY_TIMEOUT` (default 40s) + `LAV_FOUNDRY_MAX_RETRIES` (default 3, SDK-level on timeout/429/5xx). A bulk run had hung 13 min on a single Azure call with no client-side deadline — now impossible.
 - **`lav-classify` foundry-aware** (`sql_classifier.py`): with `LAV_CLASSIFY_BACKEND=foundry` the runner now builds the client via `foundry.client.make_client()` (Azure endpoint + key) instead of the OpenAI default — previously a foundry-configured run would have called api.openai.com with the deployment name and 404'd. `OPENAI_API_KEY` is no longer required for the foundry backend.

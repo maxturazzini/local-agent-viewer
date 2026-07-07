@@ -298,15 +298,26 @@ def pull_from_agents(conn, agents_config: list, agent_filter: str = None, full: 
 # ===========================================================================
 
 def _auto_classify_new(conv_ids: set = None) -> int:
-    """Classify new interactions using the configured OpenAI-compatible model.
+    """Classify new interactions using the configured classify backend.
 
     If conv_ids is provided, only those sessions are candidates.
     If conv_ids is None, sweeps ALL unclassified sessions in the DB.
-    Skips silently if OPENAI_API_KEY is not set.
+
+    Opt-in via LAV_AUTO_CLASSIFY=1: auto-classification was deliberately turned
+    off in LAV-70 (cost), but this post-sync path kept running unnoticed — every
+    agent pull classified new sessions, and the conv_ids=None sweep re-classified
+    the whole backlog after LAV-66 repropagation. Off by default until the
+    auto-classify policy is decided; use `lav-classify` for controlled runs.
     """
     import os
+    if os.getenv("LAV_AUTO_CLASSIFY", "").strip().lower() not in ("1", "true", "yes"):
+        print("[classify] Skipped — LAV_AUTO_CLASSIFY not enabled")
+        return 0
+
+    from lav.classifiers.openai_classifier import _resolve_backend
+    backend = _resolve_backend()
     api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
+    if backend != "foundry" and not api_key:
         print("[classify] Skipped — OPENAI_API_KEY not set")
         return 0
 
@@ -352,13 +363,17 @@ def _auto_classify_new(conv_ids: set = None) -> int:
         print(f"[classify] {len(candidates)} new interactions to classify")
         _sync_status["progress"] = f"Classifying {len(candidates)} interactions..."
 
-        import openai
         from lav.classifiers.openai_classifier import classify_interaction
 
-        client_kwargs = {"api_key": api_key}
-        if config.CLASSIFY_BASE_URL:
-            client_kwargs["base_url"] = config.CLASSIFY_BASE_URL
-        client = openai.OpenAI(**client_kwargs)
+        if backend == "foundry":
+            from lav.classifiers.foundry.client import make_client
+            client = make_client(config.CLASSIFY_MODEL)
+        else:
+            import openai
+            client_kwargs = {"api_key": api_key}
+            if config.CLASSIFY_BASE_URL:
+                client_kwargs["base_url"] = config.CLASSIFY_BASE_URL
+            client = openai.OpenAI(**client_kwargs)
         write_conn = init_db(UNIFIED_DB_PATH)
         model = config.CLASSIFY_MODEL
         classified = 0
