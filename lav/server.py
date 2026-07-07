@@ -108,13 +108,6 @@ _sync_status = {
     "started": None,
     "last_completed": None,
 }
-_classify_status = {
-    "running": False,
-    "last_completed": None,
-    "last_count": 0,
-}
-
-
 def get_kb_store(require_openai: bool = True):
     """Get or create the KB vector store (HTTP or file mode)."""
     global _kb_store
@@ -294,147 +287,6 @@ def pull_from_agents(conn, agents_config: list, agent_filter: str = None, full: 
 
 
 # ===========================================================================
-# AUTO-CLASSIFICATION (post-sync)
-# ===========================================================================
-
-def _auto_classify_new(conv_ids: set = None) -> int:
-    """Classify new interactions using the configured classify backend.
-
-    If conv_ids is provided, only those sessions are candidates.
-    If conv_ids is None, sweeps ALL unclassified sessions in the DB.
-
-    Opt-in via LAV_AUTO_CLASSIFY=1: auto-classification was deliberately turned
-    off in LAV-70 (cost), but this post-sync path kept running unnoticed — every
-    agent pull classified new sessions, and the conv_ids=None sweep re-classified
-    the whole backlog after LAV-66 repropagation. Off by default until the
-    auto-classify policy is decided; use `lav-classify` for controlled runs.
-    """
-    import os
-    if os.getenv("LAV_AUTO_CLASSIFY", "").strip().lower() not in ("1", "true", "yes"):
-        print("[classify] Skipped — LAV_AUTO_CLASSIFY not enabled")
-        return 0
-
-    from lav.classifiers.openai_classifier import _resolve_backend
-    backend = _resolve_backend()
-    api_key = os.getenv("OPENAI_API_KEY")
-    if backend != "foundry" and not api_key:
-        print("[classify] Skipped — OPENAI_API_KEY not set")
-        return 0
-
-    try:
-        read_conn = sqlite3.connect(str(UNIFIED_DB_PATH))
-        read_conn.row_factory = sqlite3.Row
-        read_conn.execute("PRAGMA journal_mode=WAL")
-        read_conn.execute("PRAGMA busy_timeout=5000")
-        read_conn.execute("PRAGMA query_only=ON")
-
-        if conv_ids:
-            # Filter to provided sessions that are unclassified with >= 2 messages
-            placeholders = ",".join(["(?,?)"] * len(conv_ids))
-            flat_params = []
-            for sid, pid in conv_ids:
-                flat_params.extend([sid, pid])
-            candidates = read_conn.execute(f"""
-                SELECT c.session_id, c.project_id, c.message_count
-                FROM interactions c
-                LEFT JOIN interaction_metadata cm
-                    ON cm.session_id = c.session_id AND cm.project_id = c.project_id
-                WHERE cm.session_id IS NULL
-                  AND c.message_count >= 2
-                  AND (c.session_id, c.project_id) IN ({placeholders})
-                ORDER BY c.timestamp DESC
-            """, flat_params).fetchall()
-        else:
-            # Sweep all unclassified sessions with >= 2 messages
-            candidates = read_conn.execute("""
-                SELECT c.session_id, c.project_id, c.message_count
-                FROM interactions c
-                LEFT JOIN interaction_metadata cm
-                    ON cm.session_id = c.session_id AND cm.project_id = c.project_id
-                WHERE cm.session_id IS NULL
-                  AND c.message_count >= 2
-                ORDER BY c.timestamp DESC
-            """).fetchall()
-
-        if not candidates:
-            read_conn.close()
-            return 0
-
-        print(f"[classify] {len(candidates)} new interactions to classify")
-        _sync_status["progress"] = f"Classifying {len(candidates)} interactions..."
-
-        from lav.classifiers.openai_classifier import classify_interaction
-
-        if backend == "foundry":
-            from lav.classifiers.foundry.client import make_client
-            client = make_client(config.CLASSIFY_MODEL)
-        else:
-            import openai
-            client_kwargs = {"api_key": api_key}
-            if config.CLASSIFY_BASE_URL:
-                client_kwargs["base_url"] = config.CLASSIFY_BASE_URL
-            client = openai.OpenAI(**client_kwargs)
-        write_conn = init_db(UNIFIED_DB_PATH)
-        model = config.CLASSIFY_MODEL
-        classified = 0
-
-        for conv in candidates:
-            sid, pid = conv["session_id"], conv["project_id"]
-            try:
-                rows = read_conn.execute(
-                    "SELECT type, content FROM messages WHERE session_id = ? AND project_id = ? ORDER BY id",
-                    (sid, pid),
-                ).fetchall()
-                messages = [{"type": r["type"], "content": r["content"]} for r in rows]
-                if not messages:
-                    continue
-
-                metadata = classify_interaction(messages, client, model=model)
-
-                now = datetime.now().isoformat()
-                write_conn.execute("""
-                    INSERT INTO interaction_metadata
-                        (session_id, project_id, summary, abstract, process, classification,
-                         data_sensitivity, sensitive_data_types, topics, people, clients,
-                         tags, model_used, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(session_id, project_id) DO UPDATE SET
-                        summary=excluded.summary, abstract=excluded.abstract,
-                        process=excluded.process, classification=excluded.classification,
-                        data_sensitivity=excluded.data_sensitivity,
-                        sensitive_data_types=excluded.sensitive_data_types,
-                        topics=excluded.topics, people=excluded.people, clients=excluded.clients,
-                        model_used=excluded.model_used, updated_at=excluded.updated_at
-                """, (
-                    sid, pid,
-                    metadata.get("summary", ""), metadata.get("abstract", ""),
-                    metadata.get("process", ""), metadata.get("classification", "development"),
-                    metadata.get("data_sensitivity", "internal"),
-                    json.dumps(metadata.get("sensitive_data_types", [])),
-                    json.dumps(metadata.get("topics", [])),
-                    json.dumps(metadata.get("people", [])),
-                    json.dumps(metadata.get("clients", [])),
-                    "[]", model, now, now,
-                ))
-                write_conn.commit()
-                classified += 1
-                cls = metadata.get("classification", "?")
-                print(f"[classify] {sid[:8]} → {cls}")
-
-            except Exception as e:
-                print(f"[classify] {sid[:8]} ERROR: {e}")
-
-        read_conn.close()
-        write_conn.close()
-        print(f"[classify] Done — {classified}/{len(candidates)} classified")
-        return classified
-
-    except Exception as e:
-        print(f"[classify] Fatal error: {e}")
-        return 0
-
-
-# ===========================================================================
 # SYNC ENGINE
 # ===========================================================================
 
@@ -456,13 +308,6 @@ def sync_data(scope: str, project: str = None, user: str = None,
         try:
             conn = get_write_connection()
             results = []
-
-            # Snapshot existing interaction IDs before sync
-            _pre_sync_ids = set(
-                (r[0], r[1]) for r in conn.execute(
-                    "SELECT session_id, project_id FROM interactions"
-                ).fetchall()
-            )
 
             # Pull from remote agents first (if configured)
             agents = _runtime_config.get("agents", [])
@@ -544,20 +389,14 @@ def sync_data(scope: str, project: str = None, user: str = None,
                     except Exception as e:
                         print(f"[sync] ChatGPT parse failed (non-fatal): {e}")
 
-            # Find new interactions added during this sync
-            _post_sync_ids = set(
-                (r[0], r[1]) for r in conn.execute(
-                    "SELECT session_id, project_id FROM interactions"
-                ).fetchall()
-            )
-            new_conv_ids = _post_sync_ids - _pre_sync_ids
             conn.close()
 
-            # Mark sync as completed BEFORE classification so new syncs aren't blocked
             _sync_status["running"] = False
             _sync_status["progress"] = "completed"
             _sync_status["last_completed"] = datetime.now().isoformat()
 
+            # No auto-classification here: classification runs are explicit
+            # (`lav-classify`, incremental/resumable) — see LAV-73.
             response = {
                 "success": True,
                 "scope": scope,
@@ -565,28 +404,6 @@ def sync_data(scope: str, project: str = None, user: str = None,
             }
             if pull_results:
                 response["pull"] = pull_results
-
-            # Run classification in background thread (non-blocking)
-            import threading
-            def _bg_classify(conv_ids):
-                global _classify_status
-                try:
-                    _classify_status["running"] = True
-                    count = _auto_classify_new(conv_ids=conv_ids) if conv_ids else 0
-                    count += _auto_classify_new(conv_ids=None)
-                    _classify_status["running"] = False
-                    _classify_status["last_completed"] = datetime.now().isoformat()
-                    _classify_status["last_count"] = count
-                    print(f"[classify] Background classification done: {count}")
-                except Exception as e:
-                    _classify_status["running"] = False
-                    print(f"[classify] Background classification error: {e}")
-
-            threading.Thread(
-                target=_bg_classify,
-                args=(new_conv_ids if new_conv_ids else None,),
-                daemon=True,
-            ).start()
 
             return response
 

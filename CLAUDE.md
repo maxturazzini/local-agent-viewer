@@ -127,7 +127,7 @@ Vanilla HTML/JS/CSS + Chart.js CDN. Three pages: dashboard (6 sub-tabs), interac
 - `LAV_SENSITIVITY_FLOOR` — `1` enables the deterministic minimum-sensitivity floor (regex + entity detectors; can only raise the model's guess)
 - `LAV_FOUNDRY_ENDPOINT` / `LAV_FOUNDRY_KEY` / `LAV_FOUNDRY_API_VERSION` — Azure AI Foundry endpoint config (per-deployment overrides: suffix the uppercased deployment name)
 - `LAV_FOUNDRY_TIMEOUT` / `LAV_FOUNDRY_MAX_RETRIES` — per-request deadline in seconds (default `40`) and SDK retries (default `3`)
-- `LAV_AUTO_CLASSIFY` — `1` re-enables post-sync auto-classification in the server (`_auto_classify_new`). **Default OFF**: this path classified on every agent pull and swept the whole unclassified backlog (the LAV-72 gpt-4.1 "reactivation"). Controlled runs go through `lav-classify` (supports `--meta-since`/`--meta-model` for surgical reclassification of already-classified rows).
+- **No auto-classification anywhere**: the parse-time hook (`jsonl.py`) is disabled and the post-sync path (`_auto_classify_new` in server.py) was removed entirely (LAV-73 — it used to classify on every agent pull AND sweep the whole unclassified backlog). Classification runs are always explicit via `lav-classify` (incremental by default; `--meta-since`/`--meta-model` for surgical reclassification of already-classified rows).
 
 ### Key conventions
 
