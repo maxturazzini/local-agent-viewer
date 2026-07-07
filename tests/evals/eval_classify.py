@@ -27,7 +27,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import lav  # noqa: F401 — triggers .env loading
 from lav import config
 from lav.config import UNIFIED_DB_PATH
-from lav.classifiers.openai_classifier import classify_interaction, prepare_messages_for_classification
+from lav.classifiers.openai_classifier import (
+    classify_interaction, prepare_messages_for_classification, full_scan_text,
+    apply_sensitivity_floor,
+)
 
 OLLAMA_BASE_URL = "http://localhost:11434/v1"
 
@@ -363,6 +366,46 @@ def _pairs_for(interactions_data, model, field, gold):
     return pairs, dropped
 
 
+_SENS_ORD = {"public": 0, "internal": 1, "confidential": 2, "restricted": 3}
+
+
+def _sens_directions(pairs):
+    """Directional breakdown for data_sensitivity: the costly error is UNDER-escalation
+    (a leak), not a raw mismatch — a cautious system prefers over-escalation. Returns
+    (under, over, correct, severe); severe = a sensitive row (confidential/restricted)
+    leaked down to public/internal."""
+    under = over = correct = severe = 0
+    for g, p in pairs:
+        og, op = _SENS_ORD.get(g, 0), _SENS_ORD.get(p, 0)
+        if op == og:
+            correct += 1
+        elif op < og:
+            under += 1
+            if og >= 2 and op <= 1:
+                severe += 1
+        else:
+            over += 1
+    return under, over, correct, severe
+
+
+def _floored_sens_pairs(interactions_data, model, gold):
+    """(gold, pred) for data_sensitivity AFTER applying the sensitivity floor to the
+    model's RAW output — measured on the SAME outputs as the raw pairs, so the floor's
+    effect is exact and noise-free (no separate stochastic run)."""
+    pairs = []
+    for idata in interactions_data:
+        g = gold.get((idata["session_id"], idata["project_id"]), {}).get("data_sensitivity")
+        if not g:
+            continue
+        res = idata["results"].get(model, {}).get("result")
+        if not res:
+            continue
+        r2 = dict(res)
+        apply_sensitivity_floor(r2, idata.get("prepared_text", ""), full_text=idata.get("full_scan", ""))
+        pairs.append((g, r2["data_sensitivity"]))
+    return pairs
+
+
 def _gold_report(interactions_data, models, gold):
     """Markdown: per-model P/R/F1 vs gold for classification + data_sensitivity, with confusions."""
     lines = ["# Gold scoring — vs human labels\n"]
@@ -478,6 +521,7 @@ def main():
             "project_name": proj,
             "message_count": msg_count,
             "prepared_text": prepared_text,
+            "full_scan": full_scan_text(messages),
             "results": {},
         }
 
@@ -512,6 +556,42 @@ def main():
                 pairs, _ = _pairs_for(interactions_data, model, field, gold)
                 m = _prf(pairs)
                 print(f"  {model:22s} {field:16s} acc {m['accuracy']*100:3.0f}%  macro-F1 {m['macro_f1']:.2f}  (n={m['n']})")
+                if field == "data_sensitivity":
+                    u, o, c, sv = _sens_directions(pairs)
+                    print(f"  {'':22s}   ↳ RAW    leak {u} [severe {sv}] · over {o} · ok {c}")
+                    fp = _floored_sens_pairs(interactions_data, model, gold)
+                    fu, fo, fc, fsv = _sens_directions(fp)
+                    fm = _prf(fp)
+                    print(f"  {'':22s}   ↳ FLOOR  leak {fu} [severe {fsv}] · over {fo} · ok {fc}  · acc {fm['accuracy']*100:.0f}%")
+
+        # Foundry per-call token usage → cost/task table (ground truth from API
+        # usage, no Azure Monitor lag). Projected onto a full 17k-interaction batch.
+        try:
+            from lav.classifiers.foundry import classify as _fc
+            if _fc.USAGE:
+                from collections import defaultdict as _dd
+                PRICE = {  # EUR / MTok (input, output); None = price not known yet
+                    "gpt-5-mini": (0.25, 1.94), "gpt-oss-120b": (0.1317, 0.5266),
+                    "deepseek-v4-flash": (0.16674, 0.44757), "gpt-5-1": (1.21, 9.66),
+                }
+                agg = _dd(lambda: {"n": 0, "p": 0, "c": 0, "r": 0})
+                for u in _fc.USAGE:
+                    a = agg[u["model"]]
+                    a["n"] += 1; a["p"] += u["prompt"]; a["c"] += u["completion"]; a["r"] += u["reasoning"]
+                print("\n  [foundry] token & cost per task (from API usage):")
+                print(f"    {'model':18s} {'n':>3s} {'in/task':>8s} {'out/task':>9s} {'reas/task':>9s} {'€/task':>9s} {'€/17k':>8s}")
+                for mdl in sorted(agg):
+                    a = agg[mdl]; nn = a["n"] or 1
+                    ip, op, rp = a["p"]/nn, a["c"]/nn, a["r"]/nn
+                    pin, pout = PRICE.get(mdl, (None, None))
+                    if pin is None:
+                        ct, c17 = "n/a", "n/a"
+                    else:
+                        c = (ip*pin + op*pout)/1e6
+                        ct, c17 = f"{c:.5f}", f"{c*17000:.1f}"
+                    print(f"    {mdl:18s} {a['n']:>3d} {ip:>8.0f} {op:>9.0f} {rp:>9.0f} {ct:>9s} {c17:>8s}")
+        except Exception:
+            pass
 
     results_dir = Path(__file__).resolve().parent / "results"
     results_dir.mkdir(exist_ok=True)

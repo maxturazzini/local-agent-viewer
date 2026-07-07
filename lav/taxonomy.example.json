@@ -31,27 +31,29 @@
   "classification": {
     "header": "classification — based on what the user DOES in the conversation",
     "values": [
-      { "name": "development", "description": "actively writing, editing, or committing code" },
-      { "name": "analysis", "description": "reviewing, researching, evaluating, comparing data or options" },
-      { "name": "brainstorm", "description": "generating ideas, planning strategy" },
-      { "name": "content_production", "description": "producing content — blogs, posts, newsletters, slides, books, copy (usually pre-work, not yet published)" },
-      { "name": "meeting", "description": "meetings, calls, scheduling, role-play conversations, sales simulations, workshop demos" },
-      { "name": "support", "description": "fixing something broken, debugging errors, troubleshooting" },
-      { "name": "learning", "description": "studying, tutorials, asking how something works, asking for meanings or summaries of public content" },
-      { "name": "marketing", "description": "sales activities, marketing content, outreach, campaigns, product pages, SEO, social media" },
-      { "name": "operations", "description": "admin, finance, HR, procurement, invoicing, non-code business workflows, routine tooling and environment maintenance" }
+      { "name": "development", "description": "actively BUILDING software — writing, editing, or committing NEW code or features. If the goal is fixing a specific error/broken behavior → support instead." },
+      { "name": "analysis", "description": "examining an EXISTING artifact — a document, dataset, contract, report, CV, codebase, or set of options — to evaluate, compare, research, or extract insight. NOT producing a new piece, NOT writing code, NOT a live meeting." },
+      { "name": "brainstorm", "description": "open-ended idea generation or strategy planning, before any concrete artifact exists" },
+      { "name": "content_production", "description": "crafting a specific editorial/creative PIECE to publish or share — blog, post, newsletter, slides, book, copy. The goal is the piece itself: to inform, teach, or narrate (usually pre-publication)." },
+      { "name": "meeting", "description": "meetings, calls, scheduling, processing a meeting transcript/recording, role-play conversations, sales simulations, workshop demos" },
+      { "name": "support", "description": "resolving something BROKEN — debugging errors, troubleshooting, fixing a failure, config/setup that isn't working. Anchored on an error or broken behavior, even when code is edited to fix it." },
+      { "name": "learning", "description": "studying a topic, tutorials, asking how something works in general, or asking for meanings/summaries of public content" },
+      { "name": "marketing", "description": "activities meant to SELL or CONVERT — commercial offers, proposals, pricing docs, campaigns, ads, product/landing pages, SEO, outreach, promotional or recruitment content. The goal is winning/converting, not merely informing." },
+      { "name": "operations", "description": "the user's own back-office & tooling — finance, invoicing, procurement, HR admin, file/folder wrangling, data normalization of own files, routine tooling and environment maintenance, thematic commits. Internal, not customer-facing." }
     ],
-    "guidance": "reviewing or discussing code/architecture without editing it = analysis, writing new code = development.",
+    "guidance": "Pick by the PRIMARY act. Code: reading/evaluating it = analysis, writing new = development, fixing an error = support. Content: to inform/publish = content_production, to sell/convert = marketing, internal admin/tooling = operations.",
     "rules": [
-      "Writing or reworking content — blogs, posts, newsletters, slides, books, copy — is content_production, not brainstorm or development.",
-      "Maintaining or operating local tooling, thematic commits, and routine environment or admin work → operations.",
-      "Sales or promotional content, offers, proposals, and drafting contracts → marketing.",
-      "Client meetings and calls → meeting.",
-      "Role-plays, fake names/roles, and obvious demo prompts are usually workshop or test material → meeting (demos) or learning (LLM tests) — do not take them literally.",
-      "Asking for meanings, explanations, tutorials, or summaries of public content → learning.",
-      "analysis is broad — prefer operations / learning / content_production / marketing when they fit better."
+      "content_production vs marketing — judge by INTENT: inform/teach/publish the piece → content_production; sell, convert, promote, or pitch (offers, proposals, pricing, campaigns, promo/recruitment posts) → marketing.",
+      "marketing vs operations — a commercial offer/proposal/pricing to WIN business, or promotional/recruitment content → marketing; internal invoicing, procurement, finance, or HR admin → operations.",
+      "analysis vs development/support — reading or evaluating code/architecture → analysis; writing new code → development; fixing a specific error → support.",
+      "analysis vs meeting — a meeting transcript/recording or its processing → meeting; a standalone document, report, contract, CV, or dataset → analysis.",
+      "analysis vs operations — extracting insight or evaluating → analysis; merely normalizing, reorganizing, or moving the user's own files/data → operations.",
+      "analysis vs learning — evaluating a SPECIFIC artifact → analysis; studying a topic or asking how something works in general → learning.",
+      "Maintaining or operating local tooling, thematic commits, routine environment/admin work, and large edits on internal documents → operations.",
+      "Client meetings and calls, and processing their transcripts → meeting.",
+      "Role-plays, fake names/roles, and obvious demo prompts are usually workshop or test material → meeting (demos) or learning (LLM tests) — do not take them literally."
     ],
-    "examples": "review a technical spec → analysis | plan courses to sell → marketing | write a blog post → content_production | prepare workshop slides → content_production | analyze a transcript → analysis | write a function → development | simulate a sales call → meeting | draft a campaign email → marketing | maintain local tooling → operations | process an invoice → operations"
+    "examples": "read/evaluate a contract → analysis | evaluate a CV → analysis | research a product to buy → analysis | process a meeting transcript → meeting | fix a failing integration → support | configure an API key that errors → support | build a brand-new feature → development | write a teaching post → content_production | prepare workshop slides → content_production | write a pricing offer → marketing | promotional social post → marketing | reconcile invoices → operations | normalize your own data table → operations | maintain local tooling → operations"
   },
   "data_sensitivity": {
     "values": [
