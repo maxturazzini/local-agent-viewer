@@ -1,223 +1,228 @@
-# LAV — Modello dati delle conversazioni
+# LAV — Conversation Data Model
 
-> Documento di riferimento. Spiega come LocalAgentViewer (LAV) rappresenta le
-> conversazioni dei vari agenti AI in un'unica base dati, perché esistono **due
-> modelli diversi** di conversazione, e cosa restituiscono le query principali.
+> Reference document. Explains how LocalAgentViewer (LAV) represents
+> conversations from various AI agents in a single database, why there are
+> **two different conversation models**, and what the main queries return.
 >
-> Tutti i numeri di esempio in questo documento sono **reali**, estratti dal DB
-> di test usato durante lo sviluppo di questa feature.
+> All example numbers in this document are **real**, extracted from the test
+> DB used during development of this feature.
 
 ---
 
-## 1. Le 5 sorgenti e le 4 dimensioni di filtro
+## 1. The 5 sources and the 4 filter dimensions
 
-LAV legge i log di agenti diversi e li normalizza in **un solo database SQLite**.
-Ogni conversazione viene etichettata con la sua sorgente (`session_sources.source`).
+LAV reads logs from different agents and normalizes them into **a single
+SQLite database**. Every conversation is tagged with its source
+(`session_sources.source`).
 
-### Le 5 sorgenti
+### The 5 sources
 
-| Sorgente (`source`) | Da dove | Prefisso del `session_id` |
+| Source (`source`) | Where from | `session_id` prefix |
 |---|---|---|
-| `claude_code` | Claude Code CLI (JSONL locali) | UUID nudo — es. `3e8d411d-4f4e-...` |
+| `claude_code` | Claude Code CLI (local JSONL) | bare UUID — e.g. `3e8d411d-4f4e-...` |
 | `codex_cli` | Codex CLI | `codex:` + uuid |
-| `cowork_desktop` | Cowork (Claude Desktop, app) | `cowork:` + uuid |
-| `chatgpt` | export ChatGPT | `chatgpt:` + id |
-| `claude_ai` | export account claude.ai | `claudeai:` + id |
+| `cowork_desktop` | Cowork (Claude Desktop app) | `cowork:` + uuid |
+| `chatgpt` | ChatGPT export | `chatgpt:` + id |
+| `claude_ai` | claude.ai account export | `claudeai:` + id |
 
-> Nota sul DB di test: contiene 4 delle 5 sorgenti (manca `chatgpt`). Conteggi
-> reali delle interazioni nel DB di test:
+> Note on the test DB: it contains 4 of the 5 sources (missing `chatgpt`).
+> Real interaction counts in the test DB:
 
-| Sorgente | Interazioni |
+| Source | Interactions |
 |---|---|
 | `claude_code` | 4144 |
 | `claude_ai` | 1515 |
 | `cowork_desktop` | 96 |
 | `codex_cli` | 34 |
-| **Totale** | **5789** |
+| **Total** | **5789** |
 
-Il prefisso del `session_id` è il modo più rapido per riconoscere la sorgente a
-colpo d'occhio: `claude_code` usa l'UUID nudo, tutte le altre sono prefissate.
+The `session_id` prefix is the fastest way to recognize the source at a
+glance: `claude_code` uses the bare UUID, all others are prefixed.
 
-### Le 4 dimensioni di filtro
+### The 4 filter dimensions
 
-Ogni query (dashboard, API, CLI) può filtrare su 4 assi **indipendenti**:
+Every query (dashboard, API, CLI) can filter on 4 **independent** axes:
 
-| Dimensione | Tabella | Significato | Esempi nel DB di test |
+| Dimension | Table | Meaning | Examples in the test DB |
 |---|---|---|---|
-| **Project** | `projects` | quale codebase / cartella | `miniMe`, `viewer`, `outputs`, ... (106 progetti) |
-| **User** | `users` | quale persona | `maxturazzini` |
-| **Host** | `hosts` | quale macchina | `macChia`, `Mac`, `cloud` |
-| **Source** | `session_sources` | quale agente | `claude_code`, `cowork_desktop`, ... |
+| **Project** | `projects` | which codebase / folder | `miniMe`, `viewer`, `outputs`, ... (106 projects) |
+| **User** | `users` | which person | `alice` |
+| **Host** | `hosts` | which machine | `dev-host`, `laptop`, `cloud` |
+| **Source** | `session_sources` | which agent | `claude_code`, `cowork_desktop`, ... |
 
-I filtri si combinano liberamente (AND). La chiave primaria di una interazione è
-**composta**: `interactions(session_id, project_id)`. Lo stesso `session_id` può
-quindi comparire sotto più progetti (vedi §2.2).
+Filters combine freely (AND). An interaction's primary key is **composite**:
+`interactions(session_id, project_id)`. The same `session_id` can therefore
+appear under multiple projects (see §2.2).
 
 ---
 
-## 2. I DUE modelli di conversazione (e perché differiscono)
+## 2. The TWO conversation models (and why they differ)
 
-Agenti diversi loggano la stessa "conversazione" in modi strutturalmente diversi.
-LAV li riconcilia con **due strategie**:
+Different agents log the same "conversation" in structurally different ways.
+LAV reconciles them with **two strategies**:
 
-| Modello | Sorgente tipica | Relazione | `parent_session_id` |
+| Model | Typical source | Relationship | `parent_session_id` |
 |---|---|---|---|
-| **MERGED** (fusione) | `cowork_desktop` | una conversazione = una riga | sempre `NULL` |
-| **MASTER / DERIVED** | `claude_code` | un master + N subagent | i figli puntano al master |
+| **MERGED** | `cowork_desktop` | one conversation = one row | always `NULL` |
+| **MASTER / DERIVED** | `claude_code` | one master + N subagents | children point to the master |
 
-### 2.1 Modello MERGED — Cowork
+### 2.1 MERGED model — Cowork
 
-**Il problema.** Cowork logga **una sola conversazione su due piani**:
+**The problem.** Cowork logs **a single conversation across two layers**:
 
-1. un "guscio" identificato dalla folder-uuid, che contiene i **turni umani**
-   (il dialogo visibile all'utente);
-2. una **sessione agente interna** che contiene l'esecuzione completa e i **token
-   reali** (tool, thinking, risposte).
+1. a "shell" identified by the folder-uuid, which contains the **human
+   turns** (the dialogue visible to the user);
+2. an **internal agent session** that contains the full execution and the
+   **real tokens** (tool calls, thinking, responses).
 
-Sono lo **stesso** dialogo, spezzato in due file. Tenerli separati darebbe due
-righe monche: una con i prompt umani ma senza costi, una con i costi ma senza il
-contesto umano.
+They are the **same** dialogue, split across two files. Keeping them separate
+would produce two incomplete rows: one with human prompts but no costs, one
+with costs but no human context.
 
-**La soluzione.** `parse_cowork_sessions` **fonde** i due piani sotto la
-folder-uuid (id prefissato `cowork:`):
+**The solution.** `parse_cowork_sessions` **merges** the two layers under the
+folder-uuid (id prefixed `cowork:`):
 
-- ri-etichetta ogni evento al master folder-uuid;
-- **scarta** i turni duplicati del guscio umano;
-- titola la riga con il **primo prompt umano**;
-- token e costo sono quelli **reali** della sessione interna.
+- relabels every event to the master folder-uuid;
+- **discards** the duplicate turns from the human shell;
+- titles the row with the **first human prompt**;
+- tokens and cost are the **real** ones from the internal session.
 
-Risultato: **nessun rapporto padre/figlio** per Cowork. Una conversazione = una
-riga, `parent_session_id = NULL`, il transcript contiene l'intero dialogo
-umano + assistente.
+Result: **no parent/child relationship** for Cowork. One conversation = one
+row, `parent_session_id = NULL`, the transcript contains the entire human +
+assistant dialogue.
 
-**Esempio reale — `cowork:dc3b5fe9-d23d-4f6b-bb02-d417e1d8128f`**
+**Real example — `cowork:dc3b5fe9-d23d-4f6b-bb02-d417e1d8128f`**
 
-| Campo | Valore |
+| Field | Value |
 |---|---|
 | `session_id` | `cowork:dc3b5fe9-d23d-4f6b-bb02-d417e1d8128f` |
 | `parent_session_id` | `NULL` |
-| Titolo (`display`) | *"voglio usare pgvis"* (primo prompt umano) |
-| Messaggi nel transcript | **210** (78 utente + 132 assistente) |
-| `total_tokens` | **7.520.969** |
-| Costo | **$5,1158** |
+| Title (`display`) | *"voglio usare pgvis"* (first human prompt) |
+| Messages in transcript | **210** (78 user + 132 assistant) |
+| `total_tokens` | **7,520,969** |
+| Cost | **$5.1158** |
 | `children` (in detail) | **0** |
 
-Tutto in **una sola riga**: il dialogo umano e l'esecuzione dell'agente sono già
-uniti.
+Everything in **a single row**: the human dialogue and the agent's execution
+are already merged.
 
-### 2.2 Modello MASTER / DERIVED — Claude Code
+### 2.2 MASTER / DERIVED model — Claude Code
 
-**Il caso.** Claude Code lancia **subagent reali**: ognuno vive nel suo file
-`agent-*.jsonl`. Questi NON sono duplicati da scartare — sono unità di lavoro
-distinte con i loro token. Sono già collegati al master tramite
+**The case.** Claude Code launches **real subagents**: each lives in its own
+`agent-*.jsonl` file. These are NOT duplicates to discard — they are distinct
+units of work with their own tokens. They are already linked to the master via
 `parent_session_id`.
 
-**La soluzione.** LAV li tiene come righe separate ma li **raggruppa** sotto il
-master:
+**The solution.** LAV keeps them as separate rows but **groups** them under
+the master:
 
-- la **lista raggruppata** mostra **solo i master** (`parent_session_id IS NULL`,
-  oppure il caso self-parent in cui il master punta a se stesso);
-- il costo e i token del master vengono **rollati-up** su tutto l'albero dei
-  subagent (ricorsivo, profondità arbitraria);
-- viene aggiunto `derived_count` = numero di discendenti.
+- the **grouped list** shows **only masters** (`parent_session_id IS NULL`,
+  or the self-parent case where the master points to itself);
+- the master's cost and tokens are **rolled up** across the entire subagent
+  tree (recursive, arbitrary depth);
+- `derived_count` = number of descendants is added.
 
-**Esempio reale — master `3e8d411d-4f4e-417f-afff-4e03654b975a`** (progetto `id=1`)
+**Real example — master `3e8d411d-4f4e-417f-afff-4e03654b975a`** (project `id=1`)
 
-| Vista | `total_tokens` | Costo | `derived_count` |
+| View | `total_tokens` | Cost | `derived_count` |
 |---|---|---|---|
-| **Flat** (solo il master, per-sessione) | 7.870.243 | $9,0065 | 0 |
-| **Grouped** (master + tutto l'albero) | **14.680.355** | **$21,102** | **40** |
+| **Flat** (master only, per-session) | 7,870,243 | $9.0065 | 0 |
+| **Grouped** (master + entire tree) | **14,680,355** | **$21.102** | **40** |
 
-In modalità raggruppata il master "assorbe" il costo dei suoi subagent: da
-$9,00 (solo lui) a $21,10 (lui + i 40 derivati). Il titolo resta quello del
-master: *"Claude CLI Update Lock Files Bug Fix"*.
+In grouped mode the master "absorbs" the cost of its subagents: from $9.00
+(alone) to $21.10 (itself + the 40 derived). The title stays the master's:
+*"Claude CLI Update Lock Files Bug Fix"*.
 
-> **Nota su 40 vs 42.** `get_interaction_children` (vedi §4) è *project-agnostico*
-> e restituisce **42** figli diretti, perché lo stesso `session_id` di un
-> subagent può essere materializzato sotto **più progetti** (chiave primaria
-> composta: qui il subagent compare sotto `project_id=1` e `project_id=65`). Il
-> roll-up della lista raggruppata, invece, deduplica i doppioni cross-project con
-> un visited-set su `(session_id, project_id)` e conta ogni nodo **una volta**:
-> da qui `derived_count=40`. Le due cifre sono entrambe corrette — rispondono a
-> domande diverse ("quante righe figlie esistono" vs "quanti subagent unici
-> sommo nel costo").
+> **Note on 40 vs 42.** `get_interaction_children` (see §4) is
+> *project-agnostic* and returns **42** direct children, because the same
+> subagent `session_id` can be materialized under **multiple projects**
+> (composite primary key: here the subagent appears under `project_id=1` and
+> `project_id=65`). The grouped list's roll-up, on the other hand, dedupes
+> cross-project duplicates with a visited-set on `(session_id, project_id)`
+> and counts each node **once**: hence `derived_count=40`. Both figures are
+> correct — they answer different questions ("how many child rows exist" vs
+> "how many unique subagents am I summing into the cost").
 
 ---
 
-## 3. Lista raggruppata (grouped) vs piatta (flat)
+## 3. Grouped list vs flat list
 
-`get_interactions_list(..., grouped=True|False)` ha due modalità:
+`get_interactions_list(..., grouped=True|False)` has two modes:
 
 | | `grouped=True` (default, dashboard) | `grouped=False` (flat) |
 |---|---|---|
-| Righe mostrate | solo i master top-level | **ogni** sessione |
-| Costo / token | rollati-up su master + discendenti | per-sessione |
-| `derived_count` | numero discendenti | sempre `0` |
-| Filtro parent | `parent_session_id IS NULL` o self-parent o orfano promosso | nessuno |
+| Rows shown | only top-level masters | **every** session |
+| Cost / tokens | rolled up across master + descendants | per-session |
+| `derived_count` | number of descendants | always `0` |
+| Parent filter | `parent_session_id IS NULL` or self-parent or promoted orphan | none |
 
-**Cosa conta come "top-level" in grouped:** una riga è top-level se
-`parent_session_id IS NULL`, **oppure** se punta a se stessa (self-parent),
-**oppure** se il suo parent non esiste da nessuna parte (*orphan promotion* — così
-nessuna riga sparisce). Il lookup del parent è **project-agnostico**: si confronta
-solo sul `session_id` (UUID globalmente unico), perché un master Cowork vive in un
-progetto mentre i suoi eventi possono finire in progetti inferiti diversi.
+**What counts as "top-level" in grouped mode:** a row is top-level if
+`parent_session_id IS NULL`, **or** if it points to itself (self-parent),
+**or** if its parent doesn't exist anywhere (*orphan promotion* — so no row
+disappears). The parent lookup is **project-agnostic**: it matches only on
+`session_id` (globally unique UUID), because a Cowork master lives in one
+project while its events may end up under different inferred projects.
 
-Per Cowork la distinzione grouped/flat è quasi ininfluente: non avendo figli, una
-conversazione Cowork è già una singola riga top-level in entrambe le modalità.
+For Cowork, the grouped/flat distinction is nearly irrelevant: having no
+children, a Cowork conversation is already a single top-level row in both
+modes.
 
-**Importante — search / CLI / MCP restano FLAT.** La ricerca testuale (`lav
-search`), la CLI e gli strumenti MCP lavorano **sempre** in modalità piatta: ogni
-sessione è un risultato a sé, con il suo costo per-sessione. Il raggruppamento è
-una funzione di **presentazione** della lista nella dashboard, non un modo di
-indicizzare i dati.
+**Important — search / CLI / MCP remain FLAT.** Text search (`lav search`),
+the CLI, and the MCP tools always work in flat mode: every session is its own
+result, with its own per-session cost. Grouping is a **presentation** feature
+of the dashboard list, not a way of indexing the data.
 
 ---
 
-## 4. Cosa restituiscono le query principali
+## 4. What the main queries return
 
 ### `get_interactions_list(...)`
 
-Restituisce `{ interactions, total, limit, offset }`. Ogni elemento di
-`interactions` include, oltre ai campi base (`session_id`, `project_id`, `model`,
-`message_count`, `display`, `summary`, ...):
+Returns `{ interactions, total, limit, offset }`. Each element of
+`interactions` includes, besides the base fields (`session_id`, `project_id`,
+`model`, `message_count`, `display`, `summary`, ...):
 
-- `client_source` — la sorgente (`claude_code`, `cowork_desktop`, ...);
-- `cost_usd` — costo calcolato a query-time via LEFT JOIN su `model_pricing`
-  (mai materializzato);
-- `total_tokens` — in grouped, già rollato-up sull'albero;
-- **`derived_count`** — quanti subagent/discendenti sono stati sommati
-  (`0` in flat, o quando il master non ha figli).
+- `client_source` — the source (`claude_code`, `cowork_desktop`, ...);
+- `cost_usd` — cost calculated at query-time via LEFT JOIN on
+  `model_pricing` (never materialized);
+- `total_tokens` — in grouped mode, already rolled up across the tree;
+- **`derived_count`** — how many subagents/descendants were summed
+  (`0` in flat mode, or when the master has no children).
 
 ### `get_interaction_children(conn, session_id, project_id=None)`
 
-Restituisce i **figli diretti** (un livello) di un master, ordinati dal più
-vecchio. Ogni figlio ha: `session_id`, `project_id`, `summary`, `display`,
-`agent_id`, `timestamp`, `total_tokens`, `message_count`, `cost_usd` (per-sessione).
+Returns the **direct children** (one level) of a master, ordered
+oldest-first. Each child has: `session_id`, `project_id`, `summary`,
+`display`, `agent_id`, `timestamp`, `total_tokens`, `message_count`,
+`cost_usd` (per-session).
 
-È **project-agnostico**: matcha solo su `parent_session_id`, quindi può
-restituire figli che vivono in progetti diversi dal master (vedi nota 40 vs 42 in
-§2.2). Il parametro `project_id` è accettato per compatibilità ma **non** usato
-come filtro.
+It is **project-agnostic**: it matches only on `parent_session_id`, so it can
+return children that live in different projects than the master (see the 40
+vs 42 note in §2.2). The `project_id` parameter is accepted for compatibility
+but **not** used as a filter.
 
 ### `get_interaction_detail(conn, session_id, project_id)`
 
-Restituisce il transcript completo (`messages`), più:
+Returns the full transcript (`messages`), plus:
 
-- `interaction.children` = output di `get_interaction_children` (i derivati);
-- `interaction.parent_interaction` se la riga ha un parent;
-- `interaction.cost_usd` per-sessione.
+- `interaction.children` = output of `get_interaction_children` (the
+  derived subagents);
+- `interaction.parent_interaction` if the row has a parent;
+- `interaction.cost_usd` per-session.
 
-Per Cowork: `children` è vuoto e il transcript contiene **già** l'intero dialogo
-umano + assistente (210 messaggi nell'esempio). Per un master Claude Code:
-`children` elenca i subagent derivati da espandere nel dettaglio.
+For Cowork: `children` is empty and the transcript **already** contains the
+entire human + assistant dialogue (210 messages in the example). For a Claude
+Code master: `children` lists the derived subagents to expand in the detail
+view.
 
 ---
 
-## 5. Riepilogo in una frase
+## 5. One-sentence summary
 
-- **Cowork = fusione**: una `audit.jsonl` = una conversazione = una riga
-  (`parent=NULL`), token e costo reali, titolo dal primo prompt umano.
-- **Claude Code = master/derived**: i subagent restano righe separate ma la lista
-  raggruppata mostra solo il master con costo/token rollati-up su tutto l'albero e
-  un `derived_count`; il dettaglio espande i derivati.
-- **search / CLI / MCP** restano sempre piatti (una sessione = un risultato).
+- **Cowork = merged**: one `audit.jsonl` = one conversation = one row
+  (`parent=NULL`), real tokens and cost, title from the first human prompt.
+- **Claude Code = master/derived**: subagents remain separate rows but the
+  grouped list shows only the master with cost/tokens rolled up across the
+  entire tree and a `derived_count`; the detail view expands the derived
+  subagents.
+- **search / CLI / MCP** always remain flat (one session = one result).

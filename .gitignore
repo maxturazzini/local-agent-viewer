@@ -17,6 +17,9 @@ lav/taxonomy*.json
 build/
 *.egg-info/
 test-results/
+# Eval reports contain RAW interaction transcripts (real PII, paths, secrets).
+# Never commit — regenerate locally. Fake fixtures live in tests/evals/fixtures/.
+tests/evals/results/
 node_modules/
 package.json
 package-lock.json

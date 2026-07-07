@@ -127,37 +127,27 @@ Vanilla HTML/JS/CSS + Chart.js CDN. Three pages: dashboard (6 sub-tabs), interac
 
 ### Key conventions
 
-- **Two-environment awareness — ALWAYS run `hostname` first** before anything that touches "prod" or a running server. Two machines exist:
-  - **macChia** (dev): `~/.local/share/local-agent-viewer/config.json` → `role: agent`. The server on :8764 only exposes `/api/health|info|export` — **no dashboard**. To test UI changes locally, spin up a temporary `lav-server` with role overridden to `both` on a different port (e.g. :8765) by monkey-patching `lav.server._runtime_config` from a one-off Python launcher. Never edit the prod agent config.
-  - **minimacs.local** (prod): `role: both`, full dashboard at http://minimacs.local:8764. Deploy via `ssh minimacs.local`. Both share the same git repo path (`~/claude_projects/local-agent-viewer`) via editable install.
+- **Two-environment awareness — ALWAYS run `hostname` first** before anything that touches "prod" or a running server. Two machines: **`dev-host`** (`role: agent`, **no dashboard** — `:8764` serves only `/api/health|info|export`; to test UI, spin up a temp `lav-server` with role `both` on `:8765` via monkey-patched `lav.server._runtime_config`) and **`prod-host`** (`role: both`, full dashboard on `:8764`). `dev-host`/`prod-host` are placeholders — full infra, roles and deploy detail: [docs/infrastructure.md](docs/infrastructure.md); real host names, ssh targets and copy-paste runbook: `internal_docs/infra.md` (gitignored).
 - **Development workflow** — mandatory even for one-line changes:
   1. Pick (or create) Jira ticket → transition to **In Progress**
   2. **Plan**: propose approach and ask user for approval before coding
-  3. Develop → test e2e (manual — no test suite). For UI: use the temp `lav-server` on macChia.
+  3. Develop → test e2e (manual — no test suite). For UI: use the temp `lav-server` on dev-host.
   4. Update docs: CLAUDE.md (if env/architecture changed) → README (if user-facing) → .env.example (if new env vars) → `docs/CHANGELOG.md` (**always** — entry under `## Unreleased` with `LAV-XX:` prefix)
   5. Ask user about commit → commit with ticket ref (e.g. `LAV-32: ...`). Multiple tickets in one commit is OK if the changes are coupled (e.g. `LAV-43, LAV-44: ...`)
   6. Push to `origin/main`
-  7. **Deploy on minimacs** (see decision tree below)
-  8. Add Jira comment per ticket: commit hash, test method (mention macChia temp server if UI), deploy notes
+  7. **Deploy on prod-host** (see decision tree below)
+  8. Add Jira comment per ticket: commit hash, test method (mention dev-host temp server if UI), deploy notes
   9. Transition to **Done** (only after deploy verified)
-- **Deploy decision tree** — branch on what changed in the diff:
-  - Only `lav/static/**` → `ssh minimacs.local 'cd ~/claude_projects/local-agent-viewer && git pull'` + browser hard refresh. No restart (static files re-read each request).
-  - `pyproject.toml` changed (e.g. new `console_scripts`) → also `~/.local/lav-venv/bin/pip install -e ~/claude_projects/local-agent-viewer`
-  - Any `lav/*.py` changed (server code) → also restart: `kill $(pgrep -f "python.*-m lav.server")`. KeepAlive auto-restarts. The wrapper bash + tee processes don't need killing — only the python process. **Note**: `pgrep -f lav-server` matches only the wrapper, not the python process; use `python.*lav.server` instead.
-  - `lav/mcp_server.py` changed → also restart `lav-mcp` processes (`pgrep -f "lav-venv/bin/lav-mcp"`). Be aware: this drops live MCP client connections.
-  - `pyproject.toml` version bump → also tag the release after push.
+- **Deploy decision tree** — branch on what changed in the diff (full table with commands: [docs/infrastructure.md](docs/infrastructure.md#deploy-decision-tree)): static-only → `git pull` + browser refresh, no restart; `pyproject.toml` → also `pip install -e .`; any `lav/*.py` → also restart the server python process (`kill $(pgrep -f "python.*-m lav.server")`, KeepAlive restarts it — `pgrep -f lav-server` matches only the wrapper, use `python.*lav.server`); `lav/mcp_server.py` → also restart `lav-mcp` (drops live MCP clients); version bump → tag the release.
 - **`internal_docs/`** is gitignored — private notes, not shipped
 - **Jira project `LAV`** on aimaxplayground.atlassian.net tracks all TODO/backlog (epics + tasks). No local TODO files — use Jira as single source of truth
 - **Sentinel values**: `parse_state` uses `project_id=-1` and `source=''` (never NULL)
-- **Canonical hostname** (LAV-68): `socket.gethostname()` is volatile on macOS (transiently `Mac`/mojibake), so host identity comes from `_canonical_hostname()` in `jsonl.py` — precedence `LAV_HOSTNAME` env → `config.json` `"hostname"` key → validated socket name → `unknown`. **Set a stable `"hostname"` in each node's `config.json`** (macChia → `macChia`, minimacs → `miniMacs`) or new host rows split one machine's sessions. Corrupted/generic names are rejected by `_is_valid_hostname()` and never inserted.
+- **Canonical hostname** (LAV-68): `socket.gethostname()` is volatile on macOS (transiently `Mac`/mojibake), so host identity comes from `_canonical_hostname()` in `jsonl.py` — precedence `LAV_HOSTNAME` env → `config.json` `"hostname"` key → validated socket name → `unknown`. **Set a stable `"hostname"` in each node's `config.json`** (dev machine → `dev-host`, prod machine → `prod-host`) or new host rows split one machine's sessions. Corrupted/generic names are rejected by `_is_valid_hostname()` and never inserted.
 - **Synthetic subagent session ids**: Claude Code agent files (`subagents/**/agent-*.jsonl`) reuse the parent's `sessionId`; the parser rekeys them as `<parent_session_id>::agent-<agentId>` (LAV-66). A `session_id` containing `::agent-` is a subagent child conversation, linked via `parent_session_id`.
 - **Per-project commits** in parsers for crash resilience
 - **`conversation_id`** in `chatgpt.py` is OpenAI's external field name — not a bug, don't rename
 - Migration code referencing old `conversations` table in `jsonl.py` and `qdrant/store.py` is intentional
 
-### Production deployment (minimacs.local)
+### Production deployment
 
-- venv: `~/.local/lav-venv/`
-- LaunchAgents: `com.aimax.lav-server` (KeepAlive), `com.aimax.lav-parser` (every 15 min), `com.aimax.lav-mcp` (if streamable-http enabled)
-- Wrapper scripts: `~/.local/bin/lav-server.sh`, `~/.local/bin/lav-parser.sh`
-- See "Deploy decision tree" above for the conditional restart matrix.
+Machine layout (venv, LaunchAgents, wrapper scripts), roles and the deploy decision tree: [docs/infrastructure.md](docs/infrastructure.md). Real host names, ssh targets and copy-paste deploy commands: `internal_docs/infra.md` (gitignored).
