@@ -1446,6 +1446,8 @@
         <!-- Row 6: Cost breakdown table -->
         <div class="table-container">
             <div class="chart-title">Cost breakdown by model</div>
+            <div id="costPriceWarning" style="display:none;margin:0 0 10px;padding:8px 12px;border-radius:8px;
+                background:rgba(255,176,32,0.12);border:1px solid rgba(255,176,32,0.5);color:#b8860b;font-size:13px;"></div>
             <table>
                 <thead><tr>
                     <th style="text-align:left;">Model</th>
@@ -3094,21 +3096,34 @@
         // ── Cost breakdown table ──
         const tbodyEl = document.getElementById('costBreakdownTable');
         tbodyEl.textContent = '';
+        // A model with tokens but no pricing row => cost is undercounted (shows 0).
+        const unpricedModels = byModel.filter(m =>
+            !m.has_price && ((m.input_tokens||0)+(m.output_tokens||0)+(m.cache_read||0)+(m.cache_creation||0)) > 0
+        ).map(m => m.model);
         byModel.forEach(m => {
             const avgCall = (m.cost_usd || 0) / (m.calls || 1);
+            const noPrice = !m.has_price;
             const tr = document.createElement('tr');
             tr.insertAdjacentHTML('beforeend', `
-                <td style="font-weight:600;color:var(--dodger-blue);text-align:left;">${m.model}</td>
+                <td style="font-weight:600;color:var(--dodger-blue);text-align:left;">${m.model}${noPrice ? ' <span title="No pricing configured — cost not counted" style="color:#b8860b;font-weight:700;">⚠</span>' : ''}</td>
                 <td style="text-align:center;">${formatNumber(m.calls || 0)}</td>
                 <td style="text-align:center;">${formatCost(m.cost_input)}</td>
                 <td style="text-align:center;">${formatCost(m.cost_output)}</td>
                 <td style="text-align:center;">${formatCost(m.cost_cache_write)}</td>
                 <td style="text-align:center;">${formatCost(m.cost_cache_read)}</td>
-                <td style="text-align:center;font-weight:700;color:#00D35D;">${formatCost(m.cost_usd)}</td>
-                <td style="text-align:center;color:#666;">${formatCost(avgCall)}</td>
+                <td style="text-align:center;font-weight:700;color:${noPrice ? '#b8860b' : '#00D35D'};">${noPrice ? 'n/a' : formatCost(m.cost_usd)}</td>
+                <td style="text-align:center;color:#666;">${noPrice ? '—' : formatCost(avgCall)}</td>
             `);
             tbodyEl.appendChild(tr);
         });
+        // ── Missing-price warning banner ──
+        const warnEl = document.getElementById('costPriceWarning');
+        if (unpricedModels.length) {
+            warnEl.style.display = 'block';
+            warnEl.innerHTML = `⚠ <strong>${unpricedModels.length} model${unpricedModels.length>1?'s':''} without pricing</strong> — token counts are correct but cost is undercounted: ${unpricedModels.map(m => `<code>${m}</code>`).join(', ')}. Add via <code>lav-pricing add</code>.`;
+        } else {
+            warnEl.style.display = 'none';
+        }
         // Totals row
         const totalAvgCall = totalCost / (totals.total_calls || 1);
         tbodyEl.insertAdjacentHTML('beforeend', `

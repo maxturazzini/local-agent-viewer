@@ -101,7 +101,8 @@ def get_token_stats(conn, project_id=None, user_id=None, host_id=None,
                 + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
                 + COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0
                 + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
-            ), 4) as cost_usd
+            ), 4) as cost_usd,
+            MAX(mp.input_price_per_mtok IS NOT NULL) as has_price
         FROM token_usage tu
         {join}
         {price_join}

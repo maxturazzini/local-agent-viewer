@@ -42,6 +42,13 @@ DEFAULT_PRICING = [
     ("gpt-5.1-codex-max", "openai", 1.25, 10.00, 0, 0.625, "2024-01-01"),
     ("gpt-5.3-codex", "openai", 1.75, 14.00, 0, 0.875, "2024-01-01"),
     ("gpt-5-codex", "openai", 1.25, 10.00, 0, 0.625, "2024-01-01"),
+    # LAV-74: newer Codex surfaces (Desktop / VS Code / Work) — official
+    # developers.openai.com/api/docs/pricing (input / output / cached-input $/Mtok).
+    ("gpt-5.4", "openai", 2.50, 15.00, 0, 0.25, "2024-01-01"),
+    ("gpt-5.5", "openai", 5.00, 30.00, 0, 0.50, "2024-01-01"),
+    ("gpt-5.6-sol", "openai", 5.00, 30.00, 0, 0.50, "2024-01-01"),
+    ("gpt-5.6-terra", "openai", 2.50, 15.00, 0, 0.25, "2024-01-01"),
+    ("gpt-5.6-luna", "openai", 1.00, 6.00, 0, 0.10, "2024-01-01"),
 ]
 
 
