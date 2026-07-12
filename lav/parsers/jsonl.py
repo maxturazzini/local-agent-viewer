@@ -806,6 +806,13 @@ _CODEX_CLI_ORIGINATORS = frozenset({
     "codex_cli_rs", "codex-tui", "codex_tui", "codex_exec", "codex_cli", "codex-cli",
 })
 
+# Recognized Codex surfaces (positively identified) — used to upgrade a stale
+# generic codex_cli/codex_local row, both in the local parser and when ingesting
+# a remote agent's re-attributed sessions (LAV-74).
+_CODEX_RECOGNIZED_SOURCES = frozenset({
+    SOURCE_CHATGPT_WORK_DESKTOP, SOURCE_CODEX_DESKTOP, SOURCE_CODEX_VSCODE, SOURCE_CODEX_CLI,
+})
+
 
 def map_codex_source(originator: str) -> tuple[str, bool]:
     """Map a Codex ``session_meta.payload.originator`` to a LAV source label (LAV-74).
@@ -2836,6 +2843,17 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                 (session_id, project_id, source)
                 VALUES (?, ?, ?)
             """, (session_id, project_id, client_source))
+            # LAV-74: propagate Codex re-attribution from the agent. A session
+            # pulled before the fix sits here as generic codex_cli/codex_local;
+            # when the agent now reports a recognized surface, upgrade it in
+            # place. Never downgrade or touch non-Codex sources.
+            if client_source in _CODEX_RECOGNIZED_SOURCES:
+                conn.execute("""
+                    UPDATE session_sources SET source = ?
+                    WHERE session_id = ? AND project_id = ?
+                      AND source IN (?, ?) AND source <> ?
+                """, (client_source, session_id, project_id,
+                      SOURCE_CODEX_CLI, SOURCE_CODEX_LOCAL, client_source))
         except sqlite3.Error:
             pass
 
