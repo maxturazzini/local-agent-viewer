@@ -54,9 +54,14 @@ No cloud. No accounts. No external dependencies. Just `pip install` and go.
 | Agent | Source Format | Auto-detected |
 |-------|--------------|---------------|
 | **Claude Code** | JSONL | `~/.claude/projects/` |
-| **Codex CLI** | JSONL | `~/.codex/sessions/` |
+| **Codex** (CLI, Desktop, VS Code, ChatGPT Work Desktop) | JSONL | `~/.codex/sessions/` |
 | **Claude Desktop (Cowork)** | JSONL | `~/Library/Application Support/Claude/local-agent-mode-sessions/` |
 | **ChatGPT** | JSON export | Manual (`conversations.json` from data export) |
+
+> Codex rollouts are attributed to their real surface from
+> `session_meta.payload.originator`: `codex_cli`, `codex_desktop`,
+> `codex_vscode`, `chatgpt_work_desktop`, or `codex_local` (unknown). They all
+> share one local parser and the `codex_cli` sync alias (LAV-74).
 
 ## Screenshots
 

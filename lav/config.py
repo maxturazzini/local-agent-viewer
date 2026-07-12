@@ -159,6 +159,24 @@ SOURCE_COWORK_DESKTOP = "cowork_desktop"
 SOURCE_CHATGPT = "chatgpt"
 SOURCE_CLAUDE_AI = "claude_ai"
 
+# Codex surfaces derived from session_meta.payload.originator (LAV-74).
+# codex_cli stays the internal watermark key and sync alias for all Codex
+# surfaces; these are the distinct source labels attributed to sessions.
+SOURCE_CHATGPT_WORK_DESKTOP = "chatgpt_work_desktop"  # originator: codex_work_desktop
+SOURCE_CODEX_DESKTOP = "codex_desktop"                # originator: Codex Desktop
+SOURCE_CODEX_VSCODE = "codex_vscode"                  # originator: codex_vscode
+SOURCE_CODEX_LOCAL = "codex_local"                    # unrecognized originator (raw kept in meta)
+
+# All source labels the local Codex parser can emit — used by server sync
+# routing so a sync request on any of these triggers the same local parser.
+CODEX_SOURCE_ALIASES = frozenset({
+    SOURCE_CODEX_CLI,
+    SOURCE_CHATGPT_WORK_DESKTOP,
+    SOURCE_CODEX_DESKTOP,
+    SOURCE_CODEX_VSCODE,
+    SOURCE_CODEX_LOCAL,
+})
+
 # ===========================================================================
 # CHATGPT EXPORT
 # ===========================================================================

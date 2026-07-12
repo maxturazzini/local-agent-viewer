@@ -20,10 +20,32 @@ SQLite database**. Every conversation is tagged with its source
 | Source (`source`) | Where from | `session_id` prefix |
 |---|---|---|
 | `claude_code` | Claude Code CLI (local JSONL) | bare UUID — e.g. `3e8d411d-4f4e-...` |
-| `codex_cli` | Codex CLI | `codex:` + uuid |
+| `codex_cli` | Codex CLI (+ Desktop/VS Code/Work — see below) | `codex:` + uuid |
 | `cowork_desktop` | Cowork (Claude Desktop app) | `cowork:` + uuid |
 | `chatgpt` | ChatGPT export | `chatgpt:` + id |
 | `claude_ai` | claude.ai account export | `claudeai:` + id |
+
+#### Codex surfaces (LAV-74)
+
+All Codex rollouts share the `codex:` prefix and one local parser, but the
+`source` is attributed from `session_meta.payload.originator` (the real surface —
+**not** `payload.source`, which is just the editor host like `"vscode"`):
+
+| `originator` | `source` |
+|---|---|
+| `codex_work_desktop` | `chatgpt_work_desktop` |
+| `Codex Desktop` | `codex_desktop` |
+| `codex_vscode` | `codex_vscode` |
+| `codex_cli_rs`, `codex-tui`, `codex_exec`, CLI variants, or absent | `codex_cli` |
+| anything else (unknown) | `codex_local` (raw originator kept in `meta_json`) |
+
+`codex_cli` stays the **internal watermark key and sync alias** for every Codex
+surface: incremental cursors are scoped by `codex_cli` regardless of the
+attributed source, and a sync request on any Codex source runs the same local
+parser. No schema change — `session_sources.source` and all filters are
+value-dynamic (`SELECT DISTINCT source`). When the parser recognizes a surface
+it upgrades a previously-stored generic `codex_cli` row in place (other parsers'
+sources are never touched).
 
 > Note on the test DB: it contains 4 of the 5 sources (missing `chatgpt`).
 > Real interaction counts in the test DB:

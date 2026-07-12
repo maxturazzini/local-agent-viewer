@@ -22,7 +22,7 @@ import platform
 import re
 import socket
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator, Optional
 
@@ -36,6 +36,10 @@ from lav.config import (
     SOURCE_CLAUDE_CODE,
     SOURCE_CODEX_CLI,
     SOURCE_COWORK_DESKTOP,
+    SOURCE_CHATGPT_WORK_DESKTOP,
+    SOURCE_CODEX_DESKTOP,
+    SOURCE_CODEX_VSCODE,
+    SOURCE_CODEX_LOCAL,
     get_claude_projects_dirs,
     get_codex_sessions_dirs,
     get_cowork_sessions_dirs,
@@ -797,6 +801,76 @@ def format_codex_session_id(session_id: str) -> str:
     return f"codex:{session_id}"
 
 
+# Explicit CLI-family originators that all collapse to codex_cli.
+_CODEX_CLI_ORIGINATORS = frozenset({
+    "codex_cli_rs", "codex-tui", "codex_tui", "codex_exec", "codex_cli", "codex-cli",
+})
+
+
+def map_codex_source(originator: str) -> tuple[str, bool]:
+    """Map a Codex ``session_meta.payload.originator`` to a LAV source label (LAV-74).
+
+    Returns ``(source, recognized)``. ``recognized`` is True only when the
+    originator positively identifies a surface — the caller uses it to decide
+    whether re-attributing a stale ``codex_cli`` row is safe. Unknown non-empty
+    originators map to ``codex_local`` (raw value preserved in meta_json); an
+    absent originator falls back to ``codex_cli`` (legacy default) without
+    claiming recognition, so it never overrides an existing label.
+
+    Note: ``payload.source`` (e.g. "vscode") is the editor host, NOT the
+    surface — do not use it for attribution.
+    """
+    orig = (originator or "").strip()
+    if not orig:
+        return SOURCE_CODEX_CLI, False
+    key = orig.lower()
+    if key == "codex_work_desktop":
+        return SOURCE_CHATGPT_WORK_DESKTOP, True
+    if key in ("codex desktop", "codex_desktop"):
+        return SOURCE_CODEX_DESKTOP, True
+    if key == "codex_vscode":
+        return SOURCE_CODEX_VSCODE, True
+    if (key in _CODEX_CLI_ORIGINATORS
+            or key.startswith("codex_cli") or key.startswith("codex-cli")
+            or "tui" in key or key.endswith("_exec")):
+        return SOURCE_CODEX_CLI, True
+    return SOURCE_CODEX_LOCAL, False
+
+
+def _parse_codex_event_ts(ts: str) -> Optional[datetime]:
+    """Parse a Codex event timestamp into an aware UTC datetime.
+
+    Codex writes ISO-8601 UTC (trailing ``Z``). A rare naive value is assumed
+    to already be UTC (Codex logs UTC), NOT local time.
+    """
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _parse_codex_watermark_ts(ts: str) -> Optional[datetime]:
+    """Parse a stored Codex watermark into an aware UTC datetime.
+
+    Legacy watermarks were written as ``datetime.now().isoformat()`` — naive
+    LOCAL time. A naive value is therefore interpreted as local time and
+    converted to UTC; an already-aware value is just normalized to UTC.
+    """
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    # naive -> astimezone() presumes system-local tz, then convert to UTC.
+    return dt.astimezone(timezone.utc)
+
+
 def format_cowork_session_id(session_id: str) -> str:
     """Prefix Cowork/Claude Desktop session IDs to avoid collisions."""
     if not session_id:
@@ -900,8 +974,16 @@ def upsert_session_source(
     process_name: str = "",
     vm_process_name: str = "",
     meta: Optional[dict] = None,
+    override_sources: Optional[set] = None,
 ):
-    """Upsert session source with project scope."""
+    """Upsert session source with project scope.
+
+    ``override_sources`` (LAV-74): an optional set of stale source labels the
+    caller is allowed to re-attribute to ``source``. The normal upsert never
+    changes an already-set source (COALESCE keeps it); this lets the Codex
+    parser upgrade an old generic ``codex_cli`` row to a newly recognized
+    surface. Other parsers pass ``None`` and keep the original behaviour.
+    """
     if not session_id or not source:
         return
     meta_json = json.dumps(meta) if isinstance(meta, dict) else None
@@ -923,6 +1005,16 @@ def upsert_session_source(
                WHERE session_id = ? AND project_id = ?""",
             (source, client_version or None, process_name or None, vm_process_name or None, meta_json, session_id, project_id),
         )
+        if override_sources:
+            overridable = tuple(s for s in override_sources if s and s != source)
+            if overridable:
+                placeholders = ",".join("?" * len(overridable))
+                conn.execute(
+                    f"""UPDATE session_sources
+                        SET source = ?, meta_json = COALESCE(?, meta_json)
+                        WHERE session_id = ? AND project_id = ? AND source IN ({placeholders})""",
+                    (source, meta_json, session_id, project_id, *overridable),
+                )
     except sqlite3.Error:
         return
 
@@ -2023,8 +2115,47 @@ def parse_codex_sessions(
 
     jsonl_files = sorted(jsonl_files)
     print(f"  Found {len(jsonl_files)} session files")
+    if full_reparse:
+        print("  Full reparse: ignoring watermark, wiping reparsed Codex rows")
 
     all_stats = []
+
+    # LAV-74: watermark state loaded ONCE per project (not per event), compared
+    # as timezone-aware UTC datetimes, and written only after the whole pass.
+    # The internal watermark key stays SOURCE_CODEX_CLI for every Codex surface
+    # so incremental cursors survive source re-attribution.
+    project_watermark: dict = {}   # project_id -> Optional[aware UTC dt] (original cursor)
+    project_max_ts: dict = {}      # project_id -> aware UTC dt (max event imported this pass)
+    wiped_sids: set = set()        # full_reparse: sessions already wiped this pass
+
+    # Tables the Codex parser writes; bash_commands/search_operations/mcp_tool_calls
+    # have no UNIQUE constraint, so a re-import would duplicate them. On full
+    # reparse we wipe the reparsed sessions clean first (session ids carry the
+    # 'codex:' prefix, so scoping by session_id+host_id can't touch other sources).
+    _CODEX_WIPE_TABLES = (
+        "messages", "token_usage", "file_operations",
+        "bash_commands", "search_operations", "mcp_tool_calls",
+    )
+
+    def _watermark_for(pid: int) -> Optional[datetime]:
+        if pid not in project_watermark:
+            raw = None if full_reparse else get_parse_state(
+                conn, "last_parsed", pid, SOURCE_CODEX_CLI, host_id)
+            project_watermark[pid] = _parse_codex_watermark_ts(raw)
+        return project_watermark[pid]
+
+    def _wipe_codex_session(sid: str) -> None:
+        if not sid or sid in wiped_sids:
+            return
+        for table in _CODEX_WIPE_TABLES:
+            try:
+                conn.execute(
+                    f"DELETE FROM {table} WHERE session_id = ? AND host_id = ?",
+                    (sid, host_id),
+                )
+            except sqlite3.Error:
+                pass
+        wiped_sids.add(sid)
 
     for jsonl_file in jsonl_files:
         session_ctx = {
@@ -2047,7 +2178,8 @@ def parse_codex_sessions(
 
             if event_type == "session_meta":
                 payload = event.get("payload", {})
-                session_ctx["session_id"] = format_codex_session_id(payload.get("id", ""))
+                session_ctx["session_id"] = format_codex_session_id(
+                    payload.get("id", "") or payload.get("session_id", ""))
                 session_ctx["cwd"] = payload.get("cwd", "")
                 git = payload.get("git", {})
                 session_ctx["git_branch"] = git.get("branch", "") if isinstance(git, dict) else ""
@@ -2064,9 +2196,21 @@ def parse_codex_sessions(
                 project_id = get_or_create_project(conn, project_name, session_ctx["cwd"])
                 user_id = get_or_create_user(conn, username)
 
+                if full_reparse:
+                    _wipe_codex_session(session_ctx["session_id"])
+
+                # LAV-74: attribute the real surface from originator, not the
+                # editor host in payload.source. Unknown originators fall back
+                # to codex_local with the raw value kept in meta_json.
+                originator = payload.get("originator") if isinstance(payload, dict) else ""
+                source, recognized = map_codex_source(originator)
                 upsert_session_source(
-                    conn, session_ctx["session_id"], project_id, SOURCE_CODEX_CLI,
-                    meta={"source": payload.get("source") if isinstance(payload, dict) else None},
+                    conn, session_ctx["session_id"], project_id, source,
+                    meta={
+                        "originator": (originator or None) if isinstance(originator, str) else None,
+                        "source": payload.get("source") if isinstance(payload, dict) else None,
+                    },
+                    override_sources=({SOURCE_CODEX_CLI} if recognized else None),
                 )
                 continue
 
@@ -2092,11 +2236,19 @@ def parse_codex_sessions(
             if not msg_timestamp:
                 continue
 
-            last_ts = get_parse_state(conn, "last_parsed", project_id, SOURCE_CODEX_CLI, host_id)
-            is_new = not last_ts or msg_timestamp > last_ts
-
-            if not is_new:
+            event_dt = _parse_codex_event_ts(msg_timestamp)
+            if event_dt is None:
                 continue
+
+            # Incremental skip: aware UTC comparison against the once-loaded
+            # watermark. full_reparse imports everything (wipe handled above).
+            watermark = _watermark_for(project_id)
+            if not full_reparse and watermark is not None and event_dt <= watermark:
+                continue
+
+            cur_max = project_max_ts.get(project_id)
+            if cur_max is None or event_dt > cur_max:
+                project_max_ts[project_id] = event_dt
 
             if event_type == "response_item":
                 payload = event.get("payload", {})
@@ -2181,18 +2333,20 @@ def parse_codex_sessions(
                     update_interaction(sid, project_name, conn, project_id, user_id, host_id)
             conn.commit()
 
-            if messages_processed > 0:
-                # Update parse state with latest timestamp
-                latest_ts = get_parse_state(conn, "last_parsed", project_id, SOURCE_CODEX_CLI, host_id) or ""
-                # We can't easily track max_ts per project here, just use current time
-                set_parse_state(conn, "last_parsed", datetime.now().isoformat(), project_id, SOURCE_CODEX_CLI, host_id)
-                conn.commit()
-
             all_stats.append({
                 "project": project_name,
                 "messages_processed": messages_processed,
                 "tool_calls_processed": tool_calls_processed,
             })
+
+    # LAV-74: persist parse_state ONCE, after the whole pass, as the true max
+    # event timestamp observed per project (aware UTC ISO string). Only advance
+    # if we imported something newer than the existing cursor.
+    for pid, max_dt in project_max_ts.items():
+        original = project_watermark.get(pid)
+        if original is None or max_dt > original:
+            set_parse_state(conn, "last_parsed", max_dt.isoformat(), pid, SOURCE_CODEX_CLI, host_id)
+    conn.commit()
 
     return all_stats
 

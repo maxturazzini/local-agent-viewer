@@ -35,6 +35,7 @@ from lav.config import (
     SOURCE_CODEX_CLI,
     SOURCE_COWORK_DESKTOP,
     SOURCE_CHATGPT,
+    CODEX_SOURCE_ALIASES,
     get_claude_projects_dirs,
     get_chatgpt_export_path,
     load_runtime_config,
@@ -374,7 +375,10 @@ def sync_data(scope: str, project: str = None, user: str = None,
                             if project_dir.is_dir():
                                 stats = parse_project(project_dir, conn, full)
                                 results.append(stats)
-                elif source == SOURCE_CODEX_CLI:
+                elif source in CODEX_SOURCE_ALIASES:
+                    # LAV-74: every Codex surface (codex_cli/chatgpt_work_desktop/
+                    # codex_desktop/codex_vscode/codex_local) runs the same local
+                    # parser; codex_cli stays the alias for backward compatibility.
                     codex_stats = parse_codex_sessions(conn, full)
                     results.extend(codex_stats)
                 elif source == SOURCE_COWORK_DESKTOP:
