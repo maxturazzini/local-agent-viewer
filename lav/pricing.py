@@ -38,10 +38,11 @@ DEFAULT_PRICING = [
     ("claude-sonnet-4-6", "anthropic", 3.00, 15.00, 3.75, 0.30, "2024-01-01"),
     ("claude-sonnet-4-5-20250929", "anthropic", 3.00, 15.00, 3.75, 0.30, "2024-01-01"),
     ("claude-haiku-4-5-20251001", "anthropic", 1.00, 5.00, 1.25, 0.10, "2024-01-01"),
-    ("gpt-5.2", "openai", 1.75, 14.00, 0, 0.875, "2024-01-01"),
-    ("gpt-5.1-codex-max", "openai", 1.25, 10.00, 0, 0.625, "2024-01-01"),
-    ("gpt-5.3-codex", "openai", 1.75, 14.00, 0, 0.875, "2024-01-01"),
-    ("gpt-5-codex", "openai", 1.25, 10.00, 0, 0.625, "2024-01-01"),
+    # cache_read = official cached-input (10% of input) — LAV-74 alignment
+    ("gpt-5.2", "openai", 1.75, 14.00, 0, 0.175, "2024-01-01"),
+    ("gpt-5.1-codex-max", "openai", 1.25, 10.00, 0, 0.125, "2024-01-01"),
+    ("gpt-5.3-codex", "openai", 1.75, 14.00, 0, 0.175, "2024-01-01"),
+    ("gpt-5-codex", "openai", 1.25, 10.00, 0, 0.125, "2024-01-01"),
     # LAV-74: newer Codex surfaces (Desktop / VS Code / Work) — official
     # developers.openai.com/api/docs/pricing (input / output / cached-input $/Mtok).
     ("gpt-5.4", "openai", 2.50, 15.00, 0, 0.25, "2024-01-01"),
