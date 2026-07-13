@@ -325,7 +325,8 @@ def run(
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
+def main():
+    """Console entrypoint for `lav-index` (see pyproject.toml)."""
     parser = argparse.ArgumentParser(
         description="LAV Knowledge Base auto-indexer",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -345,7 +346,9 @@ Examples:
     parser.add_argument("--project", metavar="NAME",
         help="Filter by project name (e.g. miniMe)")
     parser.add_argument("--source", metavar="SRC",
-        choices=["claude_code", "chatgpt", "codex_cli", "cowork_desktop"],
+        choices=["claude_code", "chatgpt", "claude_ai", "codex_cli",
+                 "codex_desktop", "codex_vscode", "chatgpt_work_desktop",
+                 "codex_local", "cowork_desktop"],
         help="Filter by source tool")
     parser.add_argument("--host", metavar="HOSTNAME",
         help="Filter by hostname (partial match)")
@@ -374,3 +377,7 @@ Examples:
         min_messages=args.min_messages,
         since=args.since or "",
     )
+
+
+if __name__ == "__main__":
+    main()
