@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+LAV-74: Codex sessions included by default in `lav-parse`.
+- `lav-parse` (`lav/parsers/jsonl.py:main`) now parses Codex CLI sessions **by default**, in both the all-projects and `--project` branches. New `--exclude-codex` flag to opt out. The old `--include-codex` flag is kept as a **deprecated no-op** so the existing prod scheduler (`utils/services/lav-parser.sh`, which still passes `--include-codex`) keeps working unchanged. Cowork/Claude Desktop is unaffected — still opt-in via `--include-cowork`.
+
 LAV-74: Codex parser — correct incremental watermark + source attribution from `originator`.
 - **Watermark bug fixed** (`lav/parsers/jsonl.py:parse_codex_sessions`): the cursor was read per-event and compared as a **string**, then persisted as `datetime.now()` (naive local) instead of the max observed event. Codex events are UTC (`…Z`), so the lexical compare between a naive-local watermark and UTC events silently **dropped recent sessions**. Now: watermark loaded **once per project/host**, compared as timezone-aware **UTC** `datetime`, legacy naive watermarks interpreted as local time, and `parse_state` written **once at end of pass** as the true max imported timestamp. Helpers `_parse_codex_event_ts` / `_parse_codex_watermark_ts`.
 - **`full_reparse` now honored**: previously ignored by the Codex parser. `--full` ignores the watermark AND wipes the reparsed sessions' Codex rows first (scoped by `codex:`-prefixed `session_id` + host) so re-import can't duplicate rows in tables without a UNIQUE constraint (`mcp_tool_calls`; `bash_commands`/`file_operations` already guarded).

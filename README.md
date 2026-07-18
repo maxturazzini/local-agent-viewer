@@ -199,9 +199,10 @@ lav pricing add --model gpt-5.4 --input 2.0 --output 8.0 --from-date 2026-04-01
 ### Parser options
 
 ```bash
-lav-parse                        # incremental (default, fast)
+lav-parse                        # incremental (default, fast) — includes Codex by default
 lav-parse --project myProject    # parse one project only
 lav-parse --full                 # force full reparse
+lav-parse --exclude-codex        # skip Codex CLI sessions
 
 lav-parse-chatgpt               # parse ChatGPT export
 lav-parse-chatgpt --full        # full reparse
