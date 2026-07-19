@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-LAV-74: Codex sessions included by default in `lav-parse`.
+LAV-75: Codex sessions included by default in `lav-parse`.
 - `lav-parse` (`lav/parsers/jsonl.py:main`) now parses Codex CLI sessions **by default**, in both the all-projects and `--project` branches. New `--exclude-codex` flag to opt out. The old `--include-codex` flag is kept as a **deprecated no-op** so the existing prod scheduler (`utils/services/lav-parser.sh`, which still passes `--include-codex`) keeps working unchanged. Cowork/Claude Desktop is unaffected — still opt-in via `--include-cowork`.
 
 LAV-74: Codex parser — correct incremental watermark + source attribution from `originator`.
