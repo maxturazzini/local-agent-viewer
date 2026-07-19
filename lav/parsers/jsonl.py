@@ -2627,7 +2627,9 @@ def main():
     parser.add_argument("--full", "-f", action="store_true", help="Force full reparse")
     parser.add_argument("--project", "-p", type=str, help="Parse only a specific project")
     parser.add_argument("--list", "-l", action="store_true", help="List all available projects")
-    parser.add_argument("--include-codex", action="store_true", help="Include Codex CLI sessions")
+    parser.add_argument("--include-codex", action="store_true",
+                        help="Deprecated no-op: Codex CLI sessions are now included by default")
+    parser.add_argument("--exclude-codex", action="store_true", help="Skip Codex CLI sessions")
     parser.add_argument("--include-cowork", action="store_true", help="Include Cowork/Claude Desktop sessions")
     parser.add_argument("--claude-projects-dir", action="append", default=None)
     parser.add_argument("--codex-sessions-dir", action="append", default=None)
@@ -2670,7 +2672,7 @@ def main():
         if not found:
             print(f"Project not found: {args.project}")
             print("Use --list to see available projects")
-        if args.include_codex:
+        if not args.exclude_codex:
             parse_codex_sessions(conn, args.full, project_filter=args.project, codex_sessions_dirs=codex_roots)
         if args.include_cowork:
             parse_cowork_sessions(conn, args.full, project_filter=args.project, cowork_sessions_dirs=cowork_roots)
@@ -2686,7 +2688,7 @@ def main():
                     stats = parse_project(project_dir, conn, args.full)
                     all_stats.append(stats)
 
-        if args.include_codex:
+        if not args.exclude_codex:
             parse_codex_sessions(conn, args.full, codex_sessions_dirs=codex_roots)
         if args.include_cowork:
             parse_cowork_sessions(conn, args.full, cowork_sessions_dirs=cowork_roots)
