@@ -29,12 +29,26 @@ CREATE INDEX IF NOT EXISTS idx_pricing_model_date ON model_pricing(model, from_d
 """
 
 DEFAULT_PRICING = [
-    # (model, provider, input, output, cache_write, cache_read, from_date)
+    # (model, provider, input, output, cache_write, cache_read, from_date
+    #  [, to_date [, notes]])  — the last two are optional.
+    # NOTE: from_date is normally 2024-01-01. The seed only fills gaps for models
+    # with no pricing at all (see seed_default_pricing). A model priced by hand
+    # at its real release date is left alone; do NOT rely on the UNIQUE
+    # (model, from_date) constraint to dedupe (LAV-76).
+    ("claude-opus-5", "anthropic", 5.00, 25.00, 6.25, 0.50, "2024-01-01"),
+    ("claude-fable-5", "anthropic", 10.00, 50.00, 12.50, 1.00, "2024-01-01"),
     ("claude-opus-4-8", "anthropic", 5.00, 25.00, 6.25, 0.50, "2024-01-01"),
     ("claude-opus-4-7", "anthropic", 5.00, 25.00, 6.25, 0.50, "2024-01-01"),
     ("claude-opus-4-6", "anthropic", 5.00, 25.00, 6.25, 0.50, "2024-01-01"),
     ("claude-opus-4-5-20251101", "anthropic", 5.00, 25.00, 6.25, 0.50, "2024-01-01"),
     ("claude-opus-4-1-20250805", "anthropic", 15.00, 75.00, 18.75, 1.50, "2024-01-01"),
+    # Sonnet 5 ships with intro pricing through 2026-08-31, then standard —
+    # seeded as two historicised rows so a fresh install is correct on both
+    # sides of the switch (only the second one is open-ended).
+    ("claude-sonnet-5", "anthropic", 2.00, 10.00, 2.50, 0.20, "2024-01-01",
+     "2026-09-01", "Sonnet 5 INTRO pricing, valid through 2026-08-31."),
+    ("claude-sonnet-5", "anthropic", 3.00, 15.00, 3.75, 0.30, "2026-09-01",
+     None, "Sonnet 5 standard pricing after the intro period ends."),
     ("claude-sonnet-4-6", "anthropic", 3.00, 15.00, 3.75, 0.30, "2024-01-01"),
     ("claude-sonnet-4-5-20250929", "anthropic", 3.00, 15.00, 3.75, 0.30, "2024-01-01"),
     ("claude-haiku-4-5-20251001", "anthropic", 1.00, 5.00, 1.25, 0.10, "2024-01-01"),
@@ -50,20 +64,84 @@ DEFAULT_PRICING = [
     ("gpt-5.6-sol", "openai", 5.00, 30.00, 0, 0.50, "2024-01-01"),
     ("gpt-5.6-terra", "openai", 2.50, 15.00, 0, 0.25, "2024-01-01"),
     ("gpt-5.6-luna", "openai", 1.00, 6.00, 0, 0.10, "2024-01-01"),
+    # LAV-76: hidden Codex slug (models_cache.json: "Automatic approval review
+    # model for Codex"), used when approval_policy=never + reviewer=auto_review.
+    # No public OpenAI listing; spend rides the ChatGPT plan, not per-token.
+    # Deliberately zero so it doesn't sit in the missing-price warning forever.
+    ("codex-auto-review", "openai", 0, 0, 0, 0, "2024-01-01", None,
+     "Codex internal auto-approval review model (hidden slug, no public "
+     "listing). Zero on purpose: billed on the ChatGPT plan, not per-token."),
 ]
 
 
 def seed_default_pricing(conn: sqlite3.Connection):
-    """Insert default pricing data (INSERT OR IGNORE — won't overwrite)."""
-    for model, provider, inp, out, cw, cr, from_date in DEFAULT_PRICING:
+    """Insert default pricing for models that have no pricing row at all.
+
+    LAV-76: this used to be ``INSERT OR IGNORE``, which only skipped on the
+    ``UNIQUE(model, from_date)`` constraint. A model already priced by hand at
+    its real release date (e.g. gpt-5.4 from 2026-03-05) did not collide with
+    the seed's 2024-01-01, so a *second open-ended row* was inserted — and the
+    price join in queries.py matches both, doubling tokens and cost. init_db()
+    calls this on every parse, so the damage came back within minutes of any
+    manual cleanup.
+
+    The gate is now per *model*: a model with any existing row is left
+    untouched, which is what OR IGNORE was meant to express.
+    """
+    priced = {row[0] for row in conn.execute("SELECT DISTINCT model FROM model_pricing")}
+    for entry in DEFAULT_PRICING:
+        model, provider, inp, out, cw, cr, from_date = entry[:7]
+        to_date = entry[7] if len(entry) > 7 else None
+        notes = entry[8] if len(entry) > 8 else None
+        # Snapshot taken before the loop, so multi-row models (historicised
+        # pricing) seed all of their rows rather than just the first.
+        if model in priced:
+            continue
         conn.execute(
-            """INSERT OR IGNORE INTO model_pricing
+            """INSERT INTO model_pricing
                (model, provider, input_price_per_mtok, output_price_per_mtok,
-                cache_write_price_per_mtok, cache_read_price_per_mtok, from_date)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (model, provider, inp, out, cw, cr, from_date),
+                cache_write_price_per_mtok, cache_read_price_per_mtok,
+                from_date, to_date, notes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (model, provider, inp, out, cw, cr, from_date, to_date, notes),
         )
     conn.commit()
+
+
+def ensure_pricing_overlap_guard(conn: sqlite3.Connection) -> bool:
+    """Enforce "at most one open-ended pricing row per model" (LAV-76).
+
+    Structural backstop: the price join in queries.py multiplies rows when two
+    pricing entries match the same timestamp, so a model with two open-ended
+    rows silently doubles both tokens and cost. This index makes that state
+    unrepresentable for every write path (seed, CLI, MCP, API).
+
+    Legitimate historicisation still passes: only the *current* row is
+    open-ended, older ones carry a to_date.
+
+    Returns True if the index is in place. On a DB that still holds duplicates
+    the CREATE fails — report the offending models and carry on rather than
+    blocking startup on a pre-existing data problem.
+    """
+    try:
+        conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_pricing_one_open_per_model
+               ON model_pricing(model) WHERE to_date IS NULL"""
+        )
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        dupes = conn.execute(
+            """SELECT model, COUNT(*) FROM model_pricing WHERE to_date IS NULL
+               GROUP BY model HAVING COUNT(*) > 1"""
+        ).fetchall()
+        listed = ", ".join(f"{m} ({n} open rows)" for m, n in dupes)
+        print(f"  WARNING: overlapping pricing rows — cost and token counts are "
+              f"double-counted for: {listed}")
+        print("  Keep one open row per model (the annotated one), then re-run "
+              "to install the guard.")
+        return False
 
 
 def upsert_pricing(conn: sqlite3.Connection, model: str, input_price: float,
@@ -158,6 +236,7 @@ def main():
 
     conn = sqlite3.connect(str(UNIFIED_DB_PATH))
     conn.executescript(MODEL_PRICING_SCHEMA)
+    ensure_pricing_overlap_guard(conn)  # LAV-76
 
     try:
         if args.command == "list":

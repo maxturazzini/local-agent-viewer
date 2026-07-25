@@ -454,8 +454,14 @@ def init_db(db_path: Path = UNIFIED_DB_PATH) -> sqlite3.Connection:
     conn.executescript(SCHEMA)
     conn.commit()
     # Seed default model pricing
-    from lav.pricing import seed_default_pricing
+    from lav.pricing import ensure_pricing_overlap_guard, seed_default_pricing
     seed_default_pricing(conn)
+    # LAV-76: one open-ended pricing row per model (warns instead of failing
+    # when a pre-existing DB still holds duplicates)
+    try:
+        ensure_pricing_overlap_guard(conn)
+    except Exception as e:
+        print(f"  pricing overlap guard skipped: {e}")
     # Migrate existing DBs that lack host_id in parse_state
     try:
         _migrate_parse_state(conn)
