@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LAV — Schema prima / dopo · spina dorsale e periferie</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  :root{
+    --bg:#fbfbfa; --panel:#fff; --ink:#1f2328; --muted:#656d76; --line:#d8dee4;
+    --spine:#1a7f37; --spine-bg:#eaf6ec;
+    --edit:#9a6700;  --edit-bg:#fdf6e3;
+    --fuse:#b35900;  --fuse-bg:#fdf0e6;
+    --new:#0969da;   --new-bg:#e9f2fd;
+    --view:#8250df;  --view-bg:#f3eefc;
+    --danger:#cf222e; --danger-bg:#fdeceb;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#14171a; --panel:#1c2024; --ink:#e6edf3; --muted:#9aa4ae; --line:#30363d;
+      --spine:#5fd47c; --spine-bg:#16261a; --edit:#e3b341; --edit-bg:#2a2313;
+      --fuse:#f0883e; --fuse-bg:#2b1d12; --new:#58a6ff; --new-bg:#12233b;
+      --view:#c297ff; --view-bg:#221a33; --danger:#ff7b72; --danger-bg:#2d1618; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:0 20px 90px;background:var(--bg);color:var(--ink);
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Helvetica,Arial,sans-serif}
+  .wrap{max-width:1400px;margin:0 auto}
+  header{padding:40px 0 14px;border-bottom:1px solid var(--line);margin-bottom:24px}
+  h1{font-size:25px;margin:0 0 6px;letter-spacing:-.02em}
+  .sub{color:var(--muted);font-size:14px;margin:0}
+  h2{font-size:19px;margin:38px 0 12px;letter-spacing:-.01em}
+  h3{font-size:15px;margin:20px 0 8px}
+  .legend{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0 8px}
+  .lg{display:flex;align-items:center;gap:7px;font-size:12.5px;border:1px solid var(--line);
+      border-radius:20px;padding:5px 12px;background:var(--panel)}
+  .sw{width:12px;height:12px;border-radius:3px;flex:none}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+  @media(max-width:1000px){.cols{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;overflow-x:auto}
+  .panel .ph{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--muted);margin:0 0 10px;display:flex;justify-content:space-between;align-items:center}
+  .count{font-weight:600;font-size:12px;color:var(--muted)}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;margin:12px 0}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--bg);font-weight:600}
+  code{font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);
+    border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+  .callout{border:1px solid var(--line);border-left:4px solid var(--danger);background:var(--danger-bg);
+    border-radius:8px;padding:16px 18px;margin:18px 0}
+  .callout h4{margin:0 0 8px;font-size:14.5px;color:var(--danger)}
+  .callout p{margin:0 0 8px;font-size:13.5px}
+  .callout p:last-child{margin-bottom:0}
+  .note{font-size:13px;color:var(--muted);border-left:3px solid var(--line);padding-left:12px;margin:14px 0}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 0}
+  .chip{font-size:11.5px;border:1px solid var(--line);border-radius:5px;padding:2px 7px;background:var(--bg);
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .chip.add{border-color:var(--new);color:var(--new);background:var(--new-bg)}
+  .chip.warn{border-color:var(--edit);color:var(--edit);background:var(--edit-bg)}
+  .num{font-variant-numeric:tabular-nums;font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Schema LAV — prima / dopo</h1>
+  <p class="sub">Confronto per decidere: cosa resta spina dorsale, cosa cambia in periferia · basato sul censimento integrale di 5 sorgenti (2026-07-25)</p>
+</header>
+
+<div class="callout" style="border-left-color:var(--edit);background:var(--edit-bg)">
+<h4 style="color:var(--edit)">⚠️ Questo è uno scenario PROPOSTO, non una decisione presa</h4>
+<p>Il "Dopo" illustra l'<strong>opzione B</strong> (<code>tool_calls</code> unificata + view di
+compatibilità), che alla data di stesura era ancora <strong>una decisione aperta</strong> —
+vedi <code>00-stato-e-decisioni.md §4, decisione A1</code>. L'alternativa A (18 ALTER TABLE,
+schema invariato) non è illustrata qui.</p>
+<p><strong>Progetto parcheggiato</strong> il 2026-07-25. Prima di implementare qualsiasi cosa
+di questa pagina, leggere <code>07-numeri-e-insidie.md</code>: il censimento ha smentito
+alcune assunzioni, tra cui <code>source</code> NOT NULL su <code>interactions</code> (in Codex
+è un <em>oggetto</em> nel 9% dei casi e <code>session_meta</code> è ri-emesso a ogni resume) e
+<code>messages.timestamp</code> NOT NULL (i 14 file legacy Codex hanno <strong>761/761 item
+senza timestamp</strong>).</p>
+<p>Elementi disegnati qui ma <strong>senza DDL</strong> nel piano scritto:
+<code>started_at</code>/<code>ended_at</code> su <code>interactions</code> e
+<code>message_uuid</code> su <code>tool_calls</code>.</p>
+</div>
+
+<div class="legend">
+  <span class="lg"><i class="sw" style="background:var(--spine-bg);border:1.5px solid var(--spine)"></i> spina dorsale — <strong>invariata</strong></span>
+  <span class="lg"><i class="sw" style="background:var(--edit-bg);border:1.5px solid var(--edit)"></i> periferia — colonne aggiunte</span>
+  <span class="lg"><i class="sw" style="background:var(--fuse-bg);border:1.5px solid var(--fuse)"></i> periferia — rifusa</span>
+  <span class="lg"><i class="sw" style="background:var(--new-bg);border:1.5px solid var(--new)"></i> nuova</span>
+  <span class="lg"><i class="sw" style="background:var(--view-bg);border:1.5px solid var(--view)"></i> view di compatibilità</span>
+</div>
+
+<div class="cols">
+  <div class="panel">
+    <p class="ph">Prima <span class="count">16 tabelle + FTS</span></p>
+<pre class="mermaid">
+flowchart TB
+  subgraph S1["SPINA DORSALE"]
+    U1[users]:::spine
+    H1[hosts]:::spine
+    P1[projects]:::spine
+    I1[interactions]:::spine
+    M1[messages + FTS5]:::spine
+    MP1[model_pricing]:::spine
+    PS1[parse_state]:::spine
+    IM1[interaction_metadata]:::spine
+  end
+  subgraph S2["PERIFERIA"]
+    SS1[session_sources<br/>1:1 separata]:::edit
+    T1[token_usage<br/>UNIQUE fragile]:::edit
+    F1[file_operations]:::fuse
+    B1[bash_commands]:::fuse
+    SE1[search_operations]:::fuse
+    SK1[skill_invocations]:::fuse
+    SU1[subagent_invocations]:::fuse
+    MC1[mcp_tool_calls]:::fuse
+  end
+  X1[eventi: errori, retry,<br/>rate limit, compaction<br/>NESSUNA CASA]:::missing
+
+  I1 --- SS1
+  I1 --> M1
+  I1 --> T1
+  I1 --> F1
+  I1 --> B1
+  I1 --> SE1
+  I1 --> SK1
+  I1 --> SU1
+  I1 --> MC1
+
+  classDef spine fill:#eaf6ec,stroke:#1a7f37,color:#1f2328
+  classDef edit fill:#fdf6e3,stroke:#9a6700,color:#1f2328
+  classDef fuse fill:#fdf0e6,stroke:#b35900,color:#1f2328
+  classDef missing fill:#f6f8fa,stroke:#8c959f,stroke-dasharray:4 3,color:#656d76
+</pre>
+  </div>
+
+  <div class="panel">
+    <p class="ph">Dopo <span class="count">12 tabelle + FTS + 6 view</span></p>
+<pre class="mermaid">
+flowchart TB
+  subgraph S3["SPINA DORSALE — invariata"]
+    U2[users]:::spine
+    H2[hosts]:::spine
+    P2[projects]:::spine
+    I2["interactions<br/>+ source, started_at, ended_at<br/>+ duration_ms, ttft_ms"]:::edit
+    M2["messages + FTS5<br/>+ stop_reason, error_type<br/>+ request_id"]:::edit
+    MP2[model_pricing]:::spine
+    PS2[parse_state]:::spine
+    IM2[interaction_metadata]:::spine
+  end
+  subgraph S4["PERIFERIA — ricomposta"]
+    SS2[session_sources<br/>solo metadati client]:::edit
+    T2["token_usage<br/>chiave sanata<br/>+ reasoning_tokens"]:::edit
+    TC["tool_calls ⭐<br/>UNA tabella<br/>+ tool_call_id, duration_ms<br/>+ is_error, message_uuid"]:::new
+    EV["session_events ⭐<br/>errori · retry · rate limit<br/>compaction · fine turno"]:::new
+  end
+  subgraph S5["COMPATIBILITA'"]
+    V["6 VIEW omonime<br/>file_operations · bash_commands<br/>search_operations · skill_invocations<br/>subagent_invocations · mcp_tool_calls"]:::view
+  end
+
+  I2 --- SS2
+  I2 --> M2
+  I2 --> T2
+  I2 --> TC
+  I2 --> EV
+  M2 -.->|message_uuid| TC
+  TC -.->|stessi nomi e colonne| V
+
+  classDef spine fill:#eaf6ec,stroke:#1a7f37,color:#1f2328
+  classDef edit fill:#fdf6e3,stroke:#9a6700,color:#1f2328
+  classDef new fill:#e9f2fd,stroke:#0969da,color:#1f2328
+  classDef view fill:#f3eefc,stroke:#8250df,stroke-dasharray:4 3,color:#1f2328
+</pre>
+  </div>
+</div>
+
+<h2>Cosa cambia, tabella per tabella</h2>
+<table>
+<tr><th style="width:20%">Tabella</th><th style="width:13%">Ruolo</th><th>Prima → Dopo</th></tr>
+
+<tr><td><code>users</code> <code>hosts</code> <code>projects</code></td>
+    <td style="color:var(--spine)"><strong>Spina dorsale</strong></td>
+    <td>Invariate. Le 3 dimensioni restano identiche.</td></tr>
+
+<tr><td><code>model_pricing</code></td><td style="color:var(--spine)"><strong>Spina dorsale</strong></td>
+    <td>Invariata nella forma. Unica pulizia: <strong>consolidare la doppia definizione</strong> (esiste sia in <code>jsonl.py:332</code> sia in <code>pricing.py:15</code> — su un DB nuovo la CLI standalone ricrea la versione vecchia).</td></tr>
+
+<tr><td><code>parse_state</code> · <code>interaction_metadata</code> · <code>messages_fts</code></td>
+    <td style="color:var(--spine)"><strong>Spina dorsale</strong></td><td>Invariate.</td></tr>
+
+<tr><td><code>interactions</code></td><td style="color:var(--edit)">Dorsale, ritoccata</td>
+    <td>PK e dimensioni <strong>immutate</strong>. Si aggiunge:
+      <div class="chips"><span class="chip add">source</span><span class="chip add">started_at</span><span class="chip add">ended_at</span><span class="chip add">duration_ms</span><span class="chip add">api_duration_ms</span><span class="chip add">ttft_ms</span></div>
+      <span style="font-size:13px;color:var(--muted)"><code>source</code> denormalizzato da <code>session_sources</code>: toglie un join a quasi tutte le query. <code>timestamp</code> resta come alias di <code>started_at</code> per non rompere nulla.</span></td></tr>
+
+<tr><td><code>messages</code></td><td style="color:var(--edit)">Dorsale, ritoccata</td>
+    <td>Si aggiunge: <div class="chips"><span class="chip add">stop_reason</span><span class="chip add">error_type</span><span class="chip add">request_id</span></div>
+      <span style="font-size:13px;color:var(--muted)">Tutte e tre <strong>nullable</strong>, non per scelta ma per misura: <code>stop_reason</code> è null nel <span class="num">50,1%</span> dei record assistant, <code>requestId</code> copre il <span class="num">99,81%</span>.</span></td></tr>
+
+<tr><td><code>token_usage</code></td><td style="color:var(--edit)">Periferia</td>
+    <td>Chiave <code>UNIQUE(timestamp, session_id, project_id)</code> → sanata su <code>api_message_id</code>. Si aggiunge <span class="chip add">reasoning_tokens</span>.
+      <br><span style="font-size:13px;color:var(--muted)">Grazie alla regola per-tabella: <code>model</code>, <code>input_tokens</code>, <code>output_tokens</code> diventano <strong>NOT NULL</strong> — chi non ha token (chatgpt, claude_ai) non scrive righe qui. Confermato: 100% sui 328.148 record assistant claude_code.</span></td></tr>
+
+<tr><td><code>session_sources</code></td><td style="color:var(--edit)">Periferia</td>
+    <td>Resta, ma <strong>alleggerita</strong>: <code>source</code> si sposta su <code>interactions</code>; qui restano versione client, process name, meta_json.
+      <br><span style="font-size:13px;color:var(--muted)">⚠️ Oggi il <code>source</code> può <em>mancare del tutto</em> (riga assente) per file Codex senza <code>session_meta</code> — la denormalizzazione con sentinella chiude anche questo buco.</span></td></tr>
+
+<tr><td><strong>le 6 tabelle tool</strong></td><td style="color:var(--fuse)">Periferia, rifusa</td>
+    <td>→ <code>tool_calls</code> unica + <strong>6 view con nomi e colonne identici</strong>. Query, API e UI non cambiano di una riga.
+      <br><span style="font-size:13px;color:var(--muted)">Si guadagnano <span class="chip add">tool_call_id</span> <span class="chip add">duration_ms</span> <span class="chip add">is_error</span> <span class="chip add">message_uuid</span> con <strong>una</strong> DDL invece di 18 ALTER TABLE, più il link tool↔messaggio che oggi non esiste.</span></td></tr>
+
+<tr><td><code>session_events</code></td><td style="color:var(--new)"><strong>Nuova</strong></td>
+    <td>La casa che manca per errori, retry, rate limit, compaction, fine turno/run. Tabella nuova: zero impatto sull'esistente.</td></tr>
+</table>
+
+<h2>Due scoperte del censimento che vincolano il disegno</h2>
+
+<div class="callout">
+<h4>1. <code>INSERT OR IGNORE</code> + <code>NOT NULL</code> = perdita silenziosa di righe</h4>
+<p>Verificato su SQLite 3.45.3: una violazione <code>NOT NULL</code> sotto <code>OR IGNORE</code> <strong>non solleva
+eccezione, non applica il DEFAULT e scarta la riga</strong> (rowcount 0). Tutte le scritture dei parser usano
+<code>INSERT OR IGNORE</code>.</p>
+<p>Conseguenza diretta sulla tua regola: <strong>aggiungere un NOT NULL senza toccare i parser trasforma il vincolo
+in un meccanismo di perdita dati muta</strong>, non in una garanzia. Ogni NOT NULL nuovo va accompagnato o da
+validazione esplicita in ingest, o dal passaggio a <code>INSERT … ON CONFLICT DO UPDATE</code>.</p>
+<p>Nota correlata: oggi <code>NOT NULL</code> <strong>non garantisce nulla di semantico</strong> — <code>interactions.timestamp</code>
+è NOT NULL ma la stringa vuota lo soddisfa, e i parser scrivono <code>''</code> quando il timestamp manca
+(<code>chatgpt.py:314</code>, <code>claude_ai.py:335</code>). Servono <code>CHECK (col &lt;&gt; '')</code>, non solo NOT NULL.</p>
+</div>
+
+<div class="callout">
+<h4>2. <code>tool_call_id</code> non è univoco — non può essere chiave</h4>
+<p>Sui 167.743 blocchi <code>tool_use</code> di Claude Code ci sono solo 162.643 id distinti: <strong>3,0% di duplicati</strong>,
+generati da riscritture e resume di sessione. Lo stesso <code>toolu_*</code> ricompare dentro lo stesso file.</p>
+<p>Quindi in <code>tool_calls</code> il <code>tool_call_id</code> è una colonna di <em>correlazione</em> (per il pairing
+call↔result), <strong>non</strong> una PK né un UNIQUE. La chiave resta surrogata, come oggi.</p>
+</div>
+
+<h3>Altre insidie misurate (tutte da trattare come nullable, anche se "presenti al 100%")</h3>
+<table>
+<tr><th>Campo</th><th>Presenza</th><th>Trappola</th></tr>
+<tr><td><code>message.stop_reason</code></td><td>chiave sul 100% degli assistant</td><td><strong>null nel 50,1%</strong> (2.0.x: solo 22,4% valorizzato; 2.1.100+: 86,9%)</td></tr>
+<tr><td><code>message.stop_sequence</code></td><td>chiave sul 100%</td><td>valorizzato in <strong>0</strong> casi su 328.148 — inutile</td></tr>
+<tr><td><code>gitBranch</code></td><td>chiave sul 100%</td><td>stringa <strong>vuota</strong> in 5.444 record; 255 conversazioni sono interamente non-git</td></tr>
+<tr><td><code>parentUuid</code></td><td>chiave sul 100%</td><td>null nell'1,56% — è il primo record della conversazione, null <em>strutturale</em></td></tr>
+<tr><td><code>message.content</code></td><td>contenitore mai vuoto</td><td>solo il <strong>25,2%</strong> contiene testo: il resto sono soli blocchi tool. Un NOT NULL su "testo" fallirebbe sul 74,8%</td></tr>
+<tr><td><code>usage.inference_geo</code>, <code>usage.iterations</code>, <code>effort</code>, <code>entrypoint</code>, <code>attribution*</code></td><td>alti nelle build recenti</td><td><strong>0,0% nei file 2.0.x</strong> (nov 2025 – feb 2026): mai NOT NULL, il full-reparse esploderebbe</td></tr>
+</table>
+
+<h2>Il conto finale</h2>
+<table>
+<tr><th></th><th>Prima</th><th>Dopo</th></tr>
+<tr><td>Tabelle</td><td class="num">16 + FTS</td><td class="num">12 + FTS + 6 view</td></tr>
+<tr><td>Tabelle per i tool</td><td class="num">6</td><td class="num">1 (+6 view omonime)</td></tr>
+<tr><td>DDL per aggiungere 3 campi ai tool</td><td class="num">18 ALTER TABLE</td><td class="num">1 CREATE TABLE</td></tr>
+<tr><td>«tutti i tool della sessione X»</td><td>UNION a 6 rami</td><td>1 SELECT</td></tr>
+<tr><td>Link tool → messaggio</td><td>assente</td><td><code>message_uuid</code></td></tr>
+<tr><td>Casa per errori / retry / rate limit</td><td>assente</td><td><code>session_events</code></td></tr>
+<tr><td>Join per filtrare su <code>source</code></td><td>sempre</td><td>mai</td></tr>
+<tr><td>Query / API / UI da modificare</td><td>—</td><td class="num">0 (le view coprono)</td></tr>
+</table>
+
+<p class="note">Tutto additivo: nessun DROP, nessuna colonna rimossa, nessuna PK cambiata sulle tabelle esistenti.
+Le 6 tabelle tool vengono <em>rinominate</em> e sostituite da view omonime — è l'unico passaggio che tocca
+oggetti esistenti, ed è reversibile.</p>
+
+</div>
+<script>
+  const dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  mermaid.initialize({ startOnLoad:true, theme: dark ? 'dark' : 'default' });
+</script>
+</body>
+</html>

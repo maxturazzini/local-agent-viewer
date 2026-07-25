@@ -248,3 +248,22 @@ view.
   entire tree and a `derived_count`; the detail view expands the derived
   subagents.
 - **search / CLI / MCP** always remain flat (one session = one result).
+
+---
+
+## 6. See also — schema evolution study (parked)
+
+[`docs/otel-gap/`](otel-gap/) holds a full study (2026-07-24/25) of the current schema
+against the **OpenTelemetry GenAI semantic conventions** and against what the 5 source
+formats actually contain — based on an integral scan of every log file on disk
+(claude_code alone: 12.933 files, 4,87 GB, 799.367 records).
+
+The redesign it proposes is **parked** — but three parts are useful right now, independently:
+
+| Doc | Why it matters today |
+|---|---|
+| [otel-gap/06-findings-operativi.md](otel-gap/06-findings-operativi.md) | Bugs, an **unauthenticated-endpoint vulnerability**, and schema debts, each fixable on its own |
+| [otel-gap/05-censimento.md](otel-gap/05-censimento.md) | Measured field presence per grain and per format vintage — the data needed for any NOT NULL decision |
+| [otel-gap/07-numeri-e-insidie.md](otel-gap/07-numeri-e-insidie.md) | Quantified data losses in the current parsers (e.g. the ChatGPT 2023-05 export is skipped **entirely**, 154/154 conversations) |
+
+Entry point: [otel-gap/00-stato-e-decisioni.md](otel-gap/00-stato-e-decisioni.md).

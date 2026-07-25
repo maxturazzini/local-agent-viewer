@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LAV — Schema attuale · mappa e valutazione</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  :root{
+    --bg:#fbfbfa; --panel:#fff; --ink:#1f2328; --muted:#656d76; --line:#d8dee4;
+    --ok:#1a7f37; --ok-bg:#eaf6ec; --warn:#9a6700; --warn-bg:#fdf6e3;
+    --bad:#b35900; --bad-bg:#fdf0e6; --accent:#0969da;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#14171a; --panel:#1c2024; --ink:#e6edf3; --muted:#9aa4ae; --line:#30363d;
+           --ok:#5fd47c; --ok-bg:#16261a; --warn:#e3b341; --warn-bg:#2a2313;
+           --bad:#f0883e; --bad-bg:#2b1d12; --accent:#58a6ff; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:0 20px 80px;background:var(--bg);color:var(--ink);
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1180px;margin:0 auto}
+  header{padding:44px 0 12px;border-bottom:1px solid var(--line);margin-bottom:28px}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:-.02em}
+  .sub{color:var(--muted);font-size:14px;margin:0}
+  h2{font-size:19px;margin:40px 0 14px;letter-spacing:-.01em}
+  h3{font-size:15px;margin:22px 0 8px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px;margin:16px 0}
+  .diagram{overflow-x:auto}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin:14px 0}
+  .card{border:1px solid var(--line);border-left-width:4px;border-radius:8px;padding:14px 16px;background:var(--panel)}
+  .card.ok{border-left-color:var(--ok)} .card.warn{border-left-color:var(--warn)} .card.bad{border-left-color:var(--bad)}
+  .card h4{margin:0 0 6px;font-size:14px}
+  .card p{margin:0;font-size:13.5px;color:var(--muted)}
+  .tag{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;
+    padding:2px 8px;border-radius:20px;margin-bottom:8px}
+  .tag.ok{background:var(--ok-bg);color:var(--ok)}
+  .tag.warn{background:var(--warn-bg);color:var(--warn)}
+  .tag.bad{background:var(--bad-bg);color:var(--bad)}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;margin:12px 0}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--bg);font-weight:600}
+  code{font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);
+    border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+  ol.steps{counter-reset:s;list-style:none;padding:0;margin:12px 0}
+  ol.steps li{counter-increment:s;position:relative;padding:12px 0 12px 46px;border-bottom:1px solid var(--line)}
+  ol.steps li:last-child{border-bottom:0}
+  ol.steps li::before{content:counter(s);position:absolute;left:0;top:12px;width:28px;height:28px;
+    border-radius:50%;background:var(--accent);color:#fff;display:grid;place-items:center;font-size:13px;font-weight:600}
+  .note{font-size:13px;color:var(--muted);border-left:3px solid var(--line);padding-left:12px;margin:14px 0}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin:10px 0 0}
+  .legend span{display:flex;align-items:center;gap:6px}
+  .dot{width:10px;height:10px;border-radius:2px;display:inline-block}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>LAV — Schema attuale: mappa e valutazione</h1>
+  <p class="sub">Fotografia del data model oggi, per decidere cosa tenere e cosa attaccare prima del super-schema · 2026-07-24</p>
+</header>
+
+<div class="note">
+  <strong>Architettura concordata:</strong> schema <em>nativo LAV</em> al centro.
+  OTel è mappabile <strong>in uscita con viste</strong> e <strong>in ingresso con adapter di import</strong>.
+  Lo schema non deve quindi assumere forma OTel — resta ottimizzato per le query reali.
+  <br><strong>Regola NOT NULL:</strong> vale <em>per tabella</em>, sulla popolazione di quella tabella
+  (chi non ha token semplicemente non scrive righe in <code>token_usage</code>).
+</div>
+
+<h2>1. La forma d'insieme</h2>
+<div class="panel diagram">
+<pre class="mermaid">
+flowchart TB
+  subgraph DIM["DIMENSIONI · chi / dove / cosa"]
+    U[users]:::dim
+    H[hosts]:::dim
+    P[projects]:::dim
+  end
+  subgraph G1["GRAIN 1 · sessione"]
+    I[interactions<br/>PK session_id + project_id]:::core
+    SS[session_sources<br/>PK identica → 1:1]:::warn
+    IM[interaction_metadata<br/>classificazione AI]:::core
+  end
+  subgraph G2["GRAIN 2 · messaggio"]
+    M[messages + FTS5]:::core
+  end
+  subgraph G3["GRAIN 3 · chiamata / tool"]
+    T[token_usage]:::core
+    TOOLS[6 tabelle tool<br/>file · bash · search<br/>skill · subagent · mcp]:::bad
+  end
+  MP[model_pricing<br/>costo a query-time]:::good
+  PS[parse_state<br/>cursori incrementali]:::good
+
+  U --> I
+  H --> I
+  P --> I
+  I --- SS
+  I --- IM
+  I --> M
+  I --> T
+  I --> TOOLS
+  T -.->|join model + data| MP
+
+  classDef dim fill:#eef4fb,stroke:#7aa7d9,color:#1f2328
+  classDef core fill:#ffffff,stroke:#9aa4ae,color:#1f2328
+  classDef good fill:#eaf6ec,stroke:#1a7f37,color:#1f2328
+  classDef warn fill:#fdf6e3,stroke:#9a6700,color:#1f2328
+  classDef bad fill:#fdf0e6,stroke:#b35900,color:#1f2328
+</pre>
+<div class="legend">
+  <span><i class="dot" style="background:#eaf6ec;border:1px solid #1a7f37"></i> da preservare</span>
+  <span><i class="dot" style="background:#ffffff;border:1px solid #9aa4ae"></i> sano</span>
+  <span><i class="dot" style="background:#fdf6e3;border:1px solid #9a6700"></i> da rivedere</span>
+  <span><i class="dot" style="background:#fdf0e6;border:1px solid #b35900"></i> debito strutturale</span>
+</div>
+</div>
+
+<h2>2. Diagramma ER</h2>
+<div class="panel diagram">
+<pre class="mermaid">
+erDiagram
+    USERS ||--o{ INTERACTIONS : "user_id"
+    HOSTS ||--o{ INTERACTIONS : "host_id"
+    PROJECTS ||--o{ INTERACTIONS : "project_id"
+    INTERACTIONS ||--|| SESSION_SOURCES : "1:1 stessa PK"
+    INTERACTIONS ||--o| INTERACTION_METADATA : "0..1"
+    INTERACTIONS ||--o{ MESSAGES : ""
+    INTERACTIONS ||--o{ TOKEN_USAGE : ""
+    INTERACTIONS ||--o{ FILE_OPERATIONS : ""
+    INTERACTIONS ||--o{ BASH_COMMANDS : ""
+    INTERACTIONS ||--o{ SEARCH_OPERATIONS : ""
+    INTERACTIONS ||--o{ SKILL_INVOCATIONS : ""
+    INTERACTIONS ||--o{ SUBAGENT_INVOCATIONS : ""
+    INTERACTIONS ||--o{ MCP_TOOL_CALLS : ""
+    TOKEN_USAGE }o..|| MODEL_PRICING : "model + data"
+
+    USERS {
+        int id PK
+        string username UK
+        string first_seen
+        string last_seen
+    }
+    HOSTS {
+        int id PK
+        string hostname UK
+        string os_type
+        string home_dir
+    }
+    PROJECTS {
+        int id PK
+        string name UK
+        string source_path
+    }
+    INTERACTIONS {
+        string session_id PK
+        int project_id PK
+        int user_id FK
+        int host_id FK
+        string timestamp "un solo istante"
+        string model
+        int total_tokens "materializzato"
+        int message_count "materializzato"
+        string project "ridondante"
+        string cwd
+        string git_branch
+        string parent_session_id
+        string agent_id
+    }
+    SESSION_SOURCES {
+        string session_id PK
+        int project_id PK
+        string source "4a dimensione"
+        string client_version
+        string process_name
+        string meta_json
+    }
+    INTERACTION_METADATA {
+        string session_id PK
+        int project_id PK
+        string classification
+        string data_sensitivity
+        string topics
+        string people
+        string clients
+        string tags
+    }
+    MESSAGES {
+        int id PK
+        string session_id
+        int project_id
+        string uuid UK
+        string type
+        string content
+        string timestamp "NULLABLE"
+        int tokens_in
+        int tokens_out
+        string model
+        string api_message_id
+        string agent_id
+    }
+    TOKEN_USAGE {
+        int id PK
+        string timestamp "UNIQUE fragile"
+        string session_id
+        int project_id
+        string model
+        int input_tokens
+        int output_tokens
+        int cache_creation_tokens
+        int cache_read_tokens
+        string api_message_id
+    }
+    MODEL_PRICING {
+        int id PK
+        string model UK
+        string provider
+        float input_price_per_mtok
+        float output_price_per_mtok
+        float cache_write_price_per_mtok
+        float cache_read_price_per_mtok
+        string from_date UK
+        string to_date
+    }
+    FILE_OPERATIONS {
+        int id PK
+        string timestamp
+        string tool
+        string file_path
+    }
+    BASH_COMMANDS {
+        int id PK
+        string timestamp
+        string command
+        string description
+    }
+    SEARCH_OPERATIONS {
+        int id PK
+        string timestamp
+        string tool
+        string pattern
+    }
+    SKILL_INVOCATIONS {
+        int id PK
+        string timestamp
+        string skill_name
+        string args
+    }
+    SUBAGENT_INVOCATIONS {
+        int id PK
+        string timestamp
+        string subagent_type
+        string prompt
+        string model
+    }
+    MCP_TOOL_CALLS {
+        int id PK
+        string timestamp
+        string tool_name
+        string server_name
+    }
+</pre>
+<p class="note">Le 6 tabelle tool hanno <em>tutte</em> anche <code>session_id</code>, <code>project_id</code>,
+<code>user_id</code>, <code>host_id</code>, <code>cwd</code>, <code>git_branch</code> — omessi per leggibilità.
+È esattamente il problema evidenziato sotto.</p>
+</div>
+
+<h2>3. Cosa regge — da non toccare</h2>
+<div class="grid">
+  <div class="card ok"><span class="tag ok">preservare</span>
+    <h4>4 dimensioni su ogni tabella dati</h4>
+    <p>project + user + host + source: filtri componibili ovunque senza join a cascata. Raro e ben fatto — il super-schema lo eredita tale e quale.</p></div>
+  <div class="card ok"><span class="tag ok">preservare</span>
+    <h4>PK composita (session_id, project_id)</h4>
+    <p>La stessa sessione può materializzarsi sotto più progetti: modella un fatto reale, non è un workaround.</p></div>
+  <div class="card ok"><span class="tag ok">preservare</span>
+    <h4>model_pricing con validità temporale</h4>
+    <p>Il costo non è mai materializzato: cambi i prezzi e la storia si ricalcola. Principio da estendere, non da rivedere.</p></div>
+  <div class="card ok"><span class="tag ok">preservare</span>
+    <h4>FTS5 + trigger, append-only, sentinelle</h4>
+    <p>Ricerca full-text senza duplicare storage; nessun NULL ambiguo nelle chiavi. <code>parse_state</code> è già il modello di riferimento.</p></div>
+</div>
+
+<h2>4. Cosa non regge — in ordine di gravità</h2>
+
+<div class="card bad" style="margin-bottom:14px"><span class="tag bad">debito strutturale</span>
+<h4>4.1 — Le 6 tabelle tool sono la stessa tabella scritta sei volte</h4>
+<p>Condividono 8 colonne identiche e differiscono per 2-4. Conseguenze già visibili oggi:
+«tutti i tool della sessione in ordine» richiede una <strong>UNION a 6 rami</strong>;
+aggiungere i tre campi must-have (<code>tool_call_id</code>, <code>duration_ms</code>, <code>is_error</code>)
+significa <strong>18 ALTER TABLE</strong>; un tool nuovo = una tabella nuova.
+E manca il link al messaggio che ha invocato il tool: <code>tool_use.id</code> esiste nei file,
+viene letto e scartato.</p></div>
+
+<div class="grid">
+  <div class="card warn"><span class="tag warn">rivedere</span>
+    <h4>4.2 — session_sources è 1:1 ma separata</h4>
+    <p>Stessa identica PK di <code>interactions</code>. Ogni query che filtra per <code>source</code> — cioè quasi tutte — paga un join. La 4ª dimensione è l'unica che non sta sulla riga dei fatti.</p></div>
+  <div class="card warn"><span class="tag warn">bug latente</span>
+    <h4>4.3 — UNIQUE fragile su token_usage</h4>
+    <p>Due chiamate API nello stesso millisecondo, stessa sessione, <strong>collidono</strong> e una si perde in silenzio. LAV-39 ha dovuto metterci una toppa (indice parziale su <code>api_message_id</code>).</p></div>
+  <div class="card warn"><span class="tag warn">rivedere</span>
+    <h4>4.4 — I fatti non sono correlati fra loro</h4>
+    <p><code>messages</code>, <code>token_usage</code> e i tool si legano solo per (session, project, <em>timestamp</em>). L'unico ponte reale è <code>api_message_id</code>, e solo per claude_code/cowork.</p></div>
+  <div class="card warn"><span class="tag warn">sanare</span>
+    <h4>4.5 — Incoerenze minori</h4>
+    <p><code>messages.timestamp</code> nullable (unica fra le tabelle); <code>interactions.project</code> duplica <code>projects.name</code>; <code>total_tokens</code>/<code>message_count</code> materializzati; <code>bash_commands</code> e <code>mcp_tool_calls</code> senza UNIQUE (infatti LAV-74 ha dovuto fare wipe manuale).</p></div>
+  <div class="card bad"><span class="tag bad">mancante</span>
+    <h4>4.6 — Manca il grain degli eventi</h4>
+    <p>Nessuna casa per errori, retry, rate limit, compaction, fine turno/run — presenti in 4 sorgenti su 5 e oggi scartati in fase di parse.</p></div>
+</div>
+
+<h2>5. La regola NOT NULL applicata per tabella</h2>
+<p>Con la regola per-popolazione i vincoli diventano molto più forti. <strong>Il censimento è
+poi stato completato</strong> (<code>05-censimento.md</code>) e ha <strong>smentito due candidati
+di questa tabella</strong>:</p>
+<div class="card warn" style="margin-bottom:14px"><span class="tag warn">corretto dal censimento</span>
+<p style="color:var(--ink)"><strong><code>source</code> NOT NULL su <code>interactions</code></strong>: in Codex
+<code>session_meta.source</code> è un <em>oggetto</em> nel 9,0% dei casi (421 stringhe / 42 oggetti su 468)
+e <code>session_meta</code> viene ri-emesso a ogni resume (fino a 19 volte nello stesso file).
+&nbsp;·&nbsp; <strong><code>messages.timestamp</code> NOT NULL</strong>: i 14 file legacy Codex (V1, ago-set 2025)
+non hanno envelope → <strong>761/761 item senza timestamp</strong>.
+&nbsp;·&nbsp; Inoltre la sentinella <code>source=''</code> citata al §3 è <strong>dichiarata ma mai usata</strong>
+da alcun call site (0 righe sul DB reale).</p></div>
+<table>
+<tr><th>Tabella</th><th>Chi la popola</th><th>Candidati NOT NULL</th></tr>
+<tr><td><code>interactions</code></td><td>tutte e 5</td><td>session_id, project_id, user_id, host_id, started_at, <strong>source</strong> (oggi altrove)</td></tr>
+<tr><td><code>messages</code></td><td>tutte e 5</td><td>+ <code>timestamp</code> (oggi nullable), type/role</td></tr>
+<tr><td><code>token_usage</code></td><td>claude_code, codex, cowork — <strong>non</strong> chatgpt/claude_ai</td><td><code>model</code>, <code>input_tokens</code>, <code>output_tokens</code> possono essere NOT NULL: chi non ha token non scrive righe qui</td></tr>
+<tr><td><code>tool_calls</code> (unificata)</td><td>tutte e 5</td><td>tool_name, timestamp; <code>tool_call_id</code> solo con sentinella (ChatGPT non ce l'ha)</td></tr>
+<tr><td><code>session_events</code> (nuova)</td><td>claude_code, codex, cowork</td><td>event_type, timestamp</td></tr>
+</table>
+
+<h2>6. Cosa attaccare, in che ordine</h2>
+<p><strong>Verdetto: la spina dorsale è sana, la periferia no.</strong> Dimensioni, PK composita,
+pricing e FTS non si toccano. Il debito è concentrato in tre punti, e ognuno abilita il successivo.</p>
+<ol class="steps">
+  <li><strong>tool_calls unificata + 6 view di compatibilità.</strong> Prerequisito di tutto il lavoro sui tool
+      e trasforma 18 ALTER TABLE in una tabella nuova. Le view con nomi e colonne identici mantengono
+      query, API e UI funzionanti senza modifiche.</li>
+  <li><strong>source su interactions</strong> + chiave <code>token_usage</code> sanata. Due modifiche piccole:
+      tolgono un join dalla maggior parte delle query e chiudono un bug latente di perdita silenziosa.</li>
+  <li><strong>session_events.</strong> La casa per errori/retry/rate-limit/compaction. Tabella nuova,
+      zero impatto sull'esistente.</li>
+</ol>
+<p class="note">Tutte e tre <strong>additive</strong>: nessun DROP, nessuna colonna rimossa, nessuna PK
+cambiata su tabelle esistenti. Sopra questa base si aggiungono le colonne della gap analysis
+(<code>stop_reason</code>, <code>error_type</code>, <code>request_id</code>, durate, <code>reasoning_tokens</code>)
+e si definiscono le viste OTel in uscita.</p>
+
+</div>
+<script>
+  const dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  mermaid.initialize({ startOnLoad:true, theme: dark ? 'dark' : 'default', er:{ layoutDirection:'TB' } });
+</script>
+</body>
+</html>
