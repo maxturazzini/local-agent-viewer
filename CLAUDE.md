@@ -37,6 +37,7 @@ lav pricing list              # list active pricing
 lav pricing add --model X --input 5.0 --output 25.0 --from-date 2026-01-01
 lav backfill tool-outcomes    # stamp tool_call_id + outcome on historical tool rows
 lav backfill tool-kind        # re-derive mcp_tool_calls.kind (--reclassify after a whitelist edit)
+lav backfill claude-ai-outcomes  # recover claude.ai is_error from markers in messages (LAV-83)
 
 # Specialized CLIs (still available)
 lav-classify                  # AI classification (needs OPENAI_API_KEY)

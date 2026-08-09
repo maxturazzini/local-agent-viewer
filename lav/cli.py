@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -627,7 +628,193 @@ def cmd_backfill(args):
         return cmd_backfill_tool_outcomes(args)
     if args.backfill_command == "tool-kind":
         return cmd_backfill_tool_kind(args)
+    if args.backfill_command == "claude-ai-outcomes":
+        return cmd_backfill_claude_ai_outcomes(args)
     _die(f"Unknown backfill subcommand '{args.backfill_command}'.")
+
+
+# LAV-83. Contract with lav/parsers/claude_ai.py:_render_content_block, which
+# writes exactly these two lines into messages.content:
+#     \n--- tool_use: {name} ---\n{payload}\n
+#     \n--- tool_result: {name} ({ok|error}) ---\n{body}\n
+# If that renderer's format ever changes, this regex silently matches nothing and
+# coverage drops to zero with no error — hence the `markers_seen` counter in the
+# output, which is 0 exactly when the contract has broken. Anchored whole-line
+# (MULTILINE) so a transcript pasted INTO a conversation cannot match mid-line.
+_CLAUDE_AI_MARKER_RE = re.compile(
+    r"^--- tool_(use|result): (.+?)(?: \((ok|error)\))? ---$", re.MULTILINE)
+
+
+def _claude_ai_normalize_tool(name):
+    """`<integration>:<tool>` -> `<tool>`.
+
+    The claude.ai export renders result names qualified by their integration
+    ('Control your Mac:osascript', 'playwright:playwright_console_logs',
+    'wix:CallWixSiteAPI') while the tool_use side and the mcp_tool_calls row hold
+    the bare name. Measured: without this, pairing drops from 6.921/6.921 to
+    6.206/6.921.
+    """
+    return (name or "").split(":")[-1].strip()
+
+
+def _claude_ai_pair_outcomes(rows):
+    """Pair rendered tool_use/tool_result markers -> {(tool, rank): is_error}.
+
+    `rows` is the session's messages.content in insertion order — which IS
+    conversation order, because claude_ai.py walks chat_messages in order.
+
+    A FIFO of open tool_use ranks PER NORMALISED NAME, popped oldest-first by
+    each result. Counting results per name instead (the obvious approach) scores
+    6.206/6.921; this scores 6.921/6.921 with zero orphans, because it survives
+    interleaved calls of different tools.
+
+    `rank` is the 0-based ordinal of that tool_use among calls of the same tool
+    in this session, which is exactly how the rows were inserted.
+    """
+    open_calls = {}      # normalised tool -> [rank, ...] still awaiting a result
+    next_rank = {}       # normalised tool -> next ordinal to hand out
+    outcomes = {}
+    markers = 0
+    orphans = 0
+    for content in rows:
+        if not content:
+            continue
+        for kind, raw_name, status in _CLAUDE_AI_MARKER_RE.findall(content):
+            name = _claude_ai_normalize_tool(raw_name)
+            if not name:
+                continue
+            markers += 1
+            if kind == "use":
+                rank = next_rank.get(name, 0)
+                next_rank[name] = rank + 1
+                open_calls.setdefault(name, []).append(rank)
+            else:
+                queue = open_calls.get(name)
+                if not queue:
+                    orphans += 1
+                    continue
+                rank = queue.pop(0)
+                # The renderer emits "(ok)" when the key is absent, which is the
+                # LAV-78 rule: absence of is_error means success. So `error` ->
+                # 1 and everything else -> 0; NEVER NULL here, a result WAS seen.
+                outcomes[(name, rank)] = 1 if status == "error" else 0
+    return outcomes, markers, orphans
+
+
+def cmd_backfill_claude_ai_outcomes(args):
+    """LAV-83: recover claude.ai is_error from the markers already in messages.
+
+    lav/parsers/claude_ai.py reads `is_error` off every tool_result block and
+    uses it ONLY to render "(ok)"/"(error)" into the message text; the
+    mcp_tool_calls INSERT never stores it. So the outcome of every claude.ai tool
+    call is sitting in the database as prose, in a column no query can aggregate.
+
+    This reads it back out. No new export is needed — which matters, because the
+    original data-*-batch-0000 folder no longer exists on either machine.
+
+    Purely local, no watermark, no sync: run it on EACH node. Not suitable for
+    utils/services/lav-parser.sh — it is a one-shot over a static export, not a
+    per-cycle heal. Safe (and necessary) to re-run after
+    `lav-parse-claude-ai --full`, which deletes and re-inserts the rows.
+    """
+    db_path = Path(args.db) if getattr(args, "db", None) else UNIFIED_DB_PATH
+    if not db_path.exists():
+        _die(f"No database at {db_path}. Run lav-parse first.")
+
+    dry_run = bool(getattr(args, "dry_run", False))
+    limit = getattr(args, "limit", None)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        if "is_error" not in _bf_table_columns(conn, "mcp_tool_calls"):
+            _die("mcp_tool_calls.is_error does not exist. Run lav-parse (or "
+                 "lav-server) once so init_db() applies the LAV-78 migration.")
+
+        sql = ("SELECT DISTINCT session_id, project_id FROM mcp_tool_calls "
+               "WHERE session_id LIKE 'claudeai:%' ORDER BY session_id")
+        if limit is not None:
+            sql += f" LIMIT {int(limit)}"
+        sessions = conn.execute(sql).fetchall()
+
+        stats = {
+            "sessions_scanned": 0,
+            "markers_seen": 0,
+            "results_orphaned": 0,
+            "rows_stamped": 0,
+            "errors_recovered": 0,
+            "unmatched_rank": 0,
+            "sessions_failed": 0,
+        }
+        mode = "DRY RUN (all changes rolled back)" if dry_run else "WRITING"
+        print(f"[backfill] {mode} — {len(sessions)} claude.ai sessions on {db_path}",
+              file=sys.stderr)
+
+        for session_id, project_id in sessions:
+            stats["sessions_scanned"] += 1
+            try:
+                contents = [r[0] for r in conn.execute(
+                    "SELECT content FROM messages WHERE session_id = ? AND project_id = ? "
+                    "ORDER BY id", (session_id, project_id))]
+                outcomes, markers, orphans = _claude_ai_pair_outcomes(contents)
+                stats["markers_seen"] += markers
+                stats["results_orphaned"] += orphans
+                if not outcomes:
+                    continue
+
+                # Row ids per tool, in insertion order — the same order the
+                # renderer walked the content blocks, so ordinal N here is the
+                # call the Nth marker described.
+                ids_by_tool = {}
+                for tool_name, row_id in conn.execute(
+                        "SELECT tool_name, id FROM mcp_tool_calls "
+                        "WHERE session_id = ? AND project_id = ? ORDER BY timestamp, id",
+                        (session_id, project_id)):
+                    ids_by_tool.setdefault(_claude_ai_normalize_tool(tool_name), []).append(row_id)
+
+                for (tool, rank), is_error in outcomes.items():
+                    ids = ids_by_tool.get(tool)
+                    if not ids or rank >= len(ids):
+                        # More markers than rows: a transcript quoted inside the
+                        # conversation, or a call whose row was never written.
+                        # Counted, never guessed at.
+                        stats["unmatched_rank"] += 1
+                        continue
+                    n = conn.execute(
+                        "UPDATE mcp_tool_calls SET is_error = ? "
+                        "WHERE id = ? AND is_error IS NULL",
+                        (is_error, ids[rank])).rowcount
+                    stats["rows_stamped"] += n
+                    if n and is_error:
+                        stats["errors_recovered"] += n
+            except Exception as e:
+                stats["sessions_failed"] += 1
+                print(f"[backfill] session {session_id} failed: {e}", file=sys.stderr)
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                continue
+
+            if dry_run:
+                conn.rollback()
+            else:
+                conn.commit()
+
+        if stats["markers_seen"] == 0 and sessions:
+            # The renderer contract broke (or these sessions predate it). Say so
+            # loudly: silently stamping nothing looks identical to success.
+            print("[backfill] WARNING: 0 markers found. The '--- tool_result: ...' "
+                  "format in lav/parsers/claude_ai.py may have changed.", file=sys.stderr)
+
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM mcp_tool_calls "
+            "WHERE session_id LIKE 'claudeai:%' AND is_error IS NULL").fetchone()[0]
+    finally:
+        conn.close()
+
+    stats["still_unmeasured"] = remaining
+    stats["dry_run"] = dry_run
+    _output(stats, args.format)
 
 
 def cmd_backfill_tool_kind(args):
@@ -1057,6 +1244,24 @@ def build_parser():
                          help="Report the current distribution without writing")
     _add_format_arg(p_bf_tk)
     p_bf_tk.set_defaults(func=cmd_backfill)
+
+    # backfill claude-ai-outcomes
+    p_bf_ca = bf_sub.add_parser(
+        "claude-ai-outcomes",
+        help="LAV-83: recover claude.ai is_error from the markers already in messages",
+        description="The claude.ai parser reads is_error off every tool_result block and "
+                    "uses it only to render '(ok)'/'(error)' into the message text — it "
+                    "never stores it, so all claude.ai rows sit at is_error IS NULL. This "
+                    "reads it back out of messages.content. No new export needed. Local "
+                    "DB only: run it on each node. Re-run after lav-parse-claude-ai --full.",
+    )
+    p_bf_ca.add_argument("--db", help=f"SQLite DB path (default: {UNIFIED_DB_PATH})")
+    p_bf_ca.add_argument("--dry-run", action="store_true",
+                         help="Count what would change, roll everything back, write nothing")
+    p_bf_ca.add_argument("--limit", type=_nonneg_int,
+                         help="Process at most N sessions; 0 = none, omit for no limit")
+    _add_format_arg(p_bf_ca)
+    p_bf_ca.set_defaults(func=cmd_backfill)
 
     return parser
 
