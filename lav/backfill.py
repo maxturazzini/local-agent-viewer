@@ -94,6 +94,7 @@ CHILD_TABLES: List[Tuple[str, List[str], bool]] = [
         "subagent_type", "description", "prompt", "model", "run_in_background",
         "cwd", "git_branch",
         "tool_call_id", "is_error", "duration_ms",
+        "spawn_tool", "workflow_id",
     ], True),
     ("mcp_tool_calls", [
         "timestamp", "session_id", "project_id", "user_id", "host_id",
@@ -107,6 +108,7 @@ INTERACTION_COLUMNS = [
     "session_id", "project_id", "user_id", "host_id", "timestamp", "display",
     "summary", "project", "model", "total_tokens", "message_count", "tools_used",
     "cwd", "git_branch", "parent_session_id", "agent_id",
+    "workflow_id",  # LAV-82
 ]
 
 

@@ -107,6 +107,15 @@ CREATE TABLE IF NOT EXISTS interactions (
     git_branch TEXT,
     parent_session_id TEXT,
     agent_id TEXT,
+    -- LAV-82: wf_<id> when this session is a child agent of a Workflow run, taken
+    -- from its transcript path (<parent>/subagents/workflows/wf_<id>/agent-*.jsonl).
+    -- '' for a plain Task/Agent subagent and for a top-level session. It is what
+    -- makes a 12-agent workflow reconstructable instead of looking like 12
+    -- unrelated spawns — and it cannot be inferred from timestamps: 21 of the 43
+    -- parent sessions here ran MORE THAN ONE workflow.
+    -- WARNING: update_interaction() does INSERT OR REPLACE over the whole row, so
+    -- this column MUST stay in its column list or every parse silently blanks it.
+    workflow_id TEXT DEFAULT '',
     PRIMARY KEY (session_id, project_id)
 );
 
@@ -236,6 +245,13 @@ CREATE TABLE IF NOT EXISTS subagent_invocations (
     tool_call_id TEXT DEFAULT '',
     is_error INTEGER,
     duration_ms INTEGER,
+    -- LAV-82: which tool spawned this ('Task' | 'Agent' | 'Workflow') and, for a
+    -- Workflow run, the wf_<id> cohort its child agents share. Both are derived
+    -- ATTRIBUTES of the call, deliberately NOT part of the UNIQUE key below:
+    -- adding them would let the same call be inserted twice by two parser
+    -- versions. Same rule LAV-78 applied to tool_call_id.
+    spawn_tool TEXT DEFAULT '',
+    workflow_id TEXT DEFAULT '',
     UNIQUE(timestamp, session_id, project_id, subagent_type, description)
 );
 
@@ -545,6 +561,16 @@ def _migrate_add_tool_outcomes(conn: sqlite3.Connection):
 
 CMD_NAME_BATCH = 5000  # LAV-79: rows per commit in the cmd_name backfill
 
+# LAV-82. Claude Code renamed the subagent-spawning tool Task -> Agent on this
+# date; measured in the corpus, the last `Task` tool_use is 2026-02-27 and the
+# first `Agent` is 2026-03-01. Used ONLY as the date guard on the one-shot
+# spawn_tool seed — never as a routing condition.
+SPAWN_TOOL_RENAME_DATE = "2026-03-01"
+
+# parse_state key marking that the seed already ran on this DB. Scoped with the
+# repo's sentinels (project_id=-1, source='', host_id=-1) — never NULL.
+_SPAWN_TOOL_SEEDED = "schema:spawn_tool_seeded"
+
 
 def _migrate_add_cmd_name(conn: sqlite3.Connection):
     """LAV-79: add bash_commands.cmd_name, index it, and derive it IN PLACE.
@@ -622,6 +648,69 @@ def _migrate_add_cmd_name(conn: sqlite3.Connection):
 
     if updated:
         print(f"  LAV-79: derived cmd_name for {updated} bash_commands row(s)")
+
+
+def _migrate_add_subagent_spawn(conn: sqlite3.Connection):
+    """LAV-82: subagent_invocations.spawn_tool / .workflow_id, interactions.workflow_id.
+
+    The two new subagent_invocations columns are derived attributes, so they are
+    NOT in the UNIQUE key and adding them cannot duplicate a row.
+
+    spawn_tool gets a ONE-SHOT seed rather than a permanent rule: every row that
+    exists before this migration was necessarily written by the old Task-only
+    branch, so it is provably 'Task'. Two belts, because a collector ingesting
+    from an agent still on old code would keep shipping rows with an empty
+    spawn_tool long after this runs, and re-seeding those as 'Task' would be a lie:
+
+      1. a parse_state flag, so the seed runs exactly once per DB;
+      2. a date guard — the rename landed 2026-03-01, and the last real Task call
+         in the corpus is 2026-02-27.
+
+    interactions.workflow_id needs no backfill here: agent transcript files bypass
+    BOTH the mtime skip and the per-message watermark (see the is_agent_file
+    guards), so a plain incremental lav-parse re-reads every wf_ agent file on the
+    next run and update_interaction() fills the column from the path.
+    """
+    subagent_cols = {row[1] for row in
+                     conn.execute("PRAGMA table_info(subagent_invocations)").fetchall()}
+    if subagent_cols:
+        for column, decl in (("spawn_tool", "TEXT DEFAULT ''"),
+                             ("workflow_id", "TEXT DEFAULT ''")):
+            if column not in subagent_cols:
+                conn.execute(
+                    f"ALTER TABLE subagent_invocations ADD COLUMN {column} {decl}")
+                conn.commit()
+                print(f"  LAV-82: added subagent_invocations.{column}")
+
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_subagent_spawn "
+                     "ON subagent_invocations(spawn_tool)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_subagent_workflow "
+                     "ON subagent_invocations(workflow_id)")
+        conn.commit()
+
+        if get_parse_state(conn, _SPAWN_TOOL_SEEDED) is None:
+            seeded = conn.execute(
+                "UPDATE subagent_invocations SET spawn_tool = 'Task' "
+                "WHERE COALESCE(spawn_tool, '') = '' AND timestamp < ?",
+                (SPAWN_TOOL_RENAME_DATE,),
+            ).rowcount
+            set_parse_state(conn, _SPAWN_TOOL_SEEDED, SPAWN_TOOL_RENAME_DATE)
+            conn.commit()
+            if seeded:
+                print(f"  LAV-82: seeded spawn_tool='Task' on {seeded} historical row(s)")
+
+    interaction_cols = {row[1] for row in
+                        conn.execute("PRAGMA table_info(interactions)").fetchall()}
+    if interaction_cols and "workflow_id" not in interaction_cols:
+        conn.execute("ALTER TABLE interactions ADD COLUMN workflow_id TEXT DEFAULT ''")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_int_workflow "
+                     "ON interactions(workflow_id)")
+        conn.commit()
+        print("  LAV-82: added interactions.workflow_id")
+    elif interaction_cols:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_int_workflow "
+                     "ON interactions(workflow_id)")
+        conn.commit()
 
 
 def _migrate_add_tool_kind(conn: sqlite3.Connection):
@@ -784,6 +873,11 @@ def init_db(db_path: Path = UNIFIED_DB_PATH) -> sqlite3.Connection:
         _migrate_add_tool_kind(conn)
     except Exception as e:
         print(f"  tool_kind migration skipped: {e}")
+    # LAV-82: subagent spawn_tool / workflow_id + interactions.workflow_id
+    try:
+        _migrate_add_subagent_spawn(conn)
+    except Exception as e:
+        print(f"  subagent_spawn migration skipped: {e}")
     # Migrate conversations -> interactions
     try:
         _migrate_conversations_to_interactions(conn, db_path)
@@ -1833,21 +1927,25 @@ def process_tool_call(tool_call: dict, message: dict, conn: sqlite3.Connection,
             except sqlite3.Error as e:
                 print(f"DB error (skill): {e}")
 
-    elif tool_name == "Task":
-        subagent_type = tool_input.get("subagent_type", "")
-        if subagent_type:
-            description = tool_input.get("description", "")
-            prompt = tool_input.get("prompt", "")
-            model = tool_input.get("model", "")
-            run_in_background = 1 if tool_input.get("run_in_background", False) else 0
+    elif tool_name in tool_outcomes.SPAWN_TOOLS:
+        # LAV-82: was `== "Task"` with an `if subagent_type:` guard. Claude Code
+        # renamed the tool to `Agent` on 2026-03-01 and added `Workflow`, so the
+        # table stopped filling; and the guard alone dropped 109 of 1.217 Agent
+        # calls plus every Workflow call, because those carry no subagent_type.
+        # The row is built by the shared helper — see tool_row_matches(), which
+        # must reproduce the same key.
+        row = tool_outcomes.subagent_row_from_tool_input(tool_name, tool_input)
+        if row:
             try:
                 conn.execute(
                     """INSERT OR IGNORE INTO subagent_invocations
                        (timestamp, session_id, project_id, user_id, host_id, subagent_type, description, prompt, model, run_in_background, cwd, git_branch,
-                        tool_call_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (timestamp, session_id, project_id, user_id, host_id, subagent_type, description, prompt, model, run_in_background, cwd, git_branch,
-                     tool_call_id)
+                        tool_call_id, spawn_tool, workflow_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (timestamp, session_id, project_id, user_id, host_id,
+                     row["subagent_type"], row["description"], row["prompt"],
+                     row["model"], row["run_in_background"], cwd, git_branch,
+                     tool_call_id, row["spawn_tool"], row["workflow_id"])
                 )
             except sqlite3.Error as e:
                 print(f"DB error (subagent): {e}")
@@ -1955,10 +2053,18 @@ def process_tool_results(message: dict, conn: sqlite3.Connection, project_id: in
         if not tool_call_id:
             continue
         outcome = tool_outcomes.outcome_from_tool_result(block)
+        # LAV-82: a Workflow launch is a SUCCESS, so outcome_from_tool_result()
+        # returns early and never looks at the body — the wf_ id has to be read
+        # in a separate pass. It is '' for every other tool_result.
+        workflow_id = tool_outcomes.workflow_id_from_tool_result(block)
         try:
             rows = tool_outcomes.apply_tool_outcome(
                 conn, session_id, project_id, tool_call_id, outcome, result_ts
             )
+            if workflow_id:
+                rows += tool_outcomes.apply_workflow_id(
+                    conn, session_id, project_id, tool_call_id, workflow_id
+                )
         except sqlite3.Error as e:
             print(f"DB error (tool_result): {e}")
             continue
@@ -1968,7 +2074,7 @@ def process_tool_results(message: dict, conn: sqlite3.Connection, project_id: in
         if seen_tool_use_ids is not None and tool_call_id in seen_tool_use_ids:
             continue  # call already processed, it just wrote no row — drop it
         if len(pending) < MAX_PENDING_TOOL_RESULTS:
-            pending[(session_id, project_id, tool_call_id)] = (outcome, result_ts)
+            pending[(session_id, project_id, tool_call_id)] = (outcome, result_ts, workflow_id)
         else:
             _dropped_tool_results += 1  # LAV-79: surfaced in the per-project stats line
     return updated
@@ -1988,11 +2094,16 @@ def flush_pending_tool_results(conn: sqlite3.Connection, pending: dict) -> int:
     if not pending:
         return 0
     updated = 0
-    for (session_id, project_id, tool_call_id), (outcome, result_ts) in pending.items():
+    for (session_id, project_id, tool_call_id), entry in pending.items():
+        outcome, result_ts, workflow_id = entry
         try:
             updated += tool_outcomes.apply_tool_outcome(
                 conn, session_id, project_id, tool_call_id, outcome, result_ts
             )
+            if workflow_id:
+                updated += tool_outcomes.apply_workflow_id(
+                    conn, session_id, project_id, tool_call_id, workflow_id
+                )
         except sqlite3.Error as e:
             print(f"DB error (tool_result replay): {e}")
     pending.clear()
@@ -2225,8 +2336,22 @@ def process_codex_token_count(event: dict, session_ctx: dict, conn: sqlite3.Conn
 
 def update_interaction(session_id: str, project_name: str, conn: sqlite3.Connection,
                        project_id: int, user_id: int, host_id: int,
-                       summary: str = None, parent_session_id: str = None, agent_id: str = None):
-    """Aggregate and update interaction metadata from messages."""
+                       summary: str = None, parent_session_id: str = None, agent_id: str = None,
+                       workflow_id: str = None):
+    """Aggregate and update interaction metadata from messages.
+
+    NOTE (LAV-82): the write below is INSERT OR REPLACE over the WHOLE row, so
+    every column of `interactions` must appear in its column list. A column added
+    to the table but omitted here is silently reset to its default on every
+    parse — the symptom (correct right after a targeted reparse, empty an hour
+    later) reads like a sync bug and costs a day to find.
+
+    Hence `workflow_id=None` means "caller does not know — keep what is stored",
+    while `""` means "caller knows there is none — clear it". The codex and cowork
+    call sites pass neither and can never be workflow children, so today the
+    distinction changes nothing; it exists so that the NEXT caller added to this
+    function cannot silently wipe the column.
+    """
     try:
         cursor = conn.execute("""
             SELECT
@@ -2321,13 +2446,24 @@ def update_interaction(session_id: str, project_name: str, conn: sqlite3.Connect
         cwd = ctx_row[0] if ctx_row else ""
         git_branch = ctx_row[1] if ctx_row else ""
 
+        # LAV-82: None = "caller does not know" -> carry the stored value across
+        # the INSERT OR REPLACE instead of resetting it to the column default.
+        if workflow_id is None:
+            wf_row = conn.execute(
+                "SELECT workflow_id FROM interactions WHERE session_id = ? AND project_id = ?",
+                (session_id, project_id),
+            ).fetchone()
+            workflow_id = (wf_row[0] if wf_row else "") or ""
+
         conn.execute("""
             INSERT OR REPLACE INTO interactions
             (session_id, project_id, user_id, host_id, timestamp, display, summary, project, model,
-             total_tokens, message_count, tools_used, cwd, git_branch, parent_session_id, agent_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             total_tokens, message_count, tools_used, cwd, git_branch, parent_session_id, agent_id,
+             workflow_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (session_id, project_id, user_id, host_id, first_ts, display, summary, project_name, model,
-              total_tokens or 0, msg_count, tools_json, cwd, git_branch, parent_session_id, agent_id))
+              total_tokens or 0, msg_count, tools_json, cwd, git_branch, parent_session_id, agent_id,
+              workflow_id))
 
     except sqlite3.Error as e:
         print(f"DB error (interaction): {e}")
@@ -2653,12 +2789,23 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
         pending_tool_results = {}
 
         parent_from_path = None
+        workflow_from_path = ""
         if is_agent_file and "subagents" in jsonl_file.parts:
             subagents_idx = jsonl_file.parts.index("subagents")
             if subagents_idx > 0:
                 parent_folder = jsonl_file.parts[subagents_idx - 1]
                 if len(parent_folder) == 36 and parent_folder.count("-") == 4:
                     parent_from_path = parent_folder
+            # LAV-82: <parent>/subagents/workflows/wf_<id>/agent-*.jsonl. The
+            # cohort id was already sitting in the path and was being thrown
+            # away, which is why a 12-agent workflow was indistinguishable from
+            # 12 unrelated spawns. Plain Task/Agent subagents live one level up
+            # (<parent>/subagents/agent-*.jsonl) and correctly get ''.
+            parts = jsonl_file.parts
+            if (subagents_idx + 2 < len(parts)
+                    and parts[subagents_idx + 1] == "workflows"
+                    and parts[subagents_idx + 2].startswith("wf_")):
+                workflow_from_path = parts[subagents_idx + 2]
 
         file_session_id = jsonl_file.stem if not is_agent_file else None
 
@@ -2683,7 +2830,8 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
                     message["sessionId"] = f"{raw_sid}::agent-{agent_id}"
                 sid_for_agent = message.get("sessionId", "")
                 if agent_id and sid_for_agent:
-                    session_agent_info[sid_for_agent] = (raw_sid or parent_from_path, agent_id)
+                    session_agent_info[sid_for_agent] = (raw_sid or parent_from_path,
+                                                         agent_id, workflow_from_path)
 
             if msg_type in ("summary", "ai-title", "custom-title"):
                 if msg_type == "custom-title":
@@ -2751,9 +2899,10 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
         summary_entry = session_summaries.get(session_id)
         summary = summary_entry[0] if summary_entry else None
         agent_info = session_agent_info.get(session_id)
-        parent_sid, agent_id = agent_info if agent_info else (None, None)
+        parent_sid, agent_id, workflow_id = agent_info if agent_info else (None, None, "")
         update_interaction(session_id, project_name, conn, project_id, user_id, host_id,
-                            summary=summary, parent_session_id=parent_sid, agent_id=agent_id)
+                            summary=summary, parent_session_id=parent_sid, agent_id=agent_id,
+                            workflow_id=workflow_id)
 
     # LAV-66: sweep phantom meta children (compaction/suggestion/side-question)
     # left by the pre-fix parser. Duplicated messages already live under the
@@ -3747,8 +3896,8 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                 INSERT OR IGNORE INTO interactions
                 (session_id, project_id, user_id, host_id, timestamp, display, summary,
                  project, model, total_tokens, message_count, tools_used, cwd, git_branch,
-                 parent_session_id, agent_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 parent_session_id, agent_id, workflow_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 session_id, project_id, r_user_id, r_host_id,
                 conv.get("timestamp", ""),
@@ -3763,6 +3912,7 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                 conv.get("git_branch", ""),
                 conv.get("parent_session_id"),
                 conv.get("agent_id"),
+                conv.get("workflow_id", "") or "",
             ))
             stats["sessions"] += 1
         except sqlite3.Error:
@@ -3962,8 +4112,8 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                     INSERT OR IGNORE INTO subagent_invocations
                     (timestamp, session_id, project_id, user_id, host_id, subagent_type, description,
                      prompt, model, run_in_background, cwd, git_branch,
-                     tool_call_id, is_error, duration_ms)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     tool_call_id, is_error, duration_ms, spawn_tool, workflow_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     sa.get("timestamp", ""), session_id, project_id, r_user_id, r_host_id,
                     sa.get("subagent_type", ""), sa.get("description", ""),
@@ -3971,6 +4121,12 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                     sa.get("run_in_background", 0),
                     sa.get("cwd", ""), sa.get("git_branch", ""),
                     sa.get("tool_call_id", "") or "", sa.get("is_error"), sa.get("duration_ms"),
+                    # LAV-82: taken from the payload, NOT re-derived — unlike `kind`
+                    # these are not functions of columns that travel. spawn_tool comes
+                    # from the tool_use name and workflow_id from a tool_result the
+                    # collector never sees, so the agent is the only source. An agent
+                    # on older code ships neither and the '' default applies.
+                    sa.get("spawn_tool", "") or "", sa.get("workflow_id", "") or "",
                 ))
                 stats["subagent_invocations"] += 1
                 if cur.rowcount == 0:
@@ -4063,13 +4219,20 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                         display = COALESCE(NULLIF(?, ''), display),
                         summary = COALESCE(NULLIF(?, ''), summary),
                         parent_session_id = ?,
-                        agent_id = ?
+                        agent_id = ?,
+                        -- LAV-82: FILL-ONLY, unlike the two above. The wf_ id is
+                        -- derived from the transcript PATH, which exists only on
+                        -- the agent's disk; an agent on older code ships '' and
+                        -- must not be able to erase an id the collector already
+                        -- recovered from its own messages.
+                        workflow_id = COALESCE(NULLIF(?, ''), NULLIF(workflow_id, ''), '')
                     WHERE session_id = ? AND project_id = ?
                 """, (total_tokens, msg_count, model or "",
                       conv.get("display", "") or "",
                       conv.get("summary", "") or "",
                       conv.get("parent_session_id"),
                       conv.get("agent_id"),
+                      conv.get("workflow_id", "") or "",
                       session_id, project_id))
         except sqlite3.Error:
             pass

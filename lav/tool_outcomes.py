@@ -248,6 +248,178 @@ def tool_kind(session_id, server_name, tool_name):
 
 
 # ===========================================================================
+# SUBAGENT SPAWNING (LAV-82)
+# ===========================================================================
+#
+# Claude Code renamed the subagent-spawning tool `Task` -> `Agent` on 2026-03-01
+# and later added `Workflow`. The parser matched the literal string "Task", so
+# subagent_invocations quietly stopped filling: measured over 8.952 transcripts,
+# Task 1.046 calls (last 2026-02-27), Agent 1.126 (2026-03-01 -> today),
+# Workflow 97 (2026-06-09 -> today).
+#
+# Widening the tuple is NOT sufficient. The old branch was also gated on a
+# non-empty `subagent_type`, and 109 of 1.217 Agent calls carry none (mode-only,
+# name-only, or `resume`), while NO Workflow call has one at all — so a naive fix
+# still drops 9% of Agent and 100% of Workflow, silently. Hence the fallback
+# ladder below, and hence this helper lives here: it is called by BOTH
+# jsonl.process_tool_call (which writes the row) and tool_row_matches (which
+# finds it again during backfill). Two drifted copies would make
+# stamp_tool_call_id() claim the WRONG row — the same failure mode _bash_helpers
+# exists to prevent.
+
+SPAWN_TOOLS = ("Task", "Agent", "Workflow")
+
+# Sentinels for a spawn call that names no subagent type. They are values, not
+# absences: the row must exist, and `subagent_type` is NOT NULL in the schema and
+# part of the UNIQUE key. Parenthesised so they can never collide with a real
+# agent type (which is an identifier).
+SUBAGENT_TYPE_UNSPECIFIED = "(unspecified)"
+SUBAGENT_TYPE_RESUMED = "(resumed)"
+WORKFLOW_TYPE_INLINE = "(inline-script)"
+
+# `.../subagents/workflows/wf_<id>` — the cohort id, as it appears both in the
+# on-disk transcript path and in the Workflow tool_result's "Transcript dir:"
+# line. Verified on real transcripts, e.g.
+#   Workflow launched in background. Task ID: walot6vir
+#   Summary: Deep research harness — ...
+#   Transcript dir: /Users/.../<parent>/subagents/workflows/wf_3928c44c-e70
+#   Script file:    /Users/.../<parent>/workflows/scripts/deep-research-wf_3928c44c-e70.js
+WORKFLOW_ID_RE = re.compile(r"workflows/(wf_[A-Za-z0-9._-]+)")
+
+# Trailing `-wf_<id>.js` of a generated script path: available at tool_use time,
+# so a resumed/scriptPath run gets its cohort id without waiting for the result.
+_WORKFLOW_SCRIPT_ID_RE = re.compile(r"-(wf_[A-Za-z0-9._-]+)\.js$")
+
+# `export const meta = { name: 'find-flaky-tests', ... }` — the workflow's own
+# name, which is a far better label than "(inline-script)". meta is required to
+# be a pure literal at the top of the script, so a bounded head scan is enough.
+_WORKFLOW_META_NAME_RE = re.compile(r"""name\s*:\s*['"]([^'"]+)['"]""")
+_WORKFLOW_META_HEAD = 600
+
+
+def _workflow_label(tool_input):
+    """Best available human label for a Workflow call. Never empty."""
+    for key in ("name", "title"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    script = tool_input.get("script")
+    if isinstance(script, str) and script:
+        m = _WORKFLOW_META_NAME_RE.search(script[:_WORKFLOW_META_HEAD])
+        if m:
+            return m.group(1)
+
+    script_path = tool_input.get("scriptPath")
+    if isinstance(script_path, str) and script_path:
+        stem = script_path.rsplit("/", 1)[-1]
+        if stem.endswith(".js"):
+            stem = stem[:-3]
+        # Strip the generated `-wf_<id>` suffix so two runs of the same workflow
+        # share a label instead of splitting into one bucket per run.
+        stem = _WORKFLOW_SCRIPT_ID_RE.sub("", stem + ".js")
+        if stem.endswith(".js"):
+            stem = stem[:-3]
+        if stem:
+            return stem
+
+    return WORKFLOW_TYPE_INLINE
+
+
+def workflow_id_from_tool_input(tool_input):
+    """Cohort id derivable from the CALL itself, or '' if it only exists later.
+
+    A fresh `Workflow` run cannot know its own wf_ id at tool_use time — that is
+    minted by the runtime and comes back in the result (see
+    workflow_id_from_tool_result). A RESUMED run does know it, twice over.
+    """
+    run_id = tool_input.get("resumeFromRunId")
+    if isinstance(run_id, str) and run_id.startswith("wf_"):
+        return run_id
+    script_path = tool_input.get("scriptPath")
+    if isinstance(script_path, str):
+        m = _WORKFLOW_SCRIPT_ID_RE.search(script_path)
+        if m:
+            return m.group(1)
+    return ""
+
+
+def subagent_row_from_tool_input(tool_name, tool_input):
+    """Fields of the subagent_invocations row a spawn call produces, or None.
+
+    Returns None only when `tool_name` is not a spawn tool — NEVER because a
+    field is missing. That is the whole point: the old `if subagent_type:` guard
+    turned "this call did not name a type" into "this call never happened".
+
+    subagent_type ladder:
+      Task/Agent  subagent_type -> name -> '(resumed)' when resuming -> '(unspecified)'
+      Workflow    name -> title -> meta.name parsed out of the inline script ->
+                  scriptPath basename minus the generated -wf_<id> suffix ->
+                  '(inline-script)'
+    """
+    if tool_name not in SPAWN_TOOLS:
+        return None
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+
+    if tool_name == "Workflow":
+        subagent_type = _workflow_label(tool_input)
+        description = tool_input.get("description", "") or ""
+        # `args` is the workflow's input; the inline script is the workflow
+        # itself. Either one answers "what was this run asked to do".
+        prompt = tool_input.get("args")
+        if not isinstance(prompt, str):
+            prompt = json.dumps(prompt, ensure_ascii=False) if prompt is not None else ""
+        if not prompt:
+            script = tool_input.get("script")
+            prompt = script if isinstance(script, str) else ""
+        # Workflow always runs detached — the tool returns as soon as it is
+        # launched ("Workflow launched in background").
+        run_in_background = 1
+    else:
+        subagent_type = tool_input.get("subagent_type") or tool_input.get("name") or ""
+        if not subagent_type:
+            subagent_type = (SUBAGENT_TYPE_RESUMED if tool_input.get("resume")
+                             else SUBAGENT_TYPE_UNSPECIFIED)
+        description = tool_input.get("description", "") or ""
+        prompt = tool_input.get("prompt", "") or ""
+        run_in_background = 1 if tool_input.get("run_in_background", False) else 0
+
+    return {
+        "subagent_type": subagent_type,
+        "description": description,
+        "prompt": prompt,
+        "model": tool_input.get("model", "") or "",
+        "run_in_background": run_in_background,
+        "spawn_tool": tool_name,
+        "workflow_id": (workflow_id_from_tool_input(tool_input)
+                        if tool_name == "Workflow" else ""),
+    }
+
+
+def workflow_id_from_tool_result(block):
+    """Cohort id announced in a Workflow tool_result, or ''.
+
+    Deliberately NOT a key on outcome_from_tool_result(): that function returns
+    early for successes and never flattens the body (see its `is_error` guard),
+    and a workflow launch IS a success. Reading the id therefore needs its own
+    pass over the content.
+
+    This is what makes the parent -> cohort link recoverable for history: the
+    tool_use does not know the id it will generate, but its result does, and the
+    LAV-78 tool_call_id correlation carries it back onto the row from
+    messages.content alone — no reparse, no sync.
+    """
+    if not isinstance(block, dict):
+        return ""
+    text = _flatten_result_content(block.get("content"))
+    if not text:
+        return ""
+    m = WORKFLOW_ID_RE.search(text)
+    return m.group(1) if m else ""
+
+
+# ===========================================================================
 # LAZY HELPERS (no circular import)
 # ===========================================================================
 
@@ -463,16 +635,20 @@ def tool_row_matches(tool_name, tool_input):
         if skill_name:
             matches.append(("skill_invocations", "skill_name = ?", [skill_name]))
 
-    elif tool_name == "Task":
-        subagent_type = tool_input.get("subagent_type", "")
-        if subagent_type:
+    elif tool_name in SPAWN_TOOLS:
+        # LAV-82: the row is built by the SAME helper the parser writes with, so
+        # the match key here is byte-identical to what went in — including the
+        # `(unspecified)` / `(inline-script)` sentinels. Re-deriving the ladder
+        # here instead would eventually drift, and a drifted key makes
+        # stamp_tool_call_id() stamp one call's outcome onto another row.
+        row = subagent_row_from_tool_input(tool_name, tool_input)
+        if row:
             # `description` may be NULL in the DB (collector sync ships whatever
             # the agent had): "description = ?" never matches NULL in SQL, so
             # use IS, which behaves like = for non-NULL values.
-            description = tool_input.get("description", "")
             matches.append(("subagent_invocations",
                             "subagent_type = ? AND description IS ?",
-                            [subagent_type, description]))
+                            [row["subagent_type"], row["description"]]))
 
     elif tool_name.startswith("mcp__"):
         mcp_tool, _server_name = split_mcp_tool_name(tool_name)
@@ -484,6 +660,31 @@ def tool_row_matches(tool_name, tool_input):
 # ===========================================================================
 # WRITES
 # ===========================================================================
+
+def apply_workflow_id(conn, session_id, project_id, tool_call_id, workflow_id):
+    """LAV-82: stamp the wf_ cohort id announced by a Workflow tool_result.
+
+    FILL-ONLY (`workflow_id` empty or NULL). The value is immutable once known,
+    and a re-parse must not be able to overwrite a good id with a worse one.
+
+    Only subagent_invocations can carry it, so unlike apply_tool_outcome this
+    does not sweep the six tables. Returns rows updated.
+    """
+    if not tool_call_id or not session_id or project_id is None or not workflow_id:
+        return 0
+    try:
+        return conn.execute(
+            "UPDATE subagent_invocations SET workflow_id = ? "
+            " WHERE session_id = ? AND project_id = ? "
+            "   AND tool_call_id = ? AND tool_call_id != '' "
+            "   AND COALESCE(workflow_id, '') = ''",
+            (workflow_id, session_id, project_id, tool_call_id),
+        ).rowcount
+    except sqlite3.Error:
+        # Pre-LAV-82 DB (column absent). Same degrade-quietly contract the rest
+        # of this module uses: never take the parse down for a derived column.
+        return 0
+
 
 def apply_tool_outcome(conn, session_id, project_id, tool_call_id, outcome, result_ts):
     """Stamp the outcome of one tool_result onto every row carrying tool_call_id.

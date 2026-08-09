@@ -695,9 +695,11 @@ def cmd_backfill_tool_outcomes(args):
     from messages.content, in place, on the local DB."""
     from lav.tool_outcomes import (
         apply_tool_outcome,
+        apply_workflow_id,
         iter_content_blocks,
         outcome_from_tool_result,
         stamp_tool_call_id,
+        workflow_id_from_tool_result,
     )
 
     db_path = Path(args.db).expanduser() if args.db else UNIFIED_DB_PATH
@@ -760,6 +762,7 @@ def cmd_backfill_tool_outcomes(args):
             "tool_result_blocks": 0,
             "outcome_rows_updated": 0,
             "tool_results_unmatched": 0,
+            "workflow_ids_stamped": 0,   # LAV-82
             "sessions_failed": 0,
         }
         t0 = time.time()
@@ -806,6 +809,19 @@ def cmd_backfill_tool_outcomes(args):
                         )
                         stats["outcome_rows_updated"] += n
                         touched += n
+                        # LAV-82: recover the wf_ cohort id from the Workflow
+                        # tool_result. This is what makes history reconstructable
+                        # on BOTH nodes with no reparse and no sync — the parent's
+                        # tool_use never knew the id, but its result announces it
+                        # ("Transcript dir: .../subagents/workflows/wf_<id>") and
+                        # tool_call_id carries it home. Counted separately: it is
+                        # not an outcome, and folding it into n would make an
+                        # unmatched result look matched.
+                        wf = workflow_id_from_tool_result(block)
+                        if wf:
+                            w = apply_workflow_id(conn, session_id, project_id, call_id, wf)
+                            stats["workflow_ids_stamped"] += w
+                            touched += w
                         if n == 0:
                             stats["tool_results_unmatched"] += 1
             except Exception as e:
