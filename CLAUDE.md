@@ -95,6 +95,10 @@ Composite PK: `interactions(session_id, project_id)`. Append-only — records ar
 
 **Cost tracking**: `model_pricing` table stores per-model prices with temporal validity (`from_date`/`to_date`). Costs are calculated at query time via LEFT JOIN — never materialized. Table is seeded automatically by `init_db()`. CLI: `lav-pricing`. MCP tool: `manage_pricing`. API: `/api/pricing`.
 
+### Server auth — there is none (LAV-86)
+
+`lav/server.py` has **no authentication**. `LAV_API_KEY` / `LAV_READ_API_KEY` are read by `lav/cli.py` and `lav/mcp_server.py` **only** — they never reach the HTTP server, so setting them does nothing for `:8764`. The server binds `0.0.0.0` for every role except `collector`, and `POST /api/sync` is an unauthenticated write. The only control is the optional `allowed_clients` list in `config.json` (per-machine, untracked): IPs or CIDRs matched against the **socket peer address**, on both GET and POST. **Empty = open**, which is the default and must stay that way (a shipped "deny" would break every existing install). Loopback is always allowed and not configurable. A malformed entry is skipped with a warning — and since an all-malformed list ends up empty, i.e. open, that warning is the only guard against a typo. Real addresses live in `config.json` and `internal_docs/`, **never** in the repo: the example configs use RFC 5737 placeholders.
+
 ### Server (`lav/server.py`)
 
 ThreadingHTTPServer with role gating:

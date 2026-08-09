@@ -2,5 +2,9 @@
   "role": "agent",
   "port": 8764,
   "hostname": "my-canonical-host",
-  "collector_url": "http://collector.local:8764"
+  "collector_url": "http://collector.local:8764",
+  "allowed_clients": [
+    "192.0.2.10",
+    "198.51.100.0/24"
+  ]
 }

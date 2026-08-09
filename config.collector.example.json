@@ -9,5 +9,9 @@
       "fallback_url": "http://10.0.0.5:8764",
       "timeout_seconds": 10
     }
+  ],
+  "allowed_clients": [
+    "192.0.2.10",
+    "198.51.100.0/24"
   ]
 }
