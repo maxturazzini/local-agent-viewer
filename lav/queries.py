@@ -56,7 +56,31 @@ def build_filters(project_id=None, user_id=None, host_id=None,
         clauses.append(f"{table_alias}.timestamp <= ?")
         params.append(end + "T23:59:59")
     if client:
-        clauses.append("ss.source = ?")
+        # LAV-84. The unary `+` is NOT a typo and must not be "cleaned up".
+        #
+        # `ss` comes from _join_session_sources() as a LEFT JOIN, but this WHERE
+        # term rejects NULL, so since SQLite 3.39 the planner strength-reduces it
+        # to an INNER JOIN and is then free to reorder the two tables. With a bare
+        # `ss.source = ?` it takes idx_session_sources_source as the outer loop and
+        # probes the tool table once per matching session — 14.890 session_sources
+        # rows x a per-project range scan:
+        #
+        #   file_operations  SEARCH ss USING idx_session_sources_source
+        #                    -> SEARCH fo USING idx_fileops_project_ts      92,4 s
+        #   bash_commands    same shape, SCAN over the covering index        117 s
+        #
+        # The unary `+` is value- and type-preserving; its only effect is that the
+        # term can no longer drive an index, so the planner keeps the tool table as
+        # the outer loop and probes session_sources by its primary key:
+        #
+        #   SCAN fo USING COVERING INDEX sqlite_autoindex_file_operations_1
+        #   -> SEARCH ss USING sqlite_autoindex_session_sources_1            0,047 s
+        #
+        # Same rows out (70.538 / 67.717 measured here), ~2000x faster. If this ever
+        # needs to become readable instead of clever, the equivalent rewrite is an
+        # EXISTS subquery — but that needs its own build_filters variant, because
+        # every caller currently assumes a pre-joined `ss`.
+        clauses.append("+ss.source = ?")
         params.append(client)
 
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
