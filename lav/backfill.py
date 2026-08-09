@@ -11,6 +11,22 @@ Pipeline:
 4. INSERT OR IGNORE every row whose activity timestamp > --since.
 5. Advance parse_state.last_pull:<agent> so subsequent regular pulls don't
    re-fetch this range.
+
+⚠️ Step 1 assumes the COLLECTOR can ssh into the AGENT. That direction may be
+deliberately closed: a collector is the more exposed host, so allowing it to ssh
+into a workstation means a compromise there reaches the workstation too. When
+that is the case, do NOT open sshd on the agent — reverse the transfer instead,
+which `--snapshot-path` exists for. From the agent, with the operator at the
+console:
+
+    sqlite3 ~/.local/share/local-agent-viewer/local_agent_viewer.db \\
+        ".backup '/tmp/agent_snap.db'"
+    scp /tmp/agent_snap.db <collector>:/tmp/agent_snap.db
+    ssh <collector> "lav-backfill-from-snapshot --agent <name> \\
+        --snapshot-path /tmp/agent_snap.db --since <ISO>"
+
+With --snapshot-path pointing at a file that already exists, --ssh-host is not
+required and step 1 is skipped entirely.
 """
 from __future__ import annotations
 
