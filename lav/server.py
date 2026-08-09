@@ -70,6 +70,15 @@ from lav.queries import (
     get_mcp_stats,
     get_bash_stats,
     get_searches_stats,
+    # LAV-85: Tools tab
+    get_tools_overview,
+    get_tools_leaderboard,
+    get_mcp_hierarchy,
+    get_bash_drilldown,
+    get_tool_error_samples,
+    DEFAULT_MIN_MEASURED,
+    ERROR_CLASSES,
+    ERROR_CLASSES_NEVER_EXECUTED,
     get_client_stats,
     get_timeline_stats,
     get_date_range,
@@ -663,6 +672,87 @@ class APIHandler(SimpleHTTPRequestHandler):
                     "efficiency": eff,
                     "insights": insights,
                     "alpha": True,
+                })
+            finally:
+                conn.close()
+            return
+
+        # ==== TOOLS TAB (LAV-85) ====
+        #
+        # Three lazy per-tab endpoints, modelled on /api/cost-intelligence above.
+        # Deliberately NOT folded into /api/data: that response is awaited before
+        # any tab paints and re-fetched on every filter change, while this data
+        # is only needed when the Tools tab is open. They are also NOT in
+        # _AGENT_PATHS — an agent-role node serves no dashboard.
+
+        if path.startswith("/api/tools"):
+            conn = get_read_connection()
+            if not conn:
+                self.send_json({"error": "No database"})
+                return
+            try:
+                ids = resolve_ids(conn, params)
+                start_date = params.get("start", [None])[0]
+                end_date = params.get("end", [None])[0]
+                filter_kwargs = {
+                    "project_id": ids["project_id"],
+                    "user_id": ids["user_id"],
+                    "host_id": ids["host_id"],
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "client_source": params.get("client", [None])[0],
+                }
+
+                if path == "/api/tools/bash":
+                    cmd = params.get("cmd", [None])[0]
+                    if not cmd:
+                        self.send_error(400, "cmd is required")
+                        return
+                    # `other` is a Python-side roll-up label invented by
+                    # _fold_bash_by_type; it has no SQL counterpart, so drilling
+                    # into it is a client bug, not an empty result.
+                    if cmd == "other":
+                        self.send_error(400, "'other' is a roll-up label, not a command")
+                        return
+                    self.send_json(get_bash_drilldown(conn, cmd, **filter_kwargs))
+                    return
+
+                if path == "/api/tools/errors":
+                    family = params.get("family", [None])[0]
+                    name = params.get("name", [None])[0]
+                    if not family or not name:
+                        self.send_error(400, "family and name are required")
+                        return
+                    self.send_json(
+                        get_tool_error_samples(conn, family, name, **filter_kwargs))
+                    return
+
+                if path != "/api/tools":
+                    self.send_error(404, "Unknown tools endpoint")
+                    return
+
+                try:
+                    min_measured = int(params.get("min_measured", [DEFAULT_MIN_MEASURED])[0])
+                except (TypeError, ValueError):
+                    min_measured = DEFAULT_MIN_MEASURED
+                # SQLite reads a negative LIMIT/threshold as "no bound"; clamp
+                # rather than trust the query string (same rule as _nonneg_int).
+                min_measured = max(0, min(min_measured, 100000))
+
+                overview = get_tools_overview(conn, **filter_kwargs)
+                self.send_json({
+                    "filters": {**filter_kwargs, "min_measured": min_measured},
+                    "totals": overview["totals"],
+                    "mix": overview["mix"],
+                    "daily": overview["daily"],
+                    "leaderboard": get_tools_leaderboard(
+                        conn, min_measured=min_measured, **filter_kwargs),
+                    "mcp": get_mcp_hierarchy(conn, **filter_kwargs),
+                    "bash": get_bash_stats(conn, **filter_kwargs),
+                    "subagents": get_subagents_stats(conn, **filter_kwargs),
+                    "skills": get_skills_stats(conn, **filter_kwargs),
+                    "error_classes": list(ERROR_CLASSES),
+                    "never_executed_classes": list(ERROR_CLASSES_NEVER_EXECUTED),
                 })
             finally:
                 conn.close()

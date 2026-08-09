@@ -1115,6 +1115,377 @@ def get_searches_stats(conn, project_id=None, user_id=None, host_id=None,
 
 
 # ===========================================================================
+# TOOLS TAB (LAV-85)
+# ===========================================================================
+#
+# Backing queries for /api/tools. Deliberately NOT wired into /api/data: that
+# endpoint is awaited before ANY tab paints and is re-fetched on every filter
+# change, while this data is needed only when the Tools tab is open. The
+# per-tab-endpoint precedent is /api/cost-intelligence and /api/day.
+
+# One row per "family" — the six tool tables, plus builtin_host split out of
+# mcp_tool_calls. Order is the display order of the mix chart.
+#   family, table, alias, name expression, extra WHERE (or None)
+_TOOL_FAMILIES = (
+    ("search", "search_operations", "so", "so.tool", None),
+    ("mcp", "mcp_tool_calls", "mt",
+     "COALESCE(NULLIF(mt.server_name, ''), '(no server)') || '/' || mt.tool_name",
+     "COALESCE(mt.kind, '') != 'builtin_host'"),
+    ("bash", "bash_commands", "bc", None, None),          # name expr filled at runtime
+    ("file", "file_operations", "fo", "fo.tool", None),
+    ("builtin_host", "mcp_tool_calls", "mt",
+     "COALESCE(NULLIF(mt.server_name, ''), '(no server)') || '/' || mt.tool_name",
+     "COALESCE(mt.kind, '') = 'builtin_host'"),
+    ("skill", "skill_invocations", "si", "si.skill_name", None),
+    ("subagent", "subagent_invocations", "sa", "sa.subagent_type", None),
+)
+
+# A leaderboard row needs at least this many MEASURED calls before its rate is
+# shown. 3 errors out of 4 calls is not a 75% error rate, it is noise.
+DEFAULT_MIN_MEASURED = 10
+
+# Hard cap on leaderboard rows. 604 (family, name) groups exist on the real DB,
+# so this never truncates in practice — it is a backstop, and `truncated` says
+# so when it fires rather than silently cutting the tail off.
+_LEADERBOARD_LIMIT = 300
+
+
+def _family_legs(conn, filter_kwargs, families=_TOOL_FAMILIES):
+    """Per-family (sql_fragment, params, capabilities) for the UNION legs.
+
+    Each family gets its OWN build_filters() call — the alias differs, so the
+    WHERE text and the parameter order differ, and the params must be
+    concatenated in leg order.
+    """
+    legs = []
+    for family, table, alias, name_expr, extra in families:
+        where, params = build_filters(
+            project_id=filter_kwargs.get("project_id"),
+            user_id=filter_kwargs.get("user_id"),
+            host_id=filter_kwargs.get("host_id"),
+            start=filter_kwargs.get("start_date"),
+            end=filter_kwargs.get("end_date"),
+            client=filter_kwargs.get("client_source"),
+            table_alias=alias,
+        )
+        if extra:
+            where = _and_clause(where, extra)
+        cols = _table_columns(conn, table)
+        if name_expr is None:      # bash: cmd_name when migrated, LIKE ladder otherwise
+            name_expr = (_bash_cmd_name_expr(alias) if 'cmd_name' in cols
+                         else _BASH_CMD_TYPE_CASE)
+        legs.append({
+            "family": family, "table": table, "alias": alias,
+            "name_expr": name_expr, "where": where, "params": params,
+            "has_outcome": 'is_error' in cols,
+            "has_error_text": 'error_text' in cols,
+            "join": _join_session_sources(alias),
+        })
+    return legs
+
+
+def _union_all_tools(legs):
+    """UNION ALL over every family, normalised to one shape.
+
+    The outcome column is aliased to `is_error` so `_outcome_agg('u')` and
+    `_error_class_expr('u')` can be reused VERBATIM on the result — the point of
+    giving all six tables the same shape in part B. A family without the columns
+    contributes NULLs, which those helpers already read as "not measured".
+    """
+    parts, params = [], []
+    for leg in legs:
+        a = leg["alias"]
+        is_error = f"{a}.is_error" if leg["has_outcome"] else "NULL"
+        error_text = f"{a}.error_text" if leg["has_error_text"] else "NULL"
+        parts.append(f"""
+            SELECT '{leg['family']}' AS family,
+                   {leg['name_expr']} AS name,
+                   {is_error} AS is_error,
+                   {error_text} AS error_text,
+                   {a}.timestamp AS ts
+              FROM {leg['table']} {a}
+              {leg['join']}
+              {leg['where']}""")
+        params.extend(leg["params"])
+    return " UNION ALL ".join(parts), params
+
+
+def get_tools_overview(conn, **filter_kwargs):
+    """Blocks A + C: global KPIs and the per-family mix, in one pass."""
+    legs = _family_legs(conn, filter_kwargs)
+    union_sql, params = _union_all_tools(legs)
+    # error_text is present on at least one leg, so the taxonomy is meaningful
+    # over the union; legs without it contribute NULL and classify as unknown.
+    never_agg = _never_executed_agg('u', any(l["has_error_text"] for l in legs))
+
+    mix = run_query(conn, f"""
+        WITH u AS ({union_sql})
+        SELECT family, COUNT(*) as calls,
+            {_outcome_agg('u')},
+            {never_agg}
+        FROM u GROUP BY family
+    """, params if params else None)
+
+    order = {f[0]: i for i, f in enumerate(_TOOL_FAMILIES)}
+    mix.sort(key=lambda r: order.get(r["family"], 99))
+
+    totals = run_query(conn, f"""
+        WITH u AS ({union_sql})
+        SELECT COUNT(*) as calls,
+            {_outcome_agg('u')},
+            {never_agg}
+        FROM u
+    """, params if params else None)[0]
+
+    daily = run_query(conn, f"""
+        WITH u AS ({union_sql})
+        SELECT DATE(ts) as date, COUNT(*) as calls,
+               SUM(CASE WHEN is_error = 1 THEN 1 ELSE 0 END) as errors,
+               SUM(CASE WHEN is_error IS NOT NULL THEN 1 ELSE 0 END) as measured
+        FROM u WHERE ts IS NOT NULL AND ts != ''
+        GROUP BY DATE(ts) ORDER BY date
+    """, params if params else None)
+
+    measured = totals.get("measured") or 0
+    calls = totals.get("calls") or 0
+    totals["measured_coverage"] = round(measured / calls, 4) if calls else None
+    # The rate a reader actually wants: calls that ran and failed, over calls
+    # that ran and were measured. See ERROR_CLASSES_NEVER_EXECUTED.
+    never = totals.get("never_executed")
+    errors = totals.get("errors")
+    if never is not None and errors is not None and measured - never > 0:
+        totals["real_error_rate"] = round((errors - never) / (measured - never), 4)
+    else:
+        totals["real_error_rate"] = None
+
+    return {"totals": totals, "mix": mix, "daily": daily}
+
+
+def get_tools_leaderboard(conn, min_measured=DEFAULT_MIN_MEASURED, **filter_kwargs):
+    """Block B: one ranked table across all six tool tables."""
+    legs = _family_legs(conn, filter_kwargs)
+    union_sql, params = _union_all_tools(legs)
+    never_agg = _never_executed_agg('u', any(l["has_error_text"] for l in legs))
+
+    rows = run_query(conn, f"""
+        WITH u AS ({union_sql})
+        SELECT family, name, COUNT(*) as calls,
+            {_outcome_agg('u')},
+            {never_agg},
+            MAX(CASE WHEN is_error = 1 THEN ts END) as last_error_at
+        FROM u
+        GROUP BY family, name
+        HAVING measured >= ?
+        ORDER BY error_rate DESC, errors DESC, calls DESC
+        LIMIT {_LEADERBOARD_LIMIT + 1}
+    """, (params + [min_measured]) if params else [min_measured])
+
+    truncated = len(rows) > _LEADERBOARD_LIMIT
+    rows = rows[:_LEADERBOARD_LIMIT]
+    for r in rows:
+        # Precomputed so the client can flip the "count never-executed as
+        # errors" toggle without a refetch. NULL in -> NULL out: for a family
+        # with no error_text we do not know, and 0 would read as "none".
+        ne, err, meas = r.get("never_executed"), r.get("errors"), r.get("measured")
+        if ne is None or err is None or meas is None or meas - ne <= 0:
+            r["real_error_rate"] = None
+            r["errors_executed"] = None if ne is None else max(err - ne, 0)
+        else:
+            r["errors_executed"] = max(err - ne, 0)
+            r["real_error_rate"] = round(r["errors_executed"] / (meas - ne), 4)
+
+    return {"rows": rows, "min_measured": min_measured, "truncated": truncated}
+
+
+def get_mcp_hierarchy(conn, top_n=10, **filter_kwargs):
+    """Block D / MCP: server -> tool, real MCP and built-in host kept apart.
+
+    The two sets are returned separately and must NEVER be summed by the caller:
+    built-in host rows carry no outcome data at all (those exports have no
+    linkable tool_result), so a combined error rate would be computed over a
+    denominator that silently excludes 38% of the calls.
+    """
+    out = {}
+    for key, kind_clause in (("servers", "COALESCE(mt.kind, '') != 'builtin_host'"),
+                             ("builtin_host", "COALESCE(mt.kind, '') = 'builtin_host'")):
+        where, params = build_filters(
+            project_id=filter_kwargs.get("project_id"),
+            user_id=filter_kwargs.get("user_id"),
+            host_id=filter_kwargs.get("host_id"),
+            start=filter_kwargs.get("start_date"),
+            end=filter_kwargs.get("end_date"),
+            client=filter_kwargs.get("client_source"),
+            table_alias='mt',
+        )
+        where = _and_clause(where, kind_clause)
+        join = _join_session_sources('mt')
+        cols = _table_columns(conn, 'mcp_tool_calls')
+        has_outcome = 'is_error' in cols
+        agg = _outcome_agg('mt') if has_outcome else _OUTCOME_AGG_MISSING
+        never = (_never_executed_agg('mt', 'error_text' in cols) if has_outcome
+                 else "NULL as never_executed, NULL as errors_unclassified")
+
+        servers = run_query(conn, f"""
+            SELECT COALESCE(NULLIF(mt.server_name, ''), '(no server)') as server,
+                   COUNT(*) as calls, {agg}, {never}
+            FROM mcp_tool_calls mt {join} {where}
+            GROUP BY server ORDER BY calls DESC
+        """, params if params else None)
+
+        tools = run_query(conn, f"""
+            SELECT COALESCE(NULLIF(mt.server_name, ''), '(no server)') as server,
+                   mt.tool_name as tool, COUNT(*) as calls, {agg}, {never}
+            FROM mcp_tool_calls mt {join} {where}
+            GROUP BY server, tool ORDER BY calls DESC
+        """, params if params else None)
+
+        kept, tail = servers[:top_n], servers[top_n:]
+        by_server = {s["server"]: s for s in kept}
+        for s in kept:
+            s["tools"] = []
+        for t in tools:
+            parent = by_server.get(t["server"])
+            if parent is not None:
+                parent["tools"].append(t)
+
+        other = None
+        if tail:
+            # Re-derive the rate from summed errors/measured — never average
+            # rates. Same rule as _fold_bash_by_type's roll-up row.
+            errs = sum((s.get("errors") or 0) for s in tail)
+            meas = sum((s.get("measured") or 0) for s in tail)
+            other = {
+                "server_count": len(tail),
+                "calls": sum(s["calls"] for s in tail),
+                "errors": errs, "measured": meas,
+                "error_rate": _bash_error_rate(errs, meas),
+            }
+        out[key] = {"servers": kept, "other": other}
+    return out
+
+
+def get_bash_drilldown(conn, cmd_name, **filter_kwargs):
+    """Bash level 2: why one command fails, not just how often."""
+    where, params = build_filters(
+        project_id=filter_kwargs.get("project_id"),
+        user_id=filter_kwargs.get("user_id"),
+        host_id=filter_kwargs.get("host_id"),
+        start=filter_kwargs.get("start_date"),
+        end=filter_kwargs.get("end_date"),
+        client=filter_kwargs.get("client_source"),
+        table_alias='bc',
+    )
+    join = _join_session_sources('bc')
+    cols = _table_columns(conn, 'bash_commands')
+    has_cmd_name = 'cmd_name' in cols
+    has_outcome = 'is_error' in cols
+    has_error_text = 'error_text' in cols
+    name_expr = _bash_cmd_name_expr('bc') if has_cmd_name else _BASH_CMD_TYPE_CASE
+    where = _and_clause(where, f"{name_expr} = ?")
+    params = list(params) + [cmd_name]
+
+    agg = _outcome_agg('bc') if has_outcome else _OUTCOME_AGG_MISSING
+    never = (_never_executed_agg('bc', has_error_text) if has_outcome
+             else "NULL as never_executed, NULL as errors_unclassified")
+
+    totals = run_query(conn, f"""
+        SELECT COUNT(*) as calls, {agg}, {never}
+        FROM bash_commands bc {join} {where}
+    """, params)[0]
+
+    err_where = _and_clause(where, "bc.is_error = 1") if has_outcome else where
+    classes = run_query(conn, f"""
+        SELECT {_error_class_expr('bc', has_error_text)} as class, COUNT(*) as n
+        FROM bash_commands bc {join} {err_where}
+        GROUP BY class ORDER BY n DESC
+    """, params) if has_outcome else []
+
+    exit_codes = run_query(conn, f"""
+        SELECT bc.exit_code as exit_code, COUNT(*) as n
+        FROM bash_commands bc {join} {err_where}
+        GROUP BY bc.exit_code ORDER BY n DESC
+    """, params) if 'exit_code' in cols else []
+
+    # substr IN SQL, not in Python: a heredoc command can be tens of KB and
+    # there is no reason to ship it just to truncate it client-side.
+    variants = run_query(conn, f"""
+        SELECT substr(bc.command, 1, 160) as command, COUNT(*) as n,
+               SUM(CASE WHEN bc.is_error = 1 THEN 1 ELSE 0 END) as errors
+        FROM bash_commands bc {join} {where}
+        GROUP BY substr(bc.command, 1, 160)
+        ORDER BY n DESC LIMIT 15
+    """, params) if has_outcome else []
+
+    recent = run_query(conn, f"""
+        SELECT bc.timestamp as timestamp, bc.session_id as session_id, p.name as project,
+               bc.exit_code as exit_code,
+               substr(COALESCE(bc.error_text, ''), 1, 400) as error_text,
+               substr(bc.command, 1, 200) as command
+        FROM bash_commands bc
+        JOIN projects p ON p.id = bc.project_id
+        {join} {err_where}
+        ORDER BY bc.timestamp DESC LIMIT 20
+    """, params) if has_outcome else []
+
+    return {"cmd_name": cmd_name, "totals": totals, "error_classes": classes,
+            "exit_codes": exit_codes, "variants": variants, "recent_failures": recent}
+
+
+def get_tool_error_samples(conn, family, name, **filter_kwargs):
+    """Side panel: what a tool actually says when it fails."""
+    leg = next((f for f in _TOOL_FAMILIES if f[0] == family), None)
+    if leg is None:
+        return {"family": family, "name": name, "has_error_text": False,
+                "top_texts": [], "recent": []}
+    _f, table, alias, name_expr, extra = leg
+    where, params = build_filters(
+        project_id=filter_kwargs.get("project_id"),
+        user_id=filter_kwargs.get("user_id"),
+        host_id=filter_kwargs.get("host_id"),
+        start=filter_kwargs.get("start_date"),
+        end=filter_kwargs.get("end_date"),
+        client=filter_kwargs.get("client_source"),
+        table_alias=alias,
+    )
+    if extra:
+        where = _and_clause(where, extra)
+    cols = _table_columns(conn, table)
+    if name_expr is None:
+        name_expr = (_bash_cmd_name_expr(alias) if 'cmd_name' in cols
+                     else _BASH_CMD_TYPE_CASE)
+    where = _and_clause(where, f"{name_expr} = ?")
+    params = list(params) + [name]
+    if 'is_error' not in cols:
+        return {"family": family, "name": name, "has_error_text": False,
+                "top_texts": [], "recent": []}
+    where = _and_clause(where, f"{alias}.is_error = 1")
+    join = _join_session_sources(alias)
+    has_error_text = 'error_text' in cols
+
+    top_texts = run_query(conn, f"""
+        SELECT substr({alias}.error_text, 1, 200) as text, COUNT(*) as n,
+               MAX({alias}.timestamp) as last_at,
+               {_error_class_expr(alias, True)} as class
+        FROM {table} {alias} {join} {where}
+          AND COALESCE({alias}.error_text, '') != ''
+        GROUP BY substr({alias}.error_text, 1, 200)
+        ORDER BY n DESC LIMIT 5
+    """, params) if has_error_text else []
+
+    recent = run_query(conn, f"""
+        SELECT {alias}.timestamp as timestamp, {alias}.session_id as session_id,
+               p.name as project
+        FROM {table} {alias}
+        JOIN projects p ON p.id = {alias}.project_id
+        {join} {where}
+        ORDER BY {alias}.timestamp DESC LIMIT 20
+    """, params)
+
+    return {"family": family, "name": name, "has_error_text": has_error_text,
+            "top_texts": top_texts, "recent": recent}
+
+
+# ===========================================================================
 # CLIENT / TIMELINE / DATE RANGE
 # ===========================================================================
 
