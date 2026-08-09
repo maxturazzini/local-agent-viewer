@@ -190,6 +190,9 @@ lav sync
 lav sync --scope project --project miniMe --full
 lav pricing list
 lav pricing add --model gpt-5.4 --input 2.0 --output 8.0 --from-date 2026-04-01
+
+# Backfill tool outcomes (status / error / duration) on historical tool rows
+lav backfill tool-outcomes
 ```
 
 **Output formats**: JSON (default, for piping/scripting), `--format table` (human-readable), `--format brief` (one line per result).
@@ -203,10 +206,29 @@ lav-parse                        # incremental (default, fast) — includes Code
 lav-parse --project myProject    # parse one project only
 lav-parse --full                 # force full reparse
 lav-parse --exclude-codex        # skip Codex CLI sessions
+lav-parse --since 2026-06-01     # bounded re-read: widen the window, insert only
 
 lav-parse-chatgpt               # parse ChatGPT export
 lav-parse-chatgpt --full        # full reparse
 ```
+
+**`--since <ISO>` — bounded re-read.** An incremental parse only reads what arrived after the
+stored watermark. `--since` temporarily lowers that watermark so the parser re-reads a window
+of history you already have on disk — the way to pick up rows a *new* parser feature would have
+recorded but an older one did not (for example the shell commands recovered by the
+`bash_commands` change, see *Database Schema*). Accepts `2026-06-01` or `2026-06-01T00:00:00Z`.
+
+- **Additive**: it only inserts. Nothing is deleted, no row is rewritten, and every insert is
+  duplicate-guarded, so re-running the same window is a no-op.
+- **Never lowers a stored watermark**: the widened window is used for *reading* only; the
+  watermark written back at the end is the usual high-water mark, and a `--since` newer than
+  the stored value is ignored rather than narrowing the window. Interrupting a `--since` run
+  cannot make a normal parse skip anything.
+- **Mutually exclusive with `--full`**, which is the destructive full reparse and already
+  ignores the watermark. `--project` composes normally.
+- **Run it on every machine.** Recovered rows keep their original (old) timestamps, which sit
+  behind the collector's pull cursor, so they do not travel over sync — same reason
+  `lav backfill tool-outcomes` is run per node.
 
 ## Data Pipeline
 
@@ -563,7 +585,7 @@ Single SQLite database with composite primary keys and 4 independent filter dime
 | `messages` | `(session_id, project_id, uuid)` | Individual messages |
 | `token_usage` | `(timestamp, session_id, project_id)` | Per-request token counts |
 | `file_operations` | `(timestamp, session_id, project_id, tool, file_path)` | File reads/writes |
-| `bash_commands` | | Shell commands executed |
+| `bash_commands` | | Shell commands — all of them, plus the derived `cmd_name` (see note below) |
 | `search_operations` | | Grep/glob operations |
 | `skill_invocations` | | Skill usage |
 | `subagent_invocations` | | Sub-agent calls |
@@ -572,6 +594,17 @@ Single SQLite database with composite primary keys and 4 independent filter dime
 | `parse_state` | `(key, project_id, source, host_id)` | Incremental parse cursors |
 
 Reference tables: `projects`, `users`, `hosts`, `session_sources`.
+
+**Tool outcomes**: the six tool tables (`file_operations`, `bash_commands`, `search_operations`, `skill_invocations`, `subagent_invocations`, `mcp_tool_calls`) also carry `tool_call_id`, `is_error` and `duration_ms`, plus `error_text` (`bash_commands`, `mcp_tool_calls`) and `exit_code` (`bash_commands`). `is_error` is `NULL` when no tool result was ever seen — that is *unknown*, not success, so error rates are computed over the measured rows only. Historical rows are filled in by `lav backfill tool-outcomes`, which works on the local database and must be run on every machine.
+
+**`bash_commands` records every shell command.** Until LAV-79 a Bash call was stored only when its first word was one of the 24 in the `FILE_COMMANDS` whitelist, which kept **24.8%** of calls (15,872 of 63,982) and dropped the rest — `cd`, `grep`, `git`, `python3`, `ssh`, `curl`, and every compound command starting `cd … && …`. That gate is gone: the table now takes any non-empty command, **+47,316 rows (3.05×)** on a real database. The measured Bash error rate moves from the **4.99%** that was visible under the whitelist to the true **5.79%**, and per-program rates that could not be computed at all before now can be: `sshpass` 24.1%, `python` 16.6%, `node` 15.4%, `npx` 14.2%, `gh` 13.9%, `ssh` 10.8% — against `grep` 1.7%, `sed` 1.7%, `wc` 1.2%. `file_operations` is unchanged: it is still fed only by the file-related commands, byte for byte.
+
+Two things to know before quoting a number from this table:
+
+- **Removing the gate only affects newly parsed content.** Historical calls appear once you re-read the window that contains them with `lav-parse --since <ISO>` — on **every** machine, since recovered rows carry their original timestamps and do not travel over sync.
+- **`cmd_name`** is the program the command actually runs, derived in Python and indexed: `cd /tmp && grep -r x .` → `grep`, `sudo -u root systemctl …` → `systemctl`, `FOO=1 python3 x.py` → `python3`. It is the column to group by; the raw first word is not (it is `cd` 17k times). Measured over 63,982 real commands: 303 distinct values, **99.86% usable**, `cd` = 0. `''` means "derived, undecidable" and is part of the 0.14% residual.
+
+> **⚠ `is_error` coverage cap on `bash_commands`.** After a **full** `lav backfill tool-outcomes`, **26.1%** of `claude_code` `bash_commands` rows still have `is_error IS NULL`: 14,795 of them have no `tool_use` block in `messages` at all — append-only rows written by an earlier parser era, whose source blocks were never stored. Nothing can recover them; they are a permanent hole in the denominator, not an error. It is **symmetric between agent and collector** — both sides derive outcomes from the same `messages` content — so this is a coverage cap, **not** agent/collector drift. Separately, the scheduled outcome self-heal runs on a **bounded lookback window** (`LAV_BACKFILL_LOOKBACK_HOURS`, default 72h): a collector outage longer than the window leaves those rows NULL permanently until someone runs the backfill once without `--since`.
 
 Anti-duplicate on pull: `INSERT OR IGNORE` on composite PKs ensures idempotent ingestion across machines.
 

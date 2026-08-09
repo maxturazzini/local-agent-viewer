@@ -71,16 +71,50 @@ oggi invisibili).
 -- skill_invocations, subagent_invocations, mcp_tool_calls):
 ALTER TABLE <t> ADD COLUMN tool_call_id TEXT DEFAULT '';   -- toolu_* / call_* / tool_use_id
 ALTER TABLE <t> ADD COLUMN duration_ms INTEGER;            -- NULL quando la sorgente non la dà
-ALTER TABLE <t> ADD COLUMN is_error INTEGER;               -- vedi nota sulla semantica
+ALTER TABLE <t> ADD COLUMN is_error INTEGER;               -- 0 = ok, 1 = errore, NULL = nessun tool_result visto (vedi nota)
 ```
 
-> ⚠️ **Semantica di `is_error` — non è "NULL = sconosciuto" ovunque.** In Cowork il campo
-> è emesso **solo in caso di errore** (presente su 636/2.412 = 26,4%): lì **l'assenza
-> significa successo**, e l'adapter deve scrivere `0`, non NULL. Il NULL va riservato alle
-> sorgenti che davvero non espongono l'informazione. Vedi [07 §1.4](07-numeri-e-insidie.md).
+> ⚠️ **Semantica di `is_error` — NON è "NULL = sconosciuto, 0 = ok, 1 = errore".**
+> **Regola definitiva, fissata da LAV-78**: `0` = un `tool_result` **esiste** e la chiave
+> `is_error` è **assente** — l'assenza significa **successo** (misurati 345 successi senza
+> chiave su 80 transcript claude_code; in Cowork il campo è emesso solo in caso di errore,
+> presente su 636/2.412 = 26,4% — [07 §1.4](07-numeri-e-insidie.md), che già contraddiceva
+> la formulazione originale di questa sezione). `1` = errore dichiarato. `NULL` = **nessun
+> `tool_result` mai visto** (transcript troncato, o parser che non ne legge). Il NULL non è
+> mai "successo presunto": ogni query di error-rate deve escluderlo dal **denominatore**.
 
 Il pairing tool_use↔tool_result (oggi ricostruito dalla UI leggendo il raw JSON,
 interactions.html:2044) diventa query-abile.
+
+> ✅ **Stato: PARZIALMENTE FATTO da LAV-78** — nota aggiunta a valle dell'implementazione
+> (dettaglio in `docs/CHANGELOG.md`; vocabolario condiviso in `lav/tool_outcomes.py`).
+>
+> - **Atterrato**: le 3 colonne uniformi (`tool_call_id`, `is_error`, `duration_ms`) su tutte
+>   e 6 le tabelle tool, più `error_text TEXT DEFAULT ''` (cap 2000 char, scritto solo in caso
+>   di errore) su `bash_commands` e `mcp_tool_calls`, più `exit_code INTEGER` su
+>   `bash_commands` — che **non è un campo di nessuna sorgente**: si estrae con
+>   `^\s*Exit code (\d+)` dal testo del `tool_result` e copre il 73% degli errori Bash (il
+>   resto è permission-denied/blocked, dove un exit code non esiste). Più 6 indici parziali
+>   `idx_<t>_tool_call ON <t>(session_id, project_id, tool_call_id) WHERE tool_call_id != ''`.
+>   `OUTCOME_COLUMNS` in `lav/tool_outcomes.py` è l'unica fonte di verità, iterata **sia** dal
+>   literal `SCHEMA` **sia** dalla migrazione (altrimenti DB nuovo e DB migrato divergono).
+> - **Chi popola davvero**: i parser che vedono i blocchi `tool_result` (claude_code, cowork)
+>   e l'ingest di sync del collector; lo storico con `lav backfill tool-outcomes`.
+>   `claude_ai`, `chatgpt` e **codex** restano NULL — per Codex i `function_call_output`
+>   esistono nei rollout ma non sono ancora letti (vedi A7).
+> - **`tool_call_id` è solo correlazione, mai chiave**: il 3,0% degli id è duplicato alla
+>   sorgente. **`duration_ms` è derivata**, non presa dalla sorgente (i campi nativi coprono
+>   l'1,4% dei risultati): è il wall clock fra il record del `tool_use` e quello del
+>   `tool_result`, quindi **include l'attesa del prompt di permission** e i task in background
+>   (p50 1,0s, p90 5,8s, p99 157s, max 76 min). Non è latenza del tool e non è clampata.
+> - **NON deciso, deliberatamente**: la decisione aperta **A1** in
+>   [00-stato-e-decisioni.md](00-stato-e-decisioni.md) (tabella `tool_calls` unica + 6 view
+>   omonime *vs* 18 `ALTER TABLE`) resta **aperta**. LAV-78 ha preso la via additiva senza
+>   chiuderla: se in futuro si sceglie l'opzione (B), queste colonne migrano nella tabella
+>   unica come le altre.
+> - **Resta da fare in A4**: esito/durata per le sorgenti che oggi non espongono un
+>   `tool_result` leggibile (Codex → A7) e il collegamento al messaggio che ha invocato il
+>   tool (`message_uuid`, vedi [04 §4.4](04-schema-current.md)).
 
 ### A5. Nuova tabella `session_events` — la spina dorsale observability
 

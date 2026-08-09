@@ -47,30 +47,42 @@ CHILD_TABLES: List[Tuple[str, List[str], bool]] = [
         "input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens",
         "cwd", "api_message_id",
     ], True),
+    # LAV-78: the six tool tables also ship the outcome columns
+    # (tool_call_id/is_error/duration_ms, plus error_text on bash+mcp and
+    # exit_code on bash). Keep these lists in sync with
+    # lav.tool_outcomes.OUTCOME_COLUMNS — a stale list here means the outcome
+    # silently does NOT travel with the snapshot.
     ("file_operations", [
         "timestamp", "session_id", "project_id", "user_id", "host_id",
         "tool", "file_path", "cwd", "git_branch",
+        "tool_call_id", "is_error", "duration_ms",
     ], True),
     ("bash_commands", [
         "timestamp", "session_id", "project_id", "user_id", "host_id",
         "command", "description", "target_file", "cwd", "git_branch",
+        "tool_call_id", "is_error", "duration_ms", "error_text", "exit_code",
+        "cmd_name",
     ], True),
     ("search_operations", [
         "timestamp", "session_id", "project_id", "user_id", "host_id",
         "tool", "pattern", "path", "output_mode", "cwd",
+        "tool_call_id", "is_error", "duration_ms",
     ], True),
     ("skill_invocations", [
         "timestamp", "session_id", "project_id", "user_id", "host_id",
         "skill_name", "args", "cwd", "git_branch",
+        "tool_call_id", "is_error", "duration_ms",
     ], True),
     ("subagent_invocations", [
         "timestamp", "session_id", "project_id", "user_id", "host_id",
         "subagent_type", "description", "prompt", "model", "run_in_background",
         "cwd", "git_branch",
+        "tool_call_id", "is_error", "duration_ms",
     ], True),
     ("mcp_tool_calls", [
         "timestamp", "session_id", "project_id", "user_id", "host_id",
         "tool_name", "server_name", "cwd", "git_branch",
+        "tool_call_id", "is_error", "duration_ms", "error_text",
     ], True),
 ]
 

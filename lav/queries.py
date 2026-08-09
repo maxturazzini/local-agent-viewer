@@ -4,6 +4,8 @@ Predefined SQL queries for LocalAgentViewer statistics and analysis.
 All queries support 4-dimensional filtering: project_id, user_id, host_id, source.
 """
 
+import sqlite3
+
 
 def run_query(conn, query, params=None):
     """Execute a query and return results as list of dicts."""
@@ -64,6 +66,97 @@ def build_filters(project_id=None, user_id=None, host_id=None,
 def _join_session_sources(table_alias='t'):
     """Return LEFT JOIN clause for session_sources."""
     return f"LEFT JOIN session_sources ss ON ss.session_id = {table_alias}.session_id AND ss.project_id = {table_alias}.project_id"
+
+
+def _and_clause(where, clause):
+    """AND an extra (parameter-free) condition onto a build_filters() WHERE.
+
+    build_filters() returns "" when no filter is active, so the extra condition
+    has to open the WHERE itself in that case. The clause is always a literal
+    written here in code — never a user value — so the param list is untouched.
+    """
+    return (where + " AND " + clause) if where else (" WHERE " + clause)
+
+
+# ===========================================================================
+# TOOL OUTCOMES (LAV-78)
+# ===========================================================================
+#
+# The six tool tables carry, since LAV-78:
+#   is_error     NULL = no tool_result was ever seen | 0 = ok | 1 = error
+#   duration_ms  wall clock call->result, NULL when not derivable
+#   error_text   bash_commands + mcp_tool_calls only
+#   exit_code    bash_commands only
+#
+# NO AGGREGATE OVER duration_ms IS EXPOSED HERE, on purpose. SQLite has no
+# percentile function, and the mean is actively misleading on the measured
+# distribution (p50 1.0s, p90 5.8s, p99 157s, max 76min — the tail is
+# permission-prompt waits and background tasks, i.e. real but not "tool speed").
+# The column stays available for ad-hoc SQL; publishing an average would put a
+# number on the dashboard that nobody could interpret.
+
+
+def _table_columns(conn, table):
+    """Column names of `table`, or an empty set if it cannot be inspected.
+
+    Used only to degrade gracefully on a DB where the LAV-78 migration has not
+    run (or half-failed: init_db wraps migrations in try/except that prints and
+    continues). Without this guard a missing column would raise inside
+    /api/stats and take the whole dashboard down, not just the outcome numbers.
+    """
+    try:
+        return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    except sqlite3.Error:
+        return set()
+
+
+def _outcome_agg(alias):
+    """SELECT-list fragment: errors / measured / error_rate for a tool table.
+
+    THE CORRECTNESS RULE OF THE WHOLE TICKET — the denominator is `measured`,
+    never COUNT(*):
+
+        measured   = SUM(CASE WHEN is_error IS NOT NULL THEN 1 ELSE 0 END)
+        errors     = SUM(CASE WHEN is_error = 1        THEN 1 ELSE 0 END)
+        error_rate = errors / measured
+
+    is_error IS NULL does NOT mean success. It means no tool_result was ever
+    observed for that call: truncated transcript, row not backfilled yet, or a
+    source that emits no results at all (Codex). Dividing by COUNT(*) would fold
+    every one of those rows into the denominator as an implicit success and
+    deflate the rate — and the wrong number would still look perfectly
+    plausible, which is exactly why it has to be spelled out here.
+
+    error_rate is a fraction in [0, 1] rounded to 4 decimals, and is NULL (never
+    0.0) when measured = 0: "not measured" is not "no errors". The guard is the
+    outer CASE, so the division never runs on a zero denominator.
+
+    The COALESCE wrappers matter for the ungrouped `totals` query: over an empty
+    result set SUM() returns NULL, which would make `measured` come back as null
+    ("unknown") when the truthful answer is 0 rows measured — and would leave the
+    = 0 guard silently un-fired.
+
+    `alias` is a table alias chosen in this module ('mt', 'bc') — never a user
+    value; all filter values stay bound as parameters.
+    """
+    errors_sum = f"COALESCE(SUM(CASE WHEN {alias}.is_error = 1 THEN 1 ELSE 0 END), 0)"
+    measured_sum = f"COALESCE(SUM(CASE WHEN {alias}.is_error IS NOT NULL THEN 1 ELSE 0 END), 0)"
+    return f"""
+            {errors_sum} as errors,
+            {measured_sum} as measured,
+            CASE
+                WHEN {measured_sum} = 0 THEN NULL
+                ELSE ROUND(1.0 * {errors_sum} / {measured_sum}, 4)
+            END as error_rate"""
+
+
+# Same three keys, all NULL: emitted when the LAV-78 columns are not in the DB
+# yet. NULL = "unknown" and keeps the response shape stable for the frontend;
+# a 0 here would be indistinguishable from a genuine "no errors".
+_OUTCOME_AGG_MISSING = """
+            NULL as errors,
+            NULL as measured,
+            NULL as error_rate"""
 
 
 # ===========================================================================
@@ -329,15 +422,29 @@ def get_subagents_stats(conn, project_id=None, user_id=None, host_id=None,
 
 def get_mcp_stats(conn, project_id=None, user_id=None, host_id=None,
                   start_date=None, end_date=None, client_source=None):
-    """Get MCP tool call statistics with 4D filters."""
+    """Get MCP tool call statistics with 4D filters.
+
+    Outcome columns (LAV-78) add `errors`, `measured` and `error_rate` to
+    by_server / top_tools, plus a `top_errors` list. See _outcome_agg() for why
+    the denominator is `measured` and not COUNT(*).
+    """
     where, params = build_filters(
         project_id=project_id, user_id=user_id, host_id=host_id,
         start=start_date, end=end_date, client=client_source, table_alias='mt'
     )
     join = _join_session_sources('mt')
 
+    # Degrade gracefully on a DB that has not been migrated yet.
+    mcp_cols = _table_columns(conn, 'mcp_tool_calls')
+    has_outcome = 'is_error' in mcp_cols
+    outcome_agg = _outcome_agg('mt') if has_outcome else _OUTCOME_AGG_MISSING
+    error_text_expr = "mt.error_text" if 'error_text' in mcp_cols else "''"
+
     by_server = run_query(conn, f"""
-        SELECT server_name, COUNT(*) as count
+        SELECT
+            server_name,
+            COUNT(*) as count,
+            {outcome_agg}
         FROM mcp_tool_calls mt
         {join}
         {where}
@@ -346,7 +453,11 @@ def get_mcp_stats(conn, project_id=None, user_id=None, host_id=None,
     """, params if params else None)
 
     top_tools = run_query(conn, f"""
-        SELECT tool_name, server_name, COUNT(*) as count
+        SELECT
+            tool_name,
+            server_name,
+            COUNT(*) as count,
+            {outcome_agg}
         FROM mcp_tool_calls mt
         {join}
         {where}
@@ -364,25 +475,59 @@ def get_mcp_stats(conn, project_id=None, user_id=None, host_id=None,
         ORDER BY date
     """, params if params else None)
 
-    return {"by_server": by_server, "top_tools": top_tools, "daily": daily}
+    # Which MCP tools actually fail, with the most recent error message.
+    # `is_error = 1` already excludes both successes (0) and never-measured
+    # rows (NULL), so no extra guard is needed on the denominator here.
+    # last_error_text is a bare column paired with the query's single MAX()
+    # aggregate: SQLite then takes it from the row that produced that MAX
+    # (documented behaviour since 3.7.11), i.e. the most recent error.
+    top_errors = []
+    if has_outcome:
+        err_where = _and_clause(where, "mt.is_error = 1")
+        top_errors = run_query(conn, f"""
+            SELECT
+                tool_name,
+                server_name,
+                COUNT(*) as errors,
+                MAX(mt.timestamp) as last_error_at,
+                {error_text_expr} as last_error_text
+            FROM mcp_tool_calls mt
+            {join}
+            {err_where}
+            GROUP BY tool_name, server_name
+            ORDER BY errors DESC, last_error_at DESC
+            LIMIT 20
+        """, params if params else None)
+
+    return {
+        "by_server": by_server,
+        "top_tools": top_tools,
+        "daily": daily,
+        "top_errors": top_errors,
+    }
 
 
 # ===========================================================================
 # BASH STATS
 # ===========================================================================
 
-def get_bash_stats(conn, project_id=None, user_id=None, host_id=None,
-                   start_date=None, end_date=None, client_source=None):
-    """Get bash command statistics with 4D filters."""
-    where, params = build_filters(
-        project_id=project_id, user_id=user_id, host_id=host_id,
-        start=start_date, end=end_date, client=client_source, table_alias='bc'
-    )
-    join = _join_session_sources('bc')
-
-    by_type = run_query(conn, f"""
-        SELECT
-            CASE
+# FALLBACK ONLY since LAV-79. Command-type bucketing by LIKE prefix, shared by
+# by_type and top_errors so the two can never drift apart. Kept byte-identical to
+# the expression that used to be inlined in get_bash_stats (including the
+# 'cat\\n%' pattern, which SQLite reads literally — LIKE has no default escape
+# character).
+#
+# Why it is no longer the primary path: it only ever knew 18 programs plus
+# 'other', which was survivable while bash_commands held the file-related 24.8%
+# of Bash and nothing else. LAV-79 records 100% of shell, and against the full
+# population 69% of the rows land in 'other' — the largest bucket by 3x, i.e. one
+# grey slice covering exactly the 47k commands the ticket just recovered. The
+# real answer is bash_commands.cmd_name (derived by jsonl.bash_cmd_name at parse
+# time, backfilled in place by _migrate_add_cmd_name); this CASE survives only so
+# that a DB where that migration has not run — or half-failed, since init_db
+# prints and continues — still renders a chart instead of raising inside
+# /api/stats and taking the whole dashboard down.
+_BASH_CMD_TYPE_CASE = """CASE
                 WHEN command LIKE 'cat %' OR command LIKE 'cat\\n%' THEN 'cat'
                 WHEN command LIKE 'head %' THEN 'head'
                 WHEN command LIKE 'tail %' THEN 'tail'
@@ -402,14 +547,151 @@ def get_bash_stats(conn, project_id=None, user_id=None, host_id=None,
                 WHEN command LIKE 'diff %' THEN 'diff'
                 WHEN command LIKE 'tree %' OR command = 'tree' THEN 'tree'
                 ELSE 'other'
-            END as cmd_type,
-            COUNT(*) as count
+            END"""
+
+# LAV-79. cmd_name has 303 distinct values over the full Bash population (63,978
+# calls measured on this host), and a 303-slice chart is not a chart. by_type
+# keeps the top N and folds the tail into a single explicit roll-up row, so
+# SUM(by_type.count) still equals totals.total_commands. A bare LIMIT with no
+# roll-up would silently drop the 288 remaining commands — 19% of the volume and
+# 30% of the errors — off the bottom of the chart, with nothing on screen saying
+# so.
+_BASH_BY_TYPE_LIMIT = 15
+
+# Display label for a row whose cmd_name is NULL ("not derived yet" — a row the
+# in-place backfill has not reached, only visible on a half-migrated DB) or ''
+# ("derived and undecidable" — 6 rows in 63,978 here). The distinction matters on
+# disk and is meaningless to a reader, so the two are folded together in SQL
+# rather than shipped as two indistinguishable buckets, one of them labelled
+# `null` in the JSON.
+_BASH_CMD_UNKNOWN = "(unknown)"
+
+# Label of the tail roll-up row appended by _fold_bash_by_type().
+_BASH_CMD_OTHER = "other"
+
+
+def _bash_cmd_name_expr(alias='bc'):
+    """GROUP BY / SELECT expression for the LAV-79 cmd_name column.
+
+    Both `alias` and _BASH_CMD_UNKNOWN are literals written in this module — no
+    user value reaches the f-string; every filter value stays bound as a
+    parameter. (_BASH_CMD_UNKNOWN deliberately contains no quote character, so it
+    is safe to inline as a SQL string literal.)
+    """
+    return f"COALESCE(NULLIF({alias}.cmd_name, ''), '{_BASH_CMD_UNKNOWN}')"
+
+
+def _bash_error_rate(errors, measured):
+    """Same contract as _outcome_agg(), applied to already-aggregated numbers.
+
+    Used only for rows this module builds by summing other rows (the `other`
+    roll-up). NULL in => NULL out: on a DB without the LAV-78 columns errors and
+    measured are both NULL ("unknown"), and 0.0 would read as "no errors".
+    measured = 0 also yields None, never 0.0 — "not measured" is not "no errors".
+    """
+    if errors is None or measured is None or measured == 0:
+        return None
+    return round(1.0 * errors / measured, 4)
+
+
+def _fold_bash_by_type(rows, limit=_BASH_BY_TYPE_LIMIT):
+    """Keep the top `limit` buckets of a by_type result; roll the tail into one row.
+
+    `rows` must already be ordered by count DESC. Returns (rows, folded_count)
+    where folded_count is the number of distinct buckets collapsed into the
+    trailing `other` row (0 when nothing was folded, in which case no roll-up row
+    is appended).
+
+    Ordering contract: the head stays in count-DESC order and the roll-up row,
+    when present, is ALWAYS the last element — even when its count outranks the
+    head's tail (it usually does). A caller can therefore render the list in
+    order and style the final row differently without inspecting the label.
+
+    The roll-up re-derives error_rate from the summed errors/measured — it is NOT
+    an average of rates, which would weight a 1-call command the same as a
+    5,000-call one.
+
+    If a real command happens to be named `other` (a program on $PATH could be),
+    it is merged into the roll-up instead of producing two rows with the same
+    label; the alternative is a chart with a duplicated legend entry.
+    """
+    if len(rows) <= limit:
+        return rows, 0
+
+    head, tail = rows[:limit], rows[limit:]
+    errors = measured = None
+    count = 0
+    for r in tail:
+        count += r["count"] or 0
+        if r.get("errors") is not None:
+            errors = (errors or 0) + r["errors"]
+        if r.get("measured") is not None:
+            measured = (measured or 0) + r["measured"]
+
+    rollup = next((r for r in head if r["cmd_type"] == _BASH_CMD_OTHER), None)
+    if rollup is None:
+        rollup = {"cmd_type": _BASH_CMD_OTHER, "count": 0,
+                  "errors": errors, "measured": measured}
+    else:
+        head.remove(rollup)  # re-appended last, see the ordering contract above
+        if rollup.get("errors") is not None or errors is not None:
+            rollup["errors"] = (rollup.get("errors") or 0) + (errors or 0)
+        if rollup.get("measured") is not None or measured is not None:
+            rollup["measured"] = (rollup.get("measured") or 0) + (measured or 0)
+
+    rollup["count"] = (rollup["count"] or 0) + count
+    rollup["error_rate"] = _bash_error_rate(rollup.get("errors"), rollup.get("measured"))
+    head.append(rollup)
+    return head, len(tail)
+
+
+def get_bash_stats(conn, project_id=None, user_id=None, host_id=None,
+                   start_date=None, end_date=None, client_source=None):
+    """Get bash command statistics with 4D filters.
+
+    by_type buckets on bash_commands.cmd_name (LAV-79) — the program the command
+    actually runs, so `cd x && npm test` counts as npm and not as 'other'. It is
+    truncated to the top _BASH_BY_TYPE_LIMIT buckets plus one `other` roll-up row
+    that preserves the total; `by_type_other_count` says how many distinct
+    commands that row stands for, and `by_type_source` says which of the two
+    bucketing rules produced the list.
+
+    Outcome columns (LAV-78) add `errors`, `measured` and `error_rate` to
+    by_type and to totals, plus a `top_errors` list keyed by the same bucket. See
+    _outcome_agg() for why the denominator is `measured` and not COUNT(*).
+    """
+    where, params = build_filters(
+        project_id=project_id, user_id=user_id, host_id=host_id,
+        start=start_date, end=end_date, client=client_source, table_alias='bc'
+    )
+    join = _join_session_sources('bc')
+
+    # Degrade gracefully on a DB that has not been migrated yet.
+    bash_cols = _table_columns(conn, 'bash_commands')
+    has_outcome = 'is_error' in bash_cols
+    outcome_agg = _outcome_agg('bc') if has_outcome else _OUTCOME_AGG_MISSING
+    error_text_expr = "bc.error_text" if 'error_text' in bash_cols else "''"
+    exit_code_expr = "bc.exit_code" if 'exit_code' in bash_cols else "NULL"
+
+    # LAV-79 primary path vs the pre-LAV-79 LIKE ladder. cmd_name is a real
+    # column precisely so that PRAGMA table_info (i.e. _table_columns) can see it
+    # — a GENERATED column would be invisible here and this guard would report
+    # "not migrated" forever.
+    has_cmd_name = 'cmd_name' in bash_cols
+    cmd_type_expr = _bash_cmd_name_expr('bc') if has_cmd_name else _BASH_CMD_TYPE_CASE
+
+    by_type = run_query(conn, f"""
+        SELECT
+            {cmd_type_expr} as cmd_type,
+            COUNT(*) as count,
+            {outcome_agg}
         FROM bash_commands bc
         {join}
         {where}
         GROUP BY cmd_type
-        ORDER BY count DESC
+        ORDER BY count DESC, cmd_type ASC
     """, params if params else None)
+    by_type, by_type_other_count = _fold_bash_by_type(by_type)
 
     # Top target files
     file_where = where
@@ -441,17 +723,70 @@ def get_bash_stats(conn, project_id=None, user_id=None, host_id=None,
     totals = run_query(conn, f"""
         SELECT
             COUNT(*) as total_commands,
-            COUNT(DISTINCT target_file) as unique_files
+            COUNT(DISTINCT target_file) as unique_files,
+            {outcome_agg}
         FROM bash_commands bc
         {join}
         {where}
     """, params if params else None)[0]
 
+    # Which commands actually fail, with the exit code they most often fail with.
+    # Keyed on the same expression as by_type, so the two can never disagree
+    # about what a bucket is. `is_error = 1` already excludes successes (0) and
+    # never-measured rows (NULL). exit_code is absent for ~27% of failures
+    # (permission-denied / blocked calls never produce one), so top_exit_code is
+    # NULL for a bucket whose failures all lack an exit code — it is not a count
+    # of anything. No roll-up here: LIMIT 20 on a list sorted by absolute error
+    # count is already the question being asked, and an `other` row pooling 280
+    # unrelated programs' failures would answer nothing.
+    # sample_error_text is a bare column paired with the query's single MAX()
+    # aggregate, so SQLite takes it from the most recent failing row
+    # (documented behaviour since 3.7.11).
+    top_errors = []
+    if has_outcome:
+        err_where = _and_clause(where, "bc.is_error = 1")
+        top_errors = run_query(conn, f"""
+            WITH bash_errors AS (
+                SELECT
+                    {cmd_type_expr} as cmd_type,
+                    {exit_code_expr} as exit_code,
+                    {error_text_expr} as error_text,
+                    bc.timestamp as timestamp
+                FROM bash_commands bc
+                {join}
+                {err_where}
+            ),
+            exit_code_freq AS (
+                SELECT cmd_type, exit_code, COUNT(*) as n
+                FROM bash_errors
+                WHERE exit_code IS NOT NULL
+                GROUP BY cmd_type, exit_code
+            )
+            SELECT
+                e.cmd_type as cmd_type,
+                COUNT(*) as errors,
+                MAX(e.timestamp) as last_error_at,
+                e.error_text as sample_error_text,
+                (SELECT f.exit_code FROM exit_code_freq f
+                  WHERE f.cmd_type = e.cmd_type
+                  ORDER BY f.n DESC, f.exit_code ASC LIMIT 1) as top_exit_code,
+                (SELECT f.n FROM exit_code_freq f
+                  WHERE f.cmd_type = e.cmd_type
+                  ORDER BY f.n DESC, f.exit_code ASC LIMIT 1) as top_exit_code_count
+            FROM bash_errors e
+            GROUP BY e.cmd_type
+            ORDER BY errors DESC, last_error_at DESC
+            LIMIT 20
+        """, params if params else None)
+
     return {
         "by_type": by_type,
+        "by_type_source": "cmd_name" if has_cmd_name else "command_like",
+        "by_type_other_count": by_type_other_count,
         "top_files": top_files,
         "daily": daily,
         "totals": totals,
+        "top_errors": top_errors,
     }
 
 

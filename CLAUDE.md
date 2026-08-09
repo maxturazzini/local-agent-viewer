@@ -17,6 +17,7 @@ pip install -e ".[all]"       # everything (qdrant, openai, fastmcp)
 lav-parse                     # incremental parse from local JSONL
 lav-parse --project myProject # parse one project
 lav-parse --full              # full reparse
+lav-parse --since 2026-06-01  # bounded re-read (additive, insert-only; excl. --full)
 lav-parse-chatgpt             # parse ChatGPT export
 lav-parse-claude-ai           # parse Anthropic claude.ai export folder (data-*-batch-0000)
 lav-server                    # start server on :8764
@@ -34,6 +35,7 @@ lav sync                      # trigger sync (needs LAV_API_KEY)
 lav sync --scope project --project miniMe
 lav pricing list              # list active pricing
 lav pricing add --model X --input 5.0 --output 25.0 --from-date 2026-01-01
+lav backfill tool-outcomes    # stamp tool_call_id + outcome on historical tool rows
 
 # Specialized CLIs (still available)
 lav-classify                  # AI classification (needs OPENAI_API_KEY)
@@ -80,6 +82,8 @@ Single SQLite DB at `~/.local/share/local-agent-viewer/local_agent_viewer.db`.
 - **Source** (`session_sources`) — which agent (claude_code, codex_cli, cowork_desktop, chatgpt, claude_ai)
 
 Composite PK: `interactions(session_id, project_id)`. Append-only — records are never deleted.
+
+**Tool outcomes** (LAV-78): the 6 tool tables (`file_operations`, `bash_commands`, `search_operations`, `skill_invocations`, `subagent_invocations`, `mcp_tool_calls`) carry `tool_call_id`/`is_error`/`duration_ms`; `bash_commands`+`mcp_tool_calls` also `error_text` (cap 2000), `bash_commands` also `exit_code`. `lav/tool_outcomes.py` is the single source of truth for those columns + index DDL (`OUTCOME_COLUMNS`/`OUTCOME_INDEX_SQL`, iterated by BOTH the SCHEMA literal and the migration), the `tool_use`→row routing, and the writers. Stdlib + `lav.config` only — `jsonl.py` imports it, so it must never import `jsonl` at module level. Backfill: `lav backfill tool-outcomes` — local DB only (no reparse, no watermark), so run it on **every node**; the sync ingest never updates an existing row.
 
 **Cost tracking**: `model_pricing` table stores per-model prices with temporal validity (`from_date`/`to_date`). Costs are calculated at query time via LEFT JOIN — never materialized. Table is seeded automatically by `init_db()`. CLI: `lav-pricing`. MCP tool: `manage_pricing`. API: `/api/pricing`.
 
@@ -146,6 +150,11 @@ Vanilla HTML/JS/CSS + Chart.js CDN. Three pages: dashboard (6 sub-tabs), interac
 - **`internal_docs/`** is gitignored — private notes, not shipped
 - **Jira project `LAV`** on aimaxplayground.atlassian.net tracks all TODO/backlog (epics + tasks). No local TODO files — use Jira as single source of truth
 - **Sentinel values**: `parse_state` uses `project_id=-1` and `source=''` (never NULL)
+- **`is_error` semantics** (LAV-78): `NULL` = no `tool_result` ever seen (truncated transcript, or a parser that reads none — claude_ai/chatgpt/codex are all NULL), `0` = ok (a result exists and the `is_error` key is ABSENT — absence means success), `1` = error. NULL is never "assumed success": every rate query must exclude NULL from the DENOMINATOR. `duration_ms` is wall clock `tool_use`→`tool_result`, so it INCLUDES permission-prompt wait and background time (p99 157s, max 76min observed) — not a latency metric, and not clamped
+- **`bash_commands` IS all Bash** (LAV-79 — the old "24,8% only, never call it the Bash error rate" caveat is RETIRED): the `is_file_related_bash` gate is gone, any non-empty command is stored (+47.316 rows, 3,05x). True Bash error rate **5,79%** (was 4,99% visible). `file_operations` unchanged — still fed only by file-related commands, proven byte-identical. New `cmd_name TEXT DEFAULT ''` + `idx_bash_cmd_name`: the program actually run (`cd /tmp && grep …`→`grep`, `sudo -u x systemctl`→`systemctl`, `FOO=1 python3`→`python3`), 303 buckets, `cd`=0, 99,86% usable (`''` = derived-undecidable, part of the 0,14% residual). **GROUP BY `cmd_name`, never the first word.** Gate removal only affects NEWLY parsed content — history needs `lav-parse --since <ISO>` **per node**
+- **`--since` semantics** (LAV-79): temporarily LOWERS the read watermark, insert-only, all inserts duplicate-guarded → idempotent. Never lowers a persisted watermark (write-back is seeded from the STORED value, and `min()` means a `--since` newer than stored is ignored). Rejected together with `--full`. Recovered rows keep their OLD timestamps, so they sit behind the collector's export cursor and do NOT propagate over sync — run it on every node (`notify_collector` still fires; harmless, achieves nothing)
+- **`is_error` NULL is a coverage CAP, not drift** (LAV-79): after a FULL `lav backfill tool-outcomes`, **26,1%** of claude_code `bash_commands` rows are still `is_error IS NULL` — 14.795 of them have NO `tool_use` block in `messages` at all (append-only rows from an earlier parser era, unrecoverable). It is SYMMETRIC between agent and collector (both derive from their own `messages`), so it is not agent/collector divergence. Separately: the scheduled self-heal in `lav-parser.sh` uses a BOUNDED lookback (`LAV_BACKFILL_LOOKBACK_HOURS`, default 72h) — an outage longer than the window leaves those rows NULL forever until someone runs the backfill once without `--since`
+- **Outcome drift → backfill on every node** (LAV-78): `export_sessions()` filters CHILD rows by the tool call's OWN timestamp, so an outcome stamped in a later run sits behind the export cursor and never re-ships (and the collector's `NOT EXISTS` ingest would skip it anyway). The scheduled parser (`utils/services/lav-parser.sh`) therefore runs `lav backfill tool-outcomes` after each parse on BOTH nodes — the collector re-derives outcomes locally instead of receiving them
 - **Canonical hostname** (LAV-68): `socket.gethostname()` is volatile on macOS (transiently `Mac`/mojibake), so host identity comes from `_canonical_hostname()` in `jsonl.py` — precedence `LAV_HOSTNAME` env → `config.json` `"hostname"` key → validated socket name → `unknown`. **Set a stable `"hostname"` in each node's `config.json`** (dev machine → `dev-host`, prod machine → `prod-host`) or new host rows split one machine's sessions. Corrupted/generic names are rejected by `_is_valid_hostname()` and never inserted.
 - **Synthetic subagent session ids**: Claude Code agent files (`subagents/**/agent-*.jsonl`) reuse the parent's `sessionId`; the parser rekeys them as `<parent_session_id>::agent-<agentId>` (LAV-66). A `session_id` containing `::agent-` is a subagent child conversation, linked via `parent_session_id`.
 - **Per-project commits** in parsers for crash resilience

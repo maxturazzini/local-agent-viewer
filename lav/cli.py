@@ -6,12 +6,24 @@ import json
 import os
 import sqlite3
 import sys
+import time
+from pathlib import Path
 from typing import Optional
 
 import lav  # noqa: F401 — triggers .env loading
 from lav.config import UNIFIED_DB_PATH, QDRANT_DATA_DIR, QDRANT_COLLECTION, QDRANT_URL
 
 _kb_store = None
+
+# LAV-78 — sources that CANNOT be backfilled by `lav backfill tool-outcomes`.
+# The backfill reconstructs tool outcomes from the raw JSON content blocks kept
+# verbatim in messages.content. These two sources never store that:
+#   claude_ai — claude_ai.py writes RENDERED TEXT, the tool_use/tool_result
+#               blocks are already flattened away and unrecoverable.
+#   chatgpt   — the ChatGPT export has no tool_result blocks at all.
+# They are excluded from the session sweep and reported as an explicit skip
+# line with their row counts, never silently ignored.
+BACKFILL_UNSUPPORTED_SOURCES = ("claude_ai", "chatgpt")
 
 
 # ── Connections ─────────────────────────────────────────────
@@ -172,6 +184,26 @@ def _die(msg, code=1):
 
 
 # ── Helpers ─────────────────────────────────────────────────
+
+def _nonneg_int(value):
+    """argparse type for counts where 0 is meaningful and negatives are not.
+
+    Guards the LAV-78 backfill args: a bare `int` would let `--limit -1` through,
+    and SQLite reads a negative LIMIT as "no limit" — i.e. the exact opposite of
+    what the user asked for, in write mode. Fail loudly instead.
+
+    LAV-79 wires it to the read path too (`lav search --limit`, `lav kb search
+    --limit`): same hazard, milder blast radius — `lav search --limit -1` used to
+    dump the whole table instead of erroring.
+    """
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"'{value}' is not an integer")
+    if n < 0:
+        raise argparse.ArgumentTypeError(f"must be >= 0, got {n}")
+    return n
+
 
 def _resolve_name_to_id(conn, table, column, value):
     """Resolve a name (project, user) to its integer ID."""
@@ -428,6 +460,356 @@ def cmd_pricing(args):
         _die(f"Unknown pricing action '{args.action}'. Use 'list' or 'add'.")
 
 
+# ── backfill: tool outcomes (LAV-78) ────────────────────────
+#
+# Why this exists: on the collector, rows arrive through the sync ingest guarded
+# by NOT EXISTS, so an EXISTING row is never updated. A reparse on the agent
+# therefore cannot heal the collector. This command rebuilds the outcome purely
+# from data already sitting in the LOCAL DB (messages.content is a verbatim JSON
+# passthrough of the source), so it runs identically and independently on both
+# nodes — no reparse, no re-sync, no watermark touched.
+#
+# Auth posture: same as lav-classify — it writes to the LOCAL SQLite DB directly
+# rather than calling the API, so no LAV_API_KEY is required.
+
+# Only messages that actually carry the block we're after are fetched. instr()
+# is an exact substring test (unlike LIKE, where the `_` in "tool_use" would act
+# as a single-char wildcard). Note `"tool_use"` — quotes included — cannot match
+# inside `"tool_use_id"`, so the two passes never overlap.
+_BF_TOOL_USE_SQL = (
+    "SELECT timestamp, content FROM messages "
+    "WHERE session_id = ? AND project_id = ? AND instr(content, '\"tool_use\"') > 0 "
+    "ORDER BY id"
+)
+_BF_TOOL_RESULT_SQL = (
+    "SELECT timestamp, content FROM messages "
+    "WHERE session_id = ? AND project_id = ? AND instr(content, '\"tool_use_id\"') > 0 "
+    "ORDER BY id"
+)
+
+
+def _bf_table_columns(conn, table):
+    """Column names of `table`, empty set when the table does not exist."""
+    try:
+        return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    except sqlite3.Error:
+        return set()
+
+
+def _bf_missing_columns(conn):
+    """List of '<table>.<column>' outcome columns not present in this DB."""
+    from lav.tool_outcomes import OUTCOME_COLUMNS
+    missing = []
+    for table, cols in OUTCOME_COLUMNS.items():
+        present = _bf_table_columns(conn, table)
+        if not present:
+            missing.append(f"{table} (table absent)")
+            continue
+        missing.extend(f"{table}.{col}" for col, _type in cols if col not in present)
+    return missing
+
+
+def _bf_session_query(since, project, source, limit):
+    """Build (sql, params) for the session sweep.
+
+    Sessions come from `interactions` (one row per session_id+project_id) rather
+    than from a DISTINCT over 595k messages. Ordered most-recent-first so
+    --limit N means "the N most recent sessions".
+    """
+    placeholders = ",".join("?" * len(BACKFILL_UNSUPPORTED_SOURCES))
+    where = [f"COALESCE(ss.source, '') NOT IN ({placeholders})"]
+    params = list(BACKFILL_UNSUPPORTED_SOURCES)
+
+    # The MAX(message timestamp) join is only paid for when --since is used.
+    # Same "active since" definition as lav/backfill.py select_active_sessions.
+    msg_join = ""
+    if since:
+        msg_join = (
+            "LEFT JOIN (SELECT session_id, project_id, MAX(timestamp) AS last_msg_ts "
+            "           FROM messages GROUP BY session_id, project_id) m "
+            "  ON m.session_id = i.session_id AND m.project_id = i.project_id "
+        )
+        where.append("COALESCE(m.last_msg_ts, i.timestamp) >= ?")
+        params.append(since)
+    if project:
+        where.append("p.name = ?")
+        params.append(project)
+    if source:
+        where.append("COALESCE(ss.source, '') = ?")
+        params.append(source)
+
+    sql = (
+        "SELECT i.session_id, i.project_id "
+        "FROM interactions i "
+        "JOIN projects p ON p.id = i.project_id "
+        "LEFT JOIN session_sources ss "
+        "  ON ss.session_id = i.session_id AND ss.project_id = i.project_id "
+        + msg_join +
+        "WHERE " + " AND ".join(where) + " "
+        "ORDER BY i.timestamp DESC"
+    )
+    # `is not None`, NOT truthiness: --limit 0 must mean literally zero sessions
+    # (SQLite honours LIMIT 0), while an omitted --limit stays unbounded. The
+    # truthy form made `--limit 0` a full write-mode sweep. Negative values are
+    # rejected at parse time (_nonneg_int) because SQLite reads LIMIT -1 as
+    # "no limit".
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
+    return sql, params
+
+
+def _bf_unsupported_counts(conn):
+    """Sessions + messages held by the sources that cannot be backfilled."""
+    marks = ",".join("?" * len(BACKFILL_UNSUPPORTED_SOURCES))
+    params = list(BACKFILL_UNSUPPORTED_SOURCES)
+    out = {s: {"source": s, "sessions": 0, "messages": 0} for s in BACKFILL_UNSUPPORTED_SOURCES}
+    try:
+        for src, n in conn.execute(
+            "SELECT ss.source, COUNT(*) FROM interactions i "
+            "JOIN session_sources ss ON ss.session_id = i.session_id "
+            "                       AND ss.project_id = i.project_id "
+            f"WHERE ss.source IN ({marks}) GROUP BY ss.source", params
+        ):
+            out.setdefault(src, {"source": src, "sessions": 0, "messages": 0})["sessions"] = n
+        for src, n in conn.execute(
+            "SELECT ss.source, COUNT(*) FROM messages m "
+            "JOIN session_sources ss ON ss.session_id = m.session_id "
+            "                       AND ss.project_id = m.project_id "
+            f"WHERE ss.source IN ({marks}) GROUP BY ss.source", params
+        ):
+            out.setdefault(src, {"source": src, "sessions": 0, "messages": 0})["messages"] = n
+    except sqlite3.Error as e:
+        print(f"[backfill] could not count unsupported sources: {e}", file=sys.stderr)
+    for row in out.values():
+        row["reason"] = ("messages.content holds rendered text, not raw JSON blocks"
+                         if row["source"] == "claude_ai"
+                         else "export carries no tool_result blocks")
+    return [row for row in out.values() if row["sessions"] or row["messages"]]
+
+
+def _bf_breakdown(conn):
+    """Per-table is_error breakdown: 1 / 0 / NULL, plus correlation coverage."""
+    from lav.tool_outcomes import TOOL_TABLES
+    out = {}
+    for table in TOOL_TABLES:
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*), "
+                "       SUM(CASE WHEN is_error = 1 THEN 1 ELSE 0 END), "
+                "       SUM(CASE WHEN is_error = 0 THEN 1 ELSE 0 END), "
+                "       SUM(CASE WHEN is_error IS NULL THEN 1 ELSE 0 END), "
+                "       SUM(CASE WHEN tool_call_id IS NOT NULL AND tool_call_id != '' "
+                "                THEN 1 ELSE 0 END) "
+                f"FROM {table}"
+            ).fetchone()
+        except sqlite3.Error as e:
+            out[table] = {"error": str(e)}
+            continue
+        total, err, ok, unknown, correlated = (row[0] or 0, row[1] or 0, row[2] or 0,
+                                               row[3] or 0, row[4] or 0)
+        known = err + ok
+        out[table] = {
+            "rows": total,
+            "is_error_1": err,
+            "is_error_0": ok,
+            "is_error_null": unknown,
+            "with_tool_call_id": correlated,
+            # NULL is never "assumed success": it is excluded from the denominator.
+            "error_rate_pct": round(100.0 * err / known, 2) if known else None,
+        }
+    return out
+
+
+def cmd_backfill(args):
+    """Dispatch `lav backfill <subcommand>`."""
+    if args.backfill_command == "tool-outcomes":
+        return cmd_backfill_tool_outcomes(args)
+    _die(f"Unknown backfill subcommand '{args.backfill_command}'.")
+
+
+def cmd_backfill_tool_outcomes(args):
+    """Reconstruct tool_call_id / is_error / duration_ms / error_text / exit_code
+    from messages.content, in place, on the local DB."""
+    from lav.tool_outcomes import (
+        apply_tool_outcome,
+        iter_content_blocks,
+        outcome_from_tool_result,
+        stamp_tool_call_id,
+    )
+
+    db_path = Path(args.db).expanduser() if args.db else UNIFIED_DB_PATH
+    dry_run = bool(args.dry_run)
+
+    if not db_path.exists():
+        _die(f"No database at {db_path}. Run lav-parse first.")
+
+    if dry_run:
+        # Strictly no writes: skip init_db (which would apply DDL) and open a
+        # plain connection whose transactions are always rolled back.
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA busy_timeout=5000")
+    else:
+        # init_db is idempotent and carries the LAV-78 migration; honouring --db
+        # here is what makes the command runnable against a copy.
+        from lav.parsers.jsonl import init_db
+        conn = init_db(db_path)
+
+    try:
+        missing = _bf_missing_columns(conn)
+        if missing:
+            hint = ("run without --dry-run (init_db applies the migration) "
+                    if dry_run else "the LAV-78 migration did not apply ")
+            _die(f"outcome columns missing on {db_path}: {', '.join(missing)} — {hint}")
+
+        skipped = _bf_unsupported_counts(conn)
+        for row in skipped:
+            print(f"[backfill] SKIP source={row['source']}: {row['sessions']} sessions / "
+                  f"{row['messages']} messages cannot be backfilled "
+                  f"({row['reason']})", file=sys.stderr)
+
+        if args.source and args.source in BACKFILL_UNSUPPORTED_SOURCES:
+            result = {
+                "db": str(db_path), "dry_run": dry_run, "status": "nothing to do",
+                "filters": {"since": args.since, "project": args.project,
+                            "source": args.source, "limit": args.limit},
+                "skipped_sources": skipped,
+                "sessions_scanned": 0,
+            }
+            _output(result, args.format)
+            return
+
+        sql, params = _bf_session_query(args.since, args.project, args.source, args.limit)
+        sessions = conn.execute(sql, params).fetchall()
+
+        total_sessions = len(sessions)
+        # Same `is not None` rule as --limit: --progress-every 0 means "no
+        # progress lines" (the only sane reading of zero), not "fall back to
+        # 200". Negatives are rejected at parse time by _nonneg_int.
+        every = 200 if args.progress_every is None else args.progress_every
+        mode = "DRY RUN (all changes rolled back)" if dry_run else "WRITING"
+        print(f"[backfill] {mode} — {total_sessions} sessions on {db_path}", file=sys.stderr)
+
+        stats = {
+            "sessions_scanned": 0,
+            "sessions_with_tool_calls": 0,
+            "tool_use_blocks": 0,
+            "rows_stamped": 0,
+            "tool_result_blocks": 0,
+            "outcome_rows_updated": 0,
+            "tool_results_unmatched": 0,
+            "sessions_failed": 0,
+        }
+        t0 = time.time()
+
+        for session_id, project_id in sessions:
+            stats["sessions_scanned"] += 1
+            touched = 0
+            try:
+                # ── pass 1: tool_use -> stamp the correlation id ────────────
+                # MUST fully precede pass 2 for this session, otherwise the
+                # UPDATE in pass 2 has no tool_call_id to match on.
+                for ts, content in conn.execute(_BF_TOOL_USE_SQL, (session_id, project_id)):
+                    for block in iter_content_blocks(content):
+                        if block.get("type") != "tool_use":
+                            continue
+                        # messages.content is a verbatim passthrough of the
+                        # source: never assume a field has the expected type.
+                        call_id = block.get("id")
+                        name = block.get("name")
+                        if not isinstance(call_id, str) or not call_id:
+                            continue
+                        if not isinstance(name, str) or not name:
+                            continue
+                        stats["tool_use_blocks"] += 1
+                        n = stamp_tool_call_id(
+                            conn, session_id, project_id, ts,
+                            name, block.get("input") or {}, call_id,
+                        )
+                        stats["rows_stamped"] += n
+                        touched += n
+
+                # ── pass 2: tool_result -> write the outcome ────────────────
+                for ts, content in conn.execute(_BF_TOOL_RESULT_SQL, (session_id, project_id)):
+                    for block in iter_content_blocks(content):
+                        if block.get("type") != "tool_result":
+                            continue
+                        call_id = block.get("tool_use_id")
+                        if not isinstance(call_id, str) or not call_id:
+                            continue
+                        stats["tool_result_blocks"] += 1
+                        n = apply_tool_outcome(
+                            conn, session_id, project_id, call_id,
+                            outcome_from_tool_result(block), ts,
+                        )
+                        stats["outcome_rows_updated"] += n
+                        touched += n
+                        if n == 0:
+                            stats["tool_results_unmatched"] += 1
+            except Exception as e:
+                # One malformed session must never abort the sweep. Roll it back
+                # whole, so pass-1 stamps are not left without their pass-2
+                # outcomes. KeyboardInterrupt is not an Exception — it still exits.
+                stats["sessions_failed"] += 1
+                print(f"[backfill] session {session_id} failed: {e}", file=sys.stderr)
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                continue
+
+            if touched:
+                stats["sessions_with_tool_calls"] += 1
+            # Commit per session — crash resilience, same convention as the
+            # per-project commits in the parsers.
+            if dry_run:
+                conn.rollback()
+            else:
+                conn.commit()
+
+            if every and stats["sessions_scanned"] % every == 0:
+                print(f"[backfill] {stats['sessions_scanned']}/{total_sessions} sessions · "
+                      f"{stats['rows_stamped']} ids stamped · "
+                      f"{stats['outcome_rows_updated']} outcomes applied · "
+                      f"{time.time() - t0:.1f}s", file=sys.stderr)
+
+        if dry_run:
+            conn.rollback()
+
+        result = {
+            "db": str(db_path),
+            "dry_run": dry_run,
+            "status": "dry-run: nothing written" if dry_run else "applied",
+            "filters": {"since": args.since, "project": args.project,
+                        "source": args.source, "limit": args.limit},
+            "skipped_sources": skipped,
+            "elapsed_sec": round(time.time() - t0, 1),
+        }
+        result.update(stats)
+        result["is_error_breakdown"] = _bf_breakdown(conn)
+        result["is_error_breakdown_scope"] = (
+            "whole table, state BEFORE this dry run (every change was rolled back)"
+            if dry_run else "whole table, state AFTER this run"
+        )
+
+        if args.format == "brief":
+            print(f"{'DRY RUN' if dry_run else 'APPLIED'}  "
+                  f"sessions={stats['sessions_scanned']}  "
+                  f"stamped={stats['rows_stamped']}  "
+                  f"outcomes={stats['outcome_rows_updated']}  "
+                  f"unmatched={stats['tool_results_unmatched']}  "
+                  f"{result['elapsed_sec']}s")
+            for table, b in result["is_error_breakdown"].items():
+                if "error" in b:
+                    continue
+                print(f"  {table:<22} err={b['is_error_1']:<7} ok={b['is_error_0']:<7} "
+                      f"null={b['is_error_null']:<7} rate={b['error_rate_pct']}")
+        else:
+            _output(result, args.format)
+    finally:
+        conn.close()
+
+
 # ── Parser setup ────────────────────────────────────────────
 
 def _add_common_args(parser):
@@ -436,7 +818,7 @@ def _add_common_args(parser):
     parser.add_argument("--user", help="Filter by username")
     parser.add_argument("--start", help="Start date (YYYY-MM-DD)")
     parser.add_argument("--end", help="End date (YYYY-MM-DD)")
-    parser.add_argument("--limit", type=int, default=20, help="Max results (default: 20)")
+    parser.add_argument("--limit", type=_nonneg_int, default=20, help="Max results (default: 20)")
     parser.add_argument("--format", choices=["json", "table", "brief"], default="json",
                         help="Output format (default: json)")
 
@@ -486,7 +868,7 @@ def build_parser():
     p_kb_search.add_argument("--classification", help="Filter by classification type")
     p_kb_search.add_argument("--tags", help="Comma-separated tags to filter by")
     p_kb_search.add_argument("--project", help="Filter by project name")
-    p_kb_search.add_argument("--limit", type=int, default=10, help="Max results (default: 10)")
+    p_kb_search.add_argument("--limit", type=_nonneg_int, default=10, help="Max results (default: 10)")
     _add_format_arg(p_kb_search)
     p_kb_search.set_defaults(func=cmd_kb_search)
 
@@ -545,6 +927,37 @@ def build_parser():
     _add_format_arg(p_pricing)
     p_pricing.set_defaults(func=cmd_pricing)
 
+    # ── backfill ── (sub-subcommands)
+    p_bf = sub.add_parser("backfill", help="One-shot repairs on the local DB")
+    bf_sub = p_bf.add_subparsers(dest="backfill_command")
+
+    # backfill tool-outcomes
+    p_bf_to = bf_sub.add_parser(
+        "tool-outcomes",
+        help="LAV-78: rebuild tool_call_id / is_error / duration_ms from messages.content",
+        description="Reconstruct the outcome of past tool calls from the raw JSON blocks "
+                    "already stored in messages.content, and write it onto the six tool "
+                    "tables. Runs entirely on the LOCAL DB — no reparse, no re-sync, no "
+                    "parse_state watermark is touched — so it must be run on each node "
+                    "(the collector's sync ingest is NOT EXISTS-guarded and never updates "
+                    "an existing row). Sources claude_ai and chatgpt cannot be backfilled.",
+    )
+    p_bf_to.add_argument("--db", help=f"SQLite DB path (default: {UNIFIED_DB_PATH})")
+    p_bf_to.add_argument("--dry-run", action="store_true",
+                         help="Count what would change, roll everything back, write nothing")
+    p_bf_to.add_argument("--since", help="Only sessions active since this ISO timestamp")
+    p_bf_to.add_argument("--project", help="Only this project name")
+    p_bf_to.add_argument("--source", help="Only this session_sources.source (claude_code, "
+                                          "codex_cli, cowork_desktop, ...)")
+    p_bf_to.add_argument("--limit", type=_nonneg_int,
+                         help="Process at most N sessions (most recent first). "
+                              "0 = no sessions at all; omit for no limit")
+    p_bf_to.add_argument("--progress-every", type=_nonneg_int, default=200, dest="progress_every",
+                         help="Print a progress line every N sessions "
+                              "(default: 200; 0 = no progress lines)")
+    _add_format_arg(p_bf_to)
+    p_bf_to.set_defaults(func=cmd_backfill)
+
     return parser
 
 
@@ -559,6 +972,11 @@ def main():
     # Handle kb with no subcommand
     if args.command == "kb" and not getattr(args, "kb_command", None):
         parser.parse_args(["kb", "--help"])
+        sys.exit(2)
+
+    # Handle backfill with no subcommand
+    if args.command == "backfill" and not getattr(args, "backfill_command", None):
+        parser.parse_args(["backfill", "--help"])
         sys.exit(2)
 
     if not hasattr(args, "func"):
