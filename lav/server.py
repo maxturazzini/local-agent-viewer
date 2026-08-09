@@ -11,6 +11,7 @@ import lav  # noqa: F401 — triggers .env loading
 
 import getpass
 import io
+import ipaddress
 import json
 import socket
 import sqlite3
@@ -104,6 +105,36 @@ from lav.queries import (
 # Runtime config (agent/collector roles)
 _runtime_config = load_runtime_config()
 _server_start_time = datetime.now()
+
+# Parsed form of config.json `allowed_clients`, built once on first use.
+# None = not built yet; [] = no allowlist configured, i.e. open to anyone who
+# can reach the port (the historical default — see _client_allowed).
+_ALLOWED_NETWORKS = None
+
+
+def _allowed_client_networks():
+    """config.json `allowed_clients` -> list of ip_network, memoised.
+
+    Accepts bare addresses ("100.79.52.27") and CIDR ("192.168.1.0/24");
+    `strict=False` is what lets a bare host address through as a /32.
+
+    A malformed entry is SKIPPED WITH A WARNING rather than ignored silently or
+    treated as deny-all: a typo must not quietly widen access, and it must not
+    lock the machine out either. If every entry is malformed the list ends up
+    empty, which means open — so the warning is the only thing standing between
+    a typo and an unrestricted server, and it is printed loudly at startup.
+    """
+    global _ALLOWED_NETWORKS
+    if _ALLOWED_NETWORKS is None:
+        nets = []
+        for entry in _runtime_config.get("allowed_clients") or []:
+            try:
+                nets.append(ipaddress.ip_network(str(entry).strip(), strict=False))
+            except ValueError:
+                print(f"[server] WARNING: allowed_clients entry {entry!r} is not a "
+                      f"valid IP or CIDR — IGNORED")
+        _ALLOWED_NETWORKS = nets
+    return _ALLOWED_NETWORKS
 
 # Lazy-loaded Qdrant components
 _kb_store = None
@@ -446,7 +477,46 @@ class APIHandler(SimpleHTTPRequestHandler):
     # Endpoints allowed in agent-only mode
     _AGENT_PATHS = {"/api/health", "/api/info", "/api/export"}
 
+    def _client_allowed(self) -> bool:
+        """Peer-IP allowlist. Empty allowlist = open (historical behaviour).
+
+        This server has NO authentication of any kind: `LAV_API_KEY` and
+        `LAV_READ_API_KEY` are read by lav/cli.py and lav/mcp_server.py only,
+        never here. It binds 0.0.0.0 for every role except `collector`, so with
+        no allowlist anyone who can reach the port reads every conversation in
+        the database — and POST /api/sync triggers work without a credential.
+        This is the control that closes that.
+
+        Checked against the SOCKET PEER address, never a header:
+        X-Forwarded-For is attacker-controlled and there is no reverse proxy in
+        front of this server to make it trustworthy.
+
+        Loopback is ALWAYS allowed and is not configurable — the local CLI, the
+        parser's notify hook and a local browser must never be able to lock
+        themselves out of their own machine by a typo in config.json.
+        """
+        if not _allowed_client_networks():
+            return True
+        try:
+            peer = ipaddress.ip_address(self.client_address[0])
+        except (ValueError, IndexError, TypeError):
+            return False        # unparseable peer: fail closed
+        if peer.is_loopback:
+            return True
+        return any(peer in net for net in _allowed_client_networks())
+
+    def _reject_client(self):
+        # 403 rather than a silent socket close: this is a private tool on a
+        # private network, and a debuggable refusal is worth more than hiding
+        # the service from someone who already reached the port.
+        print(f"[server] denied {self.client_address[0]} (not in allowed_clients)")
+        self.send_error(403, "Client address not allowed")
+
     def do_GET(self):
+        if not self._client_allowed():
+            self._reject_client()
+            return
+
         parsed = urlparse(self.path)
         path = parsed.path
         params = parse_qs(parsed.query)
@@ -1170,6 +1240,12 @@ class APIHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         """Handle POST requests."""
+        # Same gate as do_GET, and it matters MORE here: /api/sync and
+        # /api/kb/index are unauthenticated writes.
+        if not self._client_allowed():
+            self._reject_client()
+            return
+
         parsed = urlparse(self.path)
         path = parsed.path
 

@@ -126,7 +126,7 @@ LAV_CONFIG_PATH = LOCAL_DATA_DIR / "config.json"
 
 def load_runtime_config() -> dict:
     """Load runtime config (role, agents). Default: both, no agents."""
-    defaults = {"role": "both", "port": 8764, "agents": []}
+    defaults = {"role": "both", "port": 8764, "agents": [], "allowed_clients": []}
     LOCAL_DATA_DIR.mkdir(parents=True, exist_ok=True)
     if not LAV_CONFIG_PATH.exists():
         return defaults
@@ -136,6 +136,11 @@ def load_runtime_config() -> dict:
         cfg.setdefault("role", "both")
         cfg.setdefault("port", 8764)
         cfg.setdefault("agents", [])
+        # Client IP allowlist. EMPTY = open, which is the historical behaviour
+        # and stays the default: this is a public repo and a shipped default of
+        # "deny" would break every existing install on upgrade. Set it per
+        # machine in config.json (untracked) — never in the repo.
+        cfg.setdefault("allowed_clients", [])
         if cfg["role"] not in ("agent", "collector", "both"):
             cfg["role"] = "both"
         return cfg
