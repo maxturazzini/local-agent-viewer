@@ -1179,6 +1179,34 @@
             font-size: 0.65rem; font-weight: 700; margin-left: 4px; cursor: help; }
         .stat-card[title] { cursor: help; }
 
+        /* ===== TOOLS TAB (LAV-85) ===== */
+        .tools-toolbar { display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+            padding: 8px 0 12px; font-size: 0.85rem; color: var(--dim-gray); }
+        .tools-toolbar select { font: inherit; padding: 2px 6px; }
+        .tools-note { font-size: 0.78rem; color: var(--dim-gray); padding: 4px 0 8px; }
+        /* Inline bar: a div + span, no dependency, no canvas. */
+        .tools-bar { display: inline-block; width: 90px; height: 8px; border-radius: 4px;
+            background: var(--light-gray); vertical-align: middle; margin-right: 8px; overflow: hidden; }
+        .tools-bar > i { display: block; height: 100%; }
+        .tools-row { cursor: pointer; }
+        .tools-row:hover { background: var(--light-gray); }
+        .tools-child > td { padding-left: 26px !important; font-size: 0.82rem; color: var(--dim-gray); }
+        .tools-caret { display: inline-block; width: 12px; color: var(--dim-gray); }
+        td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+        .tools-dim { color: var(--dim-gray); }
+        /* Side panel: same show/hide-by-class idiom as .user-drilldown. */
+        .tools-panel { position: fixed; top: 0; right: 0; height: 100vh; width: min(520px, 94vw);
+            background: #fff; box-shadow: -2px 0 16px rgba(0,0,0,0.18); z-index: 60;
+            transform: translateX(100%); transition: transform 0.18s ease; overflow-y: auto; }
+        .tools-panel.active { transform: none; }
+        .tools-panel header { display: flex; align-items: center; justify-content: space-between;
+            gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--light-gray); position: sticky; top: 0; background: #fff; }
+        .tools-panel header button { border: none; background: none; font-size: 1.4rem;
+            line-height: 1; cursor: pointer; color: var(--dim-gray); }
+        #toolsPanelBody { padding: 14px 18px 40px; font-size: 0.85rem; }
+        #toolsPanelBody pre { white-space: pre-wrap; word-break: break-word; background: var(--light-gray);
+            padding: 8px 10px; border-radius: 4px; font-size: 0.76rem; margin: 4px 0 12px; }
+
         /* ===== RESPONSIVE ===== */
         @media (max-width: 768px) {
             body { padding: 12px; }
@@ -1507,41 +1535,96 @@
         </div>
     </div>
 
-    <!-- ===== TOOLS TAB (merged Skills + Subagents + MCP) ===== -->
+    <!-- ===== TOOLS TAB (LAV-85 — reliability first) ===== -->
     <div id="tools" class="tab-content">
-        <div class="chart-container">
-            <div class="chart-title">Skills</div>
-            <div class="chart-row" style="margin-bottom: 0;">
-                <div>
-                    <canvas id="skillsBarChart"></canvas>
+        <div class="loading tools-loading">Loading tools…</div>
+        <div class="tools-content" style="display:none">
+
+            <!-- A — KPI strip -->
+            <div class="stats-grid" id="toolsKpis"></div>
+
+            <!-- C — one mix chart replaces the old six canvases -->
+            <div class="chart-container">
+                <div class="chart-title">Tool mix</div>
+                <canvas id="toolsMixChart"></canvas>
+            </div>
+
+            <!-- B — reliability leaderboard -->
+            <div class="table-container">
+                <div class="timeline-header">
+                    <div class="chart-title">Where tools fail
+                        <span class="badge badge-token" id="toolsMeasuredBadge"></span>
+                        <span class="dv-help" id="toolsRateHelp">?</span>
+                    </div>
+                    <div class="granularity-selector" id="toolsFamilyFilter"></div>
                 </div>
-                <div>
-                    <canvas id="skillsPieChart"></canvas>
+                <div class="tools-toolbar">
+                    <label>min measured
+                        <select id="toolsMinMeasured">
+                            <option value="10">10</option>
+                            <option value="50">50</option>
+                            <option value="100" selected>100</option>
+                            <option value="500">500</option>
+                            <option value="1000">1000</option>
+                        </select>
+                    </label>
+                    <label class="dv-toggle">
+                        <input type="checkbox" id="toolsCountNeverExec">
+                        <span>count never-executed as errors</span>
+                        <span class="dv-help" id="toolsNeverHelp">?</span>
+                    </label>
+                    <span class="tools-note" id="toolsUnclassifiedNote"></span>
                 </div>
+                <table>
+                    <thead><tr>
+                        <th>tool</th>
+                        <th class="num">calls</th>
+                        <th class="num">measured</th>
+                        <th class="num">errors</th>
+                        <th class="num">error rate</th>
+                        <th class="num">last error</th>
+                    </tr></thead>
+                    <tbody id="toolsLeaderboard"></tbody>
+                </table>
+            </div>
+
+            <!-- D — per family -->
+            <div class="chart-container">
+                <div class="timeline-header">
+                    <div class="chart-title">MCP &amp; external tools</div>
+                    <div class="granularity-selector" id="toolsMcpTabs">
+                        <button class="granularity-btn active" data-mcpkind="servers">Real MCP servers</button>
+                        <button class="granularity-btn" data-mcpkind="builtin_host">Built-in host tools</button>
+                    </div>
+                </div>
+                <div class="tools-note" id="toolsMcpNote"></div>
+                <table><tbody id="toolsMcpTable"></tbody></table>
+            </div>
+
+            <div class="chart-container">
+                <div class="chart-title">Bash — click a command to see why it fails</div>
+                <table><tbody id="toolsBashTable"></tbody></table>
+            </div>
+
+            <div class="chart-container">
+                <div class="chart-title">Subagents</div>
+                <div class="tools-note" id="toolsSubagentNote"></div>
+                <table><tbody id="toolsSubagentTable"></tbody></table>
+            </div>
+
+            <div class="chart-container">
+                <div class="chart-title">Skills</div>
+                <table><tbody id="toolsSkillTable"></tbody></table>
             </div>
         </div>
-        <div class="chart-container">
-            <div class="chart-title">Subagents</div>
-            <div class="chart-row" style="margin-bottom: 0;">
-                <div>
-                    <canvas id="subagentsBarChart"></canvas>
-                </div>
-                <div>
-                    <canvas id="subagentsPieChart"></canvas>
-                </div>
-            </div>
-        </div>
-        <div class="chart-container">
-            <div class="chart-title">MCP Tools</div>
-            <div class="chart-row" style="margin-bottom: 0;">
-                <div>
-                    <canvas id="mcpServerChart"></canvas>
-                </div>
-                <div>
-                    <canvas id="mcpToolsChart"></canvas>
-                </div>
-            </div>
-        </div>
+
+        <aside class="tools-panel" id="toolsPanel">
+            <header>
+                <strong id="toolsPanelTitle"></strong>
+                <button id="toolsPanelClose" aria-label="Close">×</button>
+            </header>
+            <div id="toolsPanelBody"></div>
+        </aside>
     </div>
 
     <!-- ===== TIMELINE TAB ===== -->
@@ -2122,6 +2205,10 @@
     });
 
     function onFiltersChanged() {
+        // LAV-85: the single funnel for all four filters and every date preset,
+        // so this is the only place the Tools cache has to be invalidated.
+        toolsState.data = null;
+        toolsState.drill = {};
         loadDashboardData();
     }
 
@@ -2413,12 +2500,14 @@
         if (tabId === 'kb') { loadKBStats(); return; }
         if (tabId === 'costintel') { renderCostIntelligence(); return; }
         if (tabId === 'dayview') { initDayView(); return; }
+        // LAV-85: Tools has its own endpoint, so it must be reached BEFORE the
+        // `state.data` guard — it no longer depends on /api/data at all.
+        if (tabId === 'tools') { renderTools(); return; }
         if (!state.data) return;
         switch (tabId) {
             case 'overview': renderOverview(); break;
             case 'tokens': renderTokens(); break;
             case 'files': renderFiles(); break;
-            case 'tools': renderTools(); break;
             case 'timeline': renderTimeline(); break;
             case 'users': renderUsers(); break;
         }
@@ -3295,153 +3384,450 @@
     }
 
     // ===== TOOLS TAB =====
-    function renderTools() {
-        const d = state.data;
+    // ===== TOOLS TAB (LAV-85) =====
+    //
+    // Fed by /api/tools, fetched lazily on tab activation — NOT by /api/data,
+    // which is awaited before any tab paints. One fetch per filter set; the
+    // min-measured threshold, the family filter, the sort and the
+    // never-executed toggle are pure client-side re-renders of the same rows
+    // (the payload is ~600 groups, tens of KB), so none of them refetches.
+    const toolsState = {
+        data: null, key: null, inflight: null,
+        family: 'all', minMeasured: 100, countNeverExec: false,
+        sort: { col: 'error_rate', dir: 'desc' },
+        mcpKind: 'servers',
+        expanded: new Set(), drill: {}, wired: false
+    };
 
-        // Skills
-        destroyChart('skillsBar');
-        destroyChart('skillsPie');
-        const skills = (d.skills || {}).top || [];
-        if (skills.length > 0) {
-            const topSkills = skills.slice(0, 10);
-            state.charts.skillsBar = new Chart(
-                document.getElementById('skillsBarChart').getContext('2d'),
-                {
-                    type: 'bar',
-                    data: {
-                        labels: topSkills.map(s => s.skill_name),
-                        datasets: [{
-                            label: 'Usage',
-                            data: topSkills.map(s => s.count),
-                            backgroundColor: topSkills.map((_, i) => brandColor(i)),
-                            borderRadius: 6
-                        }]
-                    },
-                    options: {
-                        indexAxis: 'y',
-                        responsive: true,
-                        plugins: { legend: { display: false } }
-                    }
-                }
-            );
+    const TOOL_FAMILY_LABELS = {
+        all: 'All', file: 'Files', bash: 'Bash', search: 'Search',
+        mcp: 'MCP', builtin_host: 'Built-in', skill: 'Skills', subagent: 'Subagents'
+    };
 
-            state.charts.skillsPie = new Chart(
-                document.getElementById('skillsPieChart').getContext('2d'),
-                {
-                    type: 'doughnut',
-                    data: {
-                        labels: topSkills.map(s => s.skill_name),
-                        datasets: [{
-                            data: topSkills.map(s => s.count),
-                            backgroundColor: topSkills.map((_, i) => brandColor(i))
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        plugins: { legend: { position: 'bottom' } }
-                    }
-                }
-            );
+    // The rule the whole ticket rests on, in one sentence, wherever a rate is shown.
+    const MEASURED_HELP =
+        'error rate = errors / MEASURED. `measured` counts only calls whose tool_result was '
+        + 'actually observed. It is never COUNT(*): a NULL is_error means no result was ever '
+        + 'seen, not success.';
+    const NEVER_EXEC_HELP =
+        'A quarter of "errors" never ran: permission denied, a cancelled sibling call, an '
+        + 'interruption, or a malformed call the harness rejected. A call that never ran can '
+        + 'neither succeed nor fail, so by default it leaves BOTH sides of the rate. Tick this '
+        + 'to count them as failures instead. Families with no error_text show "—": unknown, not zero.';
+
+    // This surface renders shell commands and raw transcript error text, which
+    // contain <, > and & as a matter of course. The older render functions
+    // interpolate raw; nothing new here does.
+    function escHtml(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function pct(v) { return v == null ? '—' : (v * 100).toFixed(2).replace('.', ',') + '%'; }
+
+    // Colour ramp for an error rate: green -> amber -> red. Never colour a
+    // null; "not measured" has no colour on this scale.
+    function rateColor(v) {
+        if (v == null) return 'var(--light-gray)';
+        if (v >= 0.20) return '#FF4C53';
+        if (v >= 0.08) return '#FFA24C';
+        return '#3BA55D';
+    }
+
+    function rateBar(v) {
+        if (v == null) return '<span class="tools-dim">—</span>';
+        const w = Math.max(2, Math.min(100, v * 100));
+        return `<span class="tools-bar"><i style="width:${w}%;background:${rateColor(v)}"></i></span>${pct(v)}`;
+    }
+
+    // The rate a row should display, honouring the toggle. Returns null when
+    // unknowable — never 0, which would read as "no errors".
+    function rowRate(r) {
+        if (toolsState.countNeverExec) return r.error_rate;
+        return r.real_error_rate != null ? r.real_error_rate : r.error_rate;
+    }
+    function rowErrors(r) {
+        if (toolsState.countNeverExec) return r.errors;
+        return r.errors_executed != null ? r.errors_executed : r.errors;
+    }
+
+    function shortDate(ts) {
+        if (!ts) return '—';
+        return String(ts).slice(0, 10);
+    }
+
+    async function renderTools() {
+        const key = buildQueryParams();
+        if (toolsState.key !== key) {
+            toolsState.data = null; toolsState.drill = {}; toolsState.key = key;
         }
-
-        // Subagents
-        destroyChart('subagentsBar');
-        destroyChart('subagentsPie');
-        const subagents = (d.subagents || {}).top || [];
-        if (subagents.length > 0) {
-            const topSubagents = subagents.slice(0, 10);
-            state.charts.subagentsBar = new Chart(
-                document.getElementById('subagentsBarChart').getContext('2d'),
-                {
-                    type: 'bar',
-                    data: {
-                        labels: topSubagents.map(s => s.subagent_type),
-                        datasets: [{
-                            label: 'Invocations',
-                            data: topSubagents.map(s => s.count),
-                            backgroundColor: topSubagents.map((_, i) => brandColor(i)),
-                            borderRadius: 6
-                        }]
-                    },
-                    options: {
-                        indexAxis: 'y',
-                        responsive: true,
-                        plugins: { legend: { display: false } }
-                    }
+        const loadingEl = document.querySelector('#tools .tools-loading');
+        const contentEl = document.querySelector('#tools .tools-content');
+        if (!toolsState.data) {
+            loadingEl.style.display = '';
+            contentEl.style.display = 'none';
+            try {
+                if (!toolsState.inflight) {
+                    toolsState.inflight = apiFetch('/api/tools');
                 }
-            );
-
-            state.charts.subagentsPie = new Chart(
-                document.getElementById('subagentsPieChart').getContext('2d'),
-                {
-                    type: 'doughnut',
-                    data: {
-                        labels: topSubagents.map(s => s.subagent_type),
-                        datasets: [{
-                            data: topSubagents.map(s => s.count),
-                            backgroundColor: topSubagents.map((_, i) => brandColor(i))
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        plugins: { legend: { position: 'bottom' } }
-                    }
-                }
-            );
+                toolsState.data = await toolsState.inflight;
+            } catch (e) {
+                loadingEl.textContent = 'Could not load tools data.';
+                return;
+            } finally {
+                toolsState.inflight = null;
+            }
         }
+        loadingEl.style.display = 'none';
+        contentEl.style.display = '';
 
-        // MCP tools
-        destroyChart('mcpServer');
-        destroyChart('mcpTools');
-        const mcp = d.mcp || {};
-        const mcpServers = mcp.by_server || [];
-        if (mcpServers.length > 0) {
-            state.charts.mcpServer = new Chart(
-                document.getElementById('mcpServerChart').getContext('2d'),
-                {
-                    type: 'bar',
-                    data: {
-                        labels: mcpServers.map(s => s.server_name),
-                        datasets: [{
-                            label: 'Calls',
-                            data: mcpServers.map(s => s.count),
-                            backgroundColor: mcpServers.map((_, i) => brandColor(i)),
-                            borderRadius: 6
-                        }]
-                    },
-                    options: {
-                        indexAxis: 'y',
-                        responsive: true,
-                        plugins: { legend: { display: false } }
+        toolsWire();
+        renderToolsKpis();
+        renderToolsMix();
+        renderToolsLeaderboard();
+        renderToolsMcp();
+        renderToolsBash();
+        renderToolsSubagents();
+        renderToolsSkills();
+    }
+
+    function toolsWire() {
+        if (toolsState.wired) return;
+        toolsState.wired = true;
+
+        const fam = document.getElementById('toolsFamilyFilter');
+        fam.innerHTML = Object.keys(TOOL_FAMILY_LABELS).map((k, i) =>
+            `<button class="granularity-btn${i === 0 ? ' active' : ''}" data-family="${k}">${TOOL_FAMILY_LABELS[k]}</button>`
+        ).join('');
+        fam.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-family]');
+            if (!btn) return;
+            fam.querySelectorAll('.granularity-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            toolsState.family = btn.dataset.family;
+            renderToolsLeaderboard();
+        });
+
+        document.getElementById('toolsMinMeasured').addEventListener('change', (e) => {
+            toolsState.minMeasured = parseInt(e.target.value, 10) || 0;
+            renderToolsLeaderboard();
+        });
+        document.getElementById('toolsCountNeverExec').addEventListener('change', (e) => {
+            toolsState.countNeverExec = e.target.checked;
+            renderToolsLeaderboard();
+        });
+        document.getElementById('toolsRateHelp').title = MEASURED_HELP;
+        document.getElementById('toolsNeverHelp').title = NEVER_EXEC_HELP;
+
+        document.getElementById('toolsMcpTabs').addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-mcpkind]');
+            if (!btn) return;
+            document.querySelectorAll('#toolsMcpTabs .granularity-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            toolsState.mcpKind = btn.dataset.mcpkind;
+            renderToolsMcp();
+        });
+
+        document.getElementById('toolsLeaderboard').addEventListener('click', (e) => {
+            const tr = e.target.closest('tr[data-family]');
+            if (!tr) return;
+            openToolsPanel(tr.dataset.family, tr.dataset.name);
+        });
+        document.getElementById('toolsMcpTable').addEventListener('click', (e) => {
+            const tr = e.target.closest('tr[data-server]');
+            if (!tr) return;
+            const s = tr.dataset.server;
+            if (toolsState.expanded.has(s)) toolsState.expanded.delete(s);
+            else toolsState.expanded.add(s);
+            renderToolsMcp();
+        });
+        document.getElementById('toolsBashTable').addEventListener('click', (e) => {
+            const tr = e.target.closest('tr[data-cmd]');
+            if (!tr) return;
+            toggleBashDrill(tr.dataset.cmd);
+        });
+        document.getElementById('toolsPanelClose').addEventListener('click', closeToolsPanel);
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeToolsPanel();
+        });
+    }
+
+    // ---- Block A: KPI strip ----
+    function renderToolsKpis() {
+        const t = toolsState.data.totals || {};
+        const cards = [
+            { label: 'tool calls', value: formatNumber(t.calls || 0), title: 'Every recorded tool call across the six tool tables.' },
+            {
+                label: 'error rate (real)', value: pct(t.real_error_rate),
+                title: 'Errors that actually ran and failed, over calls that ran and were measured. ' + NEVER_EXEC_HELP
+            },
+            {
+                label: 'never executed', value: formatNumber(t.never_executed || 0),
+                title: 'Calls flagged as errors that never ran — denied, cancelled sibling, interrupted, rejected.'
+            },
+            {
+                label: 'measured', value: pct(t.measured_coverage),
+                title: MEASURED_HELP
+            }
+        ];
+        document.getElementById('toolsKpis').innerHTML = cards.map(c => `
+            <div class="stat-card" title="${escHtml(c.title)}">
+                <div class="stat-value">${c.value}</div>
+                <div class="stat-label">${escHtml(c.label)}</div>
+            </div>`).join('');
+
+        const badge = document.getElementById('toolsMeasuredBadge');
+        badge.textContent = `measured ${pct(t.measured_coverage)}`;
+        badge.title = MEASURED_HELP;
+
+        const note = document.getElementById('toolsUnclassifiedNote');
+        const unc = t.errors_unclassified || 0;
+        note.textContent = unc
+            ? `${formatNumber(unc)} errors carry no text yet — run "lav backfill tool-outcomes" to classify them.`
+            : '';
+    }
+
+    // ---- Block C: one mix chart, was six canvases ----
+    function renderToolsMix() {
+        destroyChart('toolsMix');
+        const mix = toolsState.data.mix || [];
+        if (!mix.length) return;
+        state.charts.toolsMix = new Chart(
+            document.getElementById('toolsMixChart').getContext('2d'),
+            {
+                type: 'bar',
+                data: {
+                    labels: mix.map(m => TOOL_FAMILY_LABELS[m.family] || m.family),
+                    datasets: [{
+                        data: mix.map(m => m.calls),
+                        backgroundColor: mix.map(m => rateColor(m.error_rate)),
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                afterLabel: (ctx) => {
+                                    const m = mix[ctx.dataIndex];
+                                    if (m.error_rate == null) return 'error rate: — (no outcome data)';
+                                    return [
+                                        `error rate: ${pct(m.error_rate)}`,
+                                        `measured: ${formatNumber(m.measured || 0)}`,
+                                        `never executed: ${m.never_executed == null ? '—' : formatNumber(m.never_executed)}`
+                                    ];
+                                }
+                            }
+                        }
                     }
                 }
-            );
-        }
+            }
+        );
+    }
 
-        const mcpTools = mcp.top_tools || [];
-        if (mcpTools.length > 0) {
-            const topTools = mcpTools.slice(0, 10);
-            state.charts.mcpTools = new Chart(
-                document.getElementById('mcpToolsChart').getContext('2d'),
-                {
-                    type: 'bar',
-                    data: {
-                        labels: topTools.map(t => t.tool_name),
-                        datasets: [{
-                            label: 'Calls',
-                            data: topTools.map(t => t.count),
-                            backgroundColor: topTools.map((_, i) => brandColor(i)),
-                            borderRadius: 6
-                        }]
-                    },
-                    options: {
-                        indexAxis: 'y',
-                        responsive: true,
-                        plugins: { legend: { display: false } }
-                    }
-                }
-            );
+    // ---- Block B: reliability leaderboard ----
+    function renderToolsLeaderboard() {
+        const all = (toolsState.data.leaderboard || {}).rows || [];
+        let rows = all.filter(r => (r.measured || 0) >= toolsState.minMeasured);
+        if (toolsState.family !== 'all') rows = rows.filter(r => r.family === toolsState.family);
+
+        // Nulls ALWAYS last: a null rate means "not measured" and must never
+        // sort as 0 — the same rule _outcome_agg enforces server-side.
+        rows = rows.slice().sort((a, b) => {
+            const av = rowRate(a), bv = rowRate(b);
+            if (av == null && bv == null) return b.calls - a.calls;
+            if (av == null) return 1;
+            if (bv == null) return -1;
+            return bv - av || b.calls - a.calls;
+        });
+
+        const tbody = document.getElementById('toolsLeaderboard');
+        if (!rows.length) {
+            tbody.innerHTML = '<tr><td colspan="6" class="tools-dim">No tool reaches this threshold for the current filters.</td></tr>';
+            return;
         }
+        tbody.innerHTML = rows.map(r => {
+            const ne = r.never_executed;
+            const neNote = ne == null ? ' <span class="tools-dim" title="This table has no error_text, so we cannot tell">·&nbsp;?</span>'
+                : (ne ? ` <span class="tools-dim">· ${formatNumber(ne)} never ran</span>` : '');
+            return `<tr class="tools-row" data-family="${escHtml(r.family)}" data-name="${escHtml(r.name)}">
+                <td><span class="badge">${escHtml(TOOL_FAMILY_LABELS[r.family] || r.family)}</span> ${escHtml(r.name)}${neNote}</td>
+                <td class="num">${formatNumber(r.calls)}</td>
+                <td class="num">${formatNumber(r.measured || 0)}</td>
+                <td class="num">${formatNumber(rowErrors(r) || 0)}</td>
+                <td class="num">${rateBar(rowRate(r))}</td>
+                <td class="num tools-dim">${shortDate(r.last_error_at)}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    // ---- Block D: MCP hierarchy ----
+    function renderToolsMcp() {
+        const bucket = (toolsState.data.mcp || {})[toolsState.mcpKind] || {};
+        const servers = bucket.servers || [];
+        const note = document.getElementById('toolsMcpNote');
+        note.textContent = toolsState.mcpKind === 'builtin_host'
+            ? 'Built-in tools of ChatGPT and claude.ai, imported from their exports. They do not go through MCP, and most carry no tool_result — volume yes, reliability no. Never summed with the MCP servers.'
+            : 'User-configured MCP servers only. Click a server to expand its tools.';
+
+        const rows = [];
+        servers.forEach(s => {
+            const open = toolsState.expanded.has(s.server);
+            rows.push(`<tr class="tools-row" data-server="${escHtml(s.server)}">
+                <td><span class="tools-caret">${open ? '▾' : '▸'}</span> ${escHtml(s.server)}</td>
+                <td class="num">${formatNumber(s.calls)}</td>
+                <td class="num">${formatNumber(s.measured || 0)}</td>
+                <td class="num">${rateBar(s.error_rate)}</td>
+            </tr>`);
+            if (open) {
+                (s.tools || []).forEach(t => {
+                    rows.push(`<tr class="tools-child">
+                        <td>${escHtml(t.tool)}</td>
+                        <td class="num">${formatNumber(t.calls)}</td>
+                        <td class="num">${formatNumber(t.measured || 0)}</td>
+                        <td class="num">${rateBar(t.error_rate)}</td>
+                    </tr>`);
+                });
+            }
+        });
+        const other = bucket.other;
+        if (other) {
+            rows.push(`<tr><td class="tools-dim">Others (${formatNumber(other.server_count)} servers)</td>
+                <td class="num tools-dim">${formatNumber(other.calls)}</td>
+                <td class="num tools-dim">${formatNumber(other.measured || 0)}</td>
+                <td class="num">${rateBar(other.error_rate)}</td></tr>`);
+        }
+        document.getElementById('toolsMcpTable').innerHTML =
+            rows.join('') || '<tr><td class="tools-dim">Nothing here for the current filters.</td></tr>';
+    }
+
+    // ---- Block D: bash, two levels ----
+    function renderToolsBash() {
+        const rows = ((toolsState.data.bash || {}).by_type || []);
+        const out = [];
+        rows.forEach(r => {
+            const cmd = r.cmd_type;
+            const isRollup = cmd === 'other';
+            const open = !isRollup && toolsState.expanded.has('bash:' + cmd);
+            out.push(`<tr class="${isRollup ? '' : 'tools-row'}"${isRollup ? '' : ` data-cmd="${escHtml(cmd)}"`}>
+                <td>${isRollup ? '<span class="tools-dim">' : `<span class="tools-caret">${open ? '▾' : '▸'}</span> `}${escHtml(cmd)}${isRollup ? ' (roll-up)</span>' : ''}</td>
+                <td class="num">${formatNumber(r.count)}</td>
+                <td class="num">${formatNumber(r.measured || 0)}</td>
+                <td class="num">${rateBar(r.error_rate)}</td>
+            </tr>`);
+            if (open) {
+                const d = toolsState.drill[cmd];
+                out.push(`<tr class="tools-child"><td colspan="4">${d === 'loading'
+                    ? 'Loading…' : (d ? bashDrillHtml(d) : 'Loading…')}</td></tr>`);
+            }
+        });
+        document.getElementById('toolsBashTable').innerHTML =
+            out.join('') || '<tr><td class="tools-dim">No bash commands for the current filters.</td></tr>';
+    }
+
+    function bashDrillHtml(d) {
+        const cls = (d.error_classes || []).map(c =>
+            `<li>${escHtml(c.class)}: ${formatNumber(c.n)}</li>`).join('');
+        const ex = (d.exit_codes || []).slice(0, 6).map(c =>
+            `<li>${c.exit_code == null ? 'no exit code' : 'exit ' + c.exit_code}: ${formatNumber(c.n)}</li>`).join('');
+        const va = (d.variants || []).slice(0, 8).map(v =>
+            `<li><code>${escHtml(v.command)}</code> — ${formatNumber(v.n)}${v.errors ? `, ${formatNumber(v.errors)} err` : ''}</li>`).join('');
+        const rf = (d.recent_failures || []).slice(0, 6).map(r =>
+            `<li>${escHtml(shortDate(r.timestamp))} <a href="/interactions.html?session=${encodeURIComponent(r.session_id)}" target="_blank">${escHtml(r.project || '')}</a>
+              <code>${escHtml((r.error_text || '').slice(0, 120))}</code></li>`).join('');
+        return `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px">
+            <div><strong>error classes</strong><ul>${cls || '<li class="tools-dim">none</li>'}</ul></div>
+            <div><strong>exit codes</strong><ul>${ex || '<li class="tools-dim">none</li>'}</ul></div>
+            <div><strong>most frequent variants</strong><ul>${va || '<li class="tools-dim">none</li>'}</ul></div>
+            <div><strong>recent failures</strong><ul>${rf || '<li class="tools-dim">none</li>'}</ul></div>
+        </div>`;
+    }
+
+    async function toggleBashDrill(cmd) {
+        const key = 'bash:' + cmd;
+        if (toolsState.expanded.has(key)) {
+            toolsState.expanded.delete(key);
+            renderToolsBash();
+            return;
+        }
+        toolsState.expanded.add(key);
+        if (!toolsState.drill[cmd]) {
+            toolsState.drill[cmd] = 'loading';
+            renderToolsBash();
+            try {
+                toolsState.drill[cmd] = await apiFetch('/api/tools/bash?cmd=' + encodeURIComponent(cmd));
+            } catch (e) {
+                delete toolsState.drill[cmd];
+            }
+        }
+        renderToolsBash();
+    }
+
+    // ---- Block D: subagents, two series ----
+    function renderToolsSubagents() {
+        const sa = toolsState.data.subagents || {};
+        const bySpawn = sa.by_spawn_tool || [];
+        const note = document.getElementById('toolsSubagentNote');
+        const total = bySpawn.reduce((n, r) => n + r.count, 0);
+        const spawnTxt = bySpawn.map(r => `${escHtml(r.spawn_tool)} ${formatNumber(r.count)}`).join(' · ');
+        note.innerHTML = total
+            ? `Task() / Agent() / Workflow() invocations recorded in the parent transcript: ${spawnTxt}. `
+              + 'The child sessions they spawned are separate conversations with their own tokens and cost '
+              + '(session ids containing <code>::agent-</code>).'
+            : 'No subagent invocations for the current filters.';
+        document.getElementById('toolsSubagentTable').innerHTML =
+            (sa.top || []).map(r => `<tr>
+                <td>${escHtml(r.subagent_type)}</td>
+                <td class="num">${formatNumber(r.count)}</td>
+                <td class="num">${formatNumber(r.measured || 0)}</td>
+                <td class="num">${rateBar(r.error_rate)}</td>
+            </tr>`).join('') || '<tr><td class="tools-dim">—</td></tr>';
+    }
+
+    function renderToolsSkills() {
+        const rows = (toolsState.data.skills || {}).top || [];
+        document.getElementById('toolsSkillTable').innerHTML =
+            rows.map(r => `<tr>
+                <td>${escHtml(r.skill_name)}</td>
+                <td class="num">${formatNumber(r.count)}</td>
+                <td class="num">${formatNumber(r.measured || 0)}</td>
+                <td class="num">${rateBar(r.error_rate)}</td>
+            </tr>`).join('') || '<tr><td class="tools-dim">No skills for the current filters.</td></tr>';
+    }
+
+    // ---- Side panel: what a tool says when it fails ----
+    async function openToolsPanel(family, name) {
+        const panel = document.getElementById('toolsPanel');
+        document.getElementById('toolsPanelTitle').textContent = `${family} · ${name}`;
+        document.getElementById('toolsPanelBody').innerHTML = '<div class="loading">Loading…</div>';
+        panel.classList.add('active');
+        let d;
+        try {
+            d = await apiFetch('/api/tools/errors?family=' + encodeURIComponent(family)
+                + '&name=' + encodeURIComponent(name));
+        } catch (e) {
+            document.getElementById('toolsPanelBody').innerHTML = '<div class="empty-state">Could not load samples.</div>';
+            return;
+        }
+        const texts = (d.top_texts || []).map(t =>
+            `<div><strong>${escHtml(t.class || '')}</strong> · ${formatNumber(t.n)}×
+             <pre>${escHtml(t.text)}</pre></div>`).join('');
+        const recent = (d.recent || []).map(r =>
+            `<li>${escHtml(shortDate(r.timestamp))} —
+             <a href="/interactions.html?session=${encodeURIComponent(r.session_id)}" target="_blank">${escHtml(r.project || r.session_id)}</a></li>`).join('');
+        document.getElementById('toolsPanelBody').innerHTML =
+            (d.has_error_text
+                ? (texts || '<div class="tools-dim">No error text recorded.</div>')
+                : '<div class="tools-note">This table stores no error text, so only the failing sessions can be listed.</div>')
+            + `<h4>Recent failures</h4><ul>${recent || '<li class="tools-dim">none</li>'}</ul>`;
+    }
+
+    function closeToolsPanel() {
+        document.getElementById('toolsPanel').classList.remove('active');
     }
 
     // ===== TIMELINE TAB =====
