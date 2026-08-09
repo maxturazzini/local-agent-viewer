@@ -512,11 +512,28 @@ class APIHandler(SimpleHTTPRequestHandler):
         print(f"[server] denied {self.client_address[0]} (not in allowed_clients)")
         self.send_error(403, "Client address not allowed")
 
-    def do_GET(self):
+    def parse_request(self):
+        """Single choke point for the allowlist — every method, no exceptions.
+
+        Gating each do_* individually is whack-a-mole and it already failed
+        once: do_HEAD is inherited from SimpleHTTPRequestHandler and do_DELETE
+        (which drops a session from the vector store) and do_OPTIONS are defined
+        below — all three bypassed a per-method check. The next person to add
+        do_PATCH would have reintroduced the same hole.
+
+        BaseHTTPRequestHandler.handle_one_request() calls this BEFORE dispatch
+        and, on False, exits without invoking any handler ("An error code has
+        been sent, just exit"). Headers are not written yet, so send_error()
+        here produces a well-formed 403.
+        """
+        if not super().parse_request():
+            return False
         if not self._client_allowed():
             self._reject_client()
-            return
+            return False
+        return True
 
+    def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
         params = parse_qs(parsed.query)
@@ -1240,12 +1257,7 @@ class APIHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         """Handle POST requests."""
-        # Same gate as do_GET, and it matters MORE here: /api/sync and
-        # /api/kb/index are unauthenticated writes.
-        if not self._client_allowed():
-            self._reject_client()
-            return
-
+        # Allowlist is enforced in parse_request(), before any do_* runs.
         parsed = urlparse(self.path)
         path = parsed.path
 
