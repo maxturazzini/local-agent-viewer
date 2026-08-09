@@ -99,6 +99,7 @@ CHILD_TABLES: List[Tuple[str, List[str], bool]] = [
         "timestamp", "session_id", "project_id", "user_id", "host_id",
         "tool_name", "server_name", "cwd", "git_branch",
         "tool_call_id", "is_error", "duration_ms", "error_text",
+        "kind",
     ], True),
 ]
 

@@ -150,6 +150,104 @@ _DURATION_SQL = (
 
 
 # ===========================================================================
+# TOOL KIND (LAV-85)
+# ===========================================================================
+#
+# mcp_tool_calls is not "MCP calls". It is the catch-all for every tool call that
+# has no dedicated table, and the two export parsers pour the HOST'S OWN built-in
+# tools into it: chatgpt.py hardcodes server_name='chatgpt' (web.run, python,
+# myfiles_browser, dalle.text2im, ...), claude_ai.py writes the integration name
+# or the literal 'claude_ai' (artifacts, repl, bash_tool, ...). Measured on prod:
+# 78.056 + 6.564 + 325 rows of the 204.042 — 38% of the table — none of which is
+# MCP, and none of which carries any outcome data (those exports have no
+# per-call tool_result linkable to the row, so is_error stays NULL by design).
+#
+# `kind` separates the two so the dashboard can stop summing them.
+
+TOOL_KIND_MCP = "mcp"
+TOOL_KIND_BUILTIN_HOST = "builtin_host"
+
+# claude.ai first-party tools. THIS LIST IS DELIBERATELY CONSERVATIVE, and the
+# asymmetry is the point: a connector wrongly marked builtin_host disappears from
+# the MCP view (a silent lie), while a builtin wrongly left as `mcp` merely shows
+# up in the MCP list with measured = 0, which the `measured` badge already
+# explains and a reader can spot. When in doubt, leave it out.
+#
+# Membership was decided by evidence, not by the name looking Anthropic-ish: a
+# tool that ALSO appears in the corpus under an explicit integration/server name
+# is a connector tool that merely lost its integration_name on some blocks, and
+# is excluded. That check removed `search_notes` (385 rows) and `read_notes`
+# (107) — both also seen under server_name='mcp-obsidian' — and kept out
+# `search_files`, `fetch`, `perform_web_search`, `image_search` and the `*_v0`
+# family, for which there is no positive evidence either way.
+CLAUDE_AI_BUILTIN_TOOLS = frozenset({
+    "artifacts",
+    "bash_tool",
+    "conversation_search",
+    "create_file",
+    "end_conversation",
+    "launch_extended_search_task",
+    "present_files",
+    "recent_chats",
+    "repl",
+    "str_replace",
+    "view",
+    "web_fetch",
+    "web_search",
+})
+
+# server_name values the claude.ai export uses for its own built-ins: the literal
+# fallback written when a block carries no integration_name, plus Anthropic's
+# first-party fetch tool, which DOES arrive with an integration name.
+_CLAUDE_AI_BUILTIN_SERVERS = frozenset({"claude_ai", "Web Fetch"})
+
+# Session-id prefixes stamped by the two export parsers (chatgpt.py /
+# claude_ai.py). They are the only reliable "which host produced this row"
+# signal available at the row level — server_name is NOT, see tool_kind().
+_CHATGPT_SESSION_PREFIX = "chatgpt:"
+_CLAUDE_AI_SESSION_PREFIX = "claudeai:"
+
+
+def tool_kind(session_id, server_name, tool_name):
+    """Classify one mcp_tool_calls row as TOOL_KIND_MCP or TOOL_KIND_BUILTIN_HOST.
+
+    TOTAL by construction — it never returns '' — so the migration can derive the
+    column for the whole table and leave no row unclassified.
+
+    A whitelist on server_name alone would be WRONG IN BOTH DIRECTIONS, measured:
+
+      - `server_name = 'claude_ai'` is a MIXED bucket. ~1.100 of its rows are real
+        connector calls whose integration_name was absent on that content block
+        (CallWixSiteAPI, playwright_*, jira_*, execute_blender_code, the
+        filesystem server's read_file/write_file/list_directory...).
+      - conversely `claude_ai_Atlassian`, `claude_ai_ms365`, `claude_ai_Lovable`
+        are REAL MCP servers seen from Claude Code (mcp__claude_ai_Atlassian__*,
+        split by jsonl.process_tool_call). `server_name LIKE 'claude_ai%'` would
+        put 1.199 measured Atlassian calls on the wrong side of the wall.
+
+    Hence the rule is conjunctive on (session_id, server_name, tool_name): the
+    session prefix says which host produced the row, and only then does the
+    tool-name whitelist get a vote. A connector that genuinely named one of its
+    tools `web_search` can never be caught, because it would not be in a
+    `claudeai:` session with server_name 'claude_ai'.
+
+    tool_name is normalised with split(':')[-1] because the claude.ai export
+    renders result names as `<integration>:<tool>` ('Control your Mac:osascript',
+    'playwright:playwright_console_logs') and callers may pass either shape.
+    """
+    sid = session_id or ""
+    if sid.startswith(_CHATGPT_SESSION_PREFIX):
+        # The ChatGPT export has no notion of MCP at all: every author.role ==
+        # "tool" message is one of OpenAI's own tools. No whitelist needed.
+        return TOOL_KIND_BUILTIN_HOST
+    if (sid.startswith(_CLAUDE_AI_SESSION_PREFIX)
+            and (server_name or "") in _CLAUDE_AI_BUILTIN_SERVERS
+            and (tool_name or "").split(":")[-1].strip() in CLAUDE_AI_BUILTIN_TOOLS):
+        return TOOL_KIND_BUILTIN_HOST
+    return TOOL_KIND_MCP
+
+
+# ===========================================================================
 # LAZY HELPERS (no circular import)
 # ===========================================================================
 

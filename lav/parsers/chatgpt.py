@@ -348,10 +348,17 @@ def parse_chatgpt_export(
                     msg_ts = epoch_to_iso(msg.get("create_time"))
                     try:
                         conn.execute(
+                            # LAV-85: server_name 'chatgpt' is a synthetic label, not a
+                            # server — these are OpenAI's own built-in tools (web.run,
+                            # python, myfiles_browser, dalle.text2im, file_search...),
+                            # which land here only because mcp_tool_calls is the
+                            # catch-all for tool calls with no dedicated table. kind
+                            # says so explicitly instead of leaving the dashboard to
+                            # infer it from the server name.
                             """INSERT OR IGNORE INTO mcp_tool_calls
                                (timestamp, session_id, project_id, user_id, host_id,
-                                tool_name, server_name, cwd, git_branch)
-                               VALUES (?, ?, ?, ?, ?, ?, 'chatgpt', '', '')""",
+                                tool_name, server_name, cwd, git_branch, kind)
+                               VALUES (?, ?, ?, ?, ?, ?, 'chatgpt', '', '', 'builtin_host')""",
                             (msg_ts or epoch_to_iso(create_time), session_id, project_id,
                              user_id, host_id, tool_name),
                         )

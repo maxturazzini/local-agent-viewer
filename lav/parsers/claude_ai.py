@@ -40,6 +40,7 @@ from lav.parsers.jsonl import (
     upsert_session_source,
     smart_title,
 )
+from lav.tool_outcomes import tool_kind
 
 
 PROJECT_NAME = "claude_ai"
@@ -311,10 +312,17 @@ def parse_claudeai_export(
                         conn.execute(
                             """INSERT OR IGNORE INTO mcp_tool_calls
                                (timestamp, session_id, project_id, user_id, host_id,
-                                tool_name, server_name, cwd, git_branch)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, '', '')""",
+                                tool_name, server_name, cwd, git_branch, kind)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?)""",
+                            # LAV-85: this bucket is MIXED — `artifacts`/`repl`/
+                            # `bash_tool` are Anthropic's own tools, but a connector
+                            # call whose block carried no integration_name lands here
+                            # too (CallWixSiteAPI, playwright_*, jira_*...). Only
+                            # tool_kind() knows the difference; do not shortcut it
+                            # with `'builtin_host' if not integration else 'mcp'`.
                             (tts, session_id, project_id, user_id, host_id,
-                             tname, server),
+                             tname, server,
+                             tool_kind(session_id, server, tname)),
                         )
                         tool_calls_inserted += 1
                     except sqlite3.Error:

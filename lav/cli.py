@@ -625,7 +625,69 @@ def cmd_backfill(args):
     """Dispatch `lav backfill <subcommand>`."""
     if args.backfill_command == "tool-outcomes":
         return cmd_backfill_tool_outcomes(args)
+    if args.backfill_command == "tool-kind":
+        return cmd_backfill_tool_kind(args)
     _die(f"Unknown backfill subcommand '{args.backfill_command}'.")
+
+
+def cmd_backfill_tool_kind(args):
+    """LAV-85: (re)derive mcp_tool_calls.kind on the local DB.
+
+    Normally redundant — _migrate_add_tool_kind() already derives `kind` for every
+    row on every init_db(), i.e. on every parse and every server start, on every
+    node. This command exists for the one case the migration deliberately cannot
+    handle: the migration only ever FILLS BLANKS, so editing
+    tool_outcomes.CLAUDE_AI_BUILTIN_TOOLS has no effect on rows already
+    classified. `--reclassify` blanks the column first, which is the only way to
+    apply an edited whitelist to history.
+    """
+    from lav.parsers.jsonl import init_db, _migrate_add_tool_kind
+    from lav.tool_outcomes import TOOL_KIND_BUILTIN_HOST, TOOL_KIND_MCP
+
+    db_path = Path(args.db) if getattr(args, "db", None) else UNIFIED_DB_PATH
+    if not db_path.exists():
+        _die(f"No database at {db_path}. Run lav-parse first.")
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        if "kind" not in _bf_table_columns(conn, "mcp_tool_calls"):
+            # init_db() would add it, but silently doing schema work under a
+            # command the user asked to *reclassify* would hide a half-migrated DB.
+            _die("mcp_tool_calls.kind does not exist. Run lav-parse (or lav-server) "
+                 "once so init_db() applies the LAV-85 migration, then re-run this.")
+
+        before = dict(conn.execute(
+            "SELECT COALESCE(kind, ''), COUNT(*) FROM mcp_tool_calls GROUP BY 1").fetchall())
+
+        if getattr(args, "reclassify", False):
+            if getattr(args, "dry_run", False):
+                # No cheap way to preview without writing: the classification is a
+                # Python function over 3 columns. Say so instead of pretending.
+                _output({"dry_run": True, "reclassify": True,
+                         "note": "--dry-run with --reclassify reports the current "
+                                 "distribution only; re-run without --dry-run to apply.",
+                         "before": before}, args.format)
+                return
+            conn.execute("UPDATE mcp_tool_calls SET kind = ''")
+            conn.commit()
+
+        _migrate_add_tool_kind(conn)
+
+        after = dict(conn.execute(
+            "SELECT COALESCE(kind, ''), COUNT(*) FROM mcp_tool_calls GROUP BY 1").fetchall())
+    finally:
+        conn.close()
+
+    _output({
+        "db": str(db_path),
+        "reclassify": bool(getattr(args, "reclassify", False)),
+        "before": before,
+        "after": after,
+        # tool_kind() is total, so anything left at '' means the derivation did not
+        # finish — a real failure, not an "unknown" bucket.
+        "unclassified": after.get("", 0),
+        "kinds": [TOOL_KIND_MCP, TOOL_KIND_BUILTIN_HOST],
+    }, args.format)
 
 
 def cmd_backfill_tool_outcomes(args):
@@ -957,6 +1019,28 @@ def build_parser():
                               "(default: 200; 0 = no progress lines)")
     _add_format_arg(p_bf_to)
     p_bf_to.set_defaults(func=cmd_backfill)
+
+    # backfill tool-kind
+    p_bf_tk = bf_sub.add_parser(
+        "tool-kind",
+        help="LAV-85: (re)derive mcp_tool_calls.kind (mcp vs builtin_host)",
+        description="mcp_tool_calls is the catch-all for tool calls with no dedicated "
+                    "table, so it also holds ChatGPT's and claude.ai's own built-in "
+                    "tools. `kind` separates the two. init_db() already derives it for "
+                    "every row on every parse and every server start, so this command is "
+                    "normally redundant — its reason to exist is --reclassify, the only "
+                    "way to apply an edited CLAUDE_AI_BUILTIN_TOOLS whitelist to rows "
+                    "that were already classified. Local DB only: run it on each node.",
+    )
+    p_bf_tk.add_argument("--db", help=f"SQLite DB path (default: {UNIFIED_DB_PATH})")
+    p_bf_tk.add_argument("--reclassify", action="store_true",
+                         help="Blank kind on every row first, then re-derive. Needed after "
+                              "editing the built-in tool whitelist; without it, only rows "
+                              "with no kind yet are touched")
+    p_bf_tk.add_argument("--dry-run", action="store_true",
+                         help="Report the current distribution without writing")
+    _add_format_arg(p_bf_tk)
+    p_bf_tk.set_defaults(func=cmd_backfill)
 
     return parser
 

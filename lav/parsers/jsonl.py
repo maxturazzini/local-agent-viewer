@@ -256,7 +256,14 @@ CREATE TABLE IF NOT EXISTS mcp_tool_calls (
     tool_call_id TEXT DEFAULT '',
     is_error INTEGER,
     duration_ms INTEGER,
-    error_text TEXT DEFAULT ''
+    error_text TEXT DEFAULT '',
+    -- LAV-85: 'mcp' | 'builtin_host'. This table is the catch-all for tool calls
+    -- with no dedicated table, so it also holds ChatGPT's and claude.ai's OWN
+    -- built-in tools (38% of the rows on prod). Derived by tool_outcomes.tool_kind()
+    -- and, for existing rows, by _migrate_add_tool_kind — KEEP THE TWO IN SYNC.
+    -- The empty default is transient: the migration classifies every row, and the
+    -- function is total, so '' must not survive an init_db().
+    kind TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS token_usage (
@@ -350,6 +357,9 @@ CREATE INDEX IF NOT EXISTS idx_int_timestamp ON interactions(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_msg_session ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_msg_timestamp ON messages(timestamp);
 CREATE INDEX IF NOT EXISTS idx_session_sources_source ON session_sources(source);
+
+-- LAV-85: idx_mcp_kind is created in _migrate_add_tool_kind, NOT here — same
+-- reason as idx_bash_cmd_name immediately below.
 
 -- LAV-79: idx_bash_cmd_name is created in _migrate_add_cmd_name, NOT here — for
 -- the same reason as the LAV-78 indexes below: CREATE TABLE IF NOT EXISTS does
@@ -614,6 +624,82 @@ def _migrate_add_cmd_name(conn: sqlite3.Connection):
         print(f"  LAV-79: derived cmd_name for {updated} bash_commands row(s)")
 
 
+def _migrate_add_tool_kind(conn: sqlite3.Connection):
+    """LAV-85: add mcp_tool_calls.kind, index it, and derive it IN PLACE.
+
+    Same shape as _migrate_add_cmd_name. The derivation runs in three passes that
+    together reproduce tool_kind() exactly:
+
+      1. session_id LIKE 'chatgpt:%'  -> builtin_host, in pure SQL. That branch of
+         tool_kind() consults nothing else, so there is no logic to duplicate.
+      2. session_id LIKE 'claudeai:%' -> tool_kind() IN PYTHON, row by row. This is
+         the only branch that needs the whitelist and the `<integration>:<tool>`
+         normalisation, and expressing THAT in SQL means an unreadable
+         rtrim/replace idiom for split(':')[-1] that nobody can review. Calling the
+         real function instead makes drift between migration and parser impossible.
+         The set is small enough that the loop is free: 5.379 rows here, 6.564 on
+         prod, against 204k in the table.
+      3. everything still '' -> mcp. tool_kind() has no third answer.
+
+    Because tool_kind() is TOTAL, pass 3 leaves no unclassified row, so the resume
+    probe on every later init_db() is an empty index seek rather than a scan. That
+    totality is also the contract the dashboard relies on: `kind = ''` on a DB
+    init_db() has touched means the migration FAILED, not "unknown".
+
+    This migration only ever fills blanks. Applying an EDITED whitelist to history
+    needs `lav backfill tool-kind --reclassify`, which resets the column first.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(mcp_tool_calls)").fetchall()}
+    if not cols:
+        return  # table not created yet (SCHEMA runs first — odd, not fatal)
+    if "kind" not in cols:
+        conn.execute("ALTER TABLE mcp_tool_calls ADD COLUMN kind TEXT DEFAULT ''")
+        conn.commit()
+        print("  LAV-85: added mcp_tool_calls.kind")
+
+    # (kind, server_name) and not (kind) alone: every dashboard query that splits
+    # the two worlds then groups by server inside one of them.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mcp_kind ON mcp_tool_calls(kind, server_name)")
+    conn.commit()
+
+    updated = conn.execute(
+        "UPDATE mcp_tool_calls SET kind = ? WHERE kind = '' AND session_id LIKE ?",
+        (tool_outcomes.TOOL_KIND_BUILTIN_HOST,
+         tool_outcomes._CHATGPT_SESSION_PREFIX + "%"),
+    ).rowcount
+    conn.commit()
+
+    # Paged by id: rows that tool_kind() resolves to 'mcp' are written too, so the
+    # candidate set does shrink — but paging keeps the working set bounded on a DB
+    # where the claude.ai corpus is much larger than this one.
+    last_id = 0
+    while True:
+        rows = conn.execute(
+            "SELECT id, session_id, server_name, tool_name FROM mcp_tool_calls "
+            "WHERE kind = '' AND session_id LIKE ? AND id > ? ORDER BY id LIMIT ?",
+            (tool_outcomes._CLAUDE_AI_SESSION_PREFIX + "%", last_id, CMD_NAME_BATCH),
+        ).fetchall()
+        if not rows:
+            break
+        last_id = rows[-1][0]
+        conn.executemany(
+            "UPDATE mcp_tool_calls SET kind = ? WHERE id = ?",
+            [(tool_outcomes.tool_kind(sid, server, tname), row_id)
+             for row_id, sid, server, tname in rows],
+        )
+        conn.commit()
+        updated += len(rows)
+
+    updated += conn.execute(
+        "UPDATE mcp_tool_calls SET kind = ? WHERE kind = ''",
+        (tool_outcomes.TOOL_KIND_MCP,),
+    ).rowcount
+    conn.commit()
+
+    if updated:
+        print(f"  LAV-85: derived kind for {updated} mcp_tool_calls row(s)")
+
+
 def _migrate_conversations_to_interactions(conn: sqlite3.Connection, db_path: Path):
     """Migrate old 'conversations'/'conversation_metadata' tables to 'interactions'/'interaction_metadata'."""
     # Check if old 'conversations' table exists
@@ -693,6 +779,11 @@ def init_db(db_path: Path = UNIFIED_DB_PATH) -> sqlite3.Connection:
         _migrate_add_cmd_name(conn)
     except Exception as e:
         print(f"  cmd_name migration skipped: {e}")
+    # LAV-85: add mcp_tool_calls.kind + index, and derive it for existing rows
+    try:
+        _migrate_add_tool_kind(conn)
+    except Exception as e:
+        print(f"  tool_kind migration skipped: {e}")
     # Migrate conversations -> interactions
     try:
         _migrate_conversations_to_interactions(conn, db_path)
@@ -1774,14 +1865,18 @@ def process_tool_call(tool_call: dict, message: dict, conn: sqlite3.Connection,
             conn.execute(
                 """INSERT INTO mcp_tool_calls
                    (timestamp, session_id, project_id, user_id, host_id, tool_name, server_name, cwd, git_branch,
-                    tool_call_id)
-                   SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    tool_call_id, kind)
+                   SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                    WHERE NOT EXISTS (
                        SELECT 1 FROM mcp_tool_calls
                        WHERE timestamp = ? AND session_id = ? AND project_id = ? AND tool_name = ?
                    )""",
+                # LAV-85: a claude_code row only reaches here via the `mcp__` prefix,
+                # so it is MCP by construction — but go through tool_kind() anyway
+                # rather than hardcoding the literal, so there is exactly one place
+                # that decides what `kind` means.
                 (timestamp, session_id, project_id, user_id, host_id, mcp_tool, server_name, cwd, git_branch,
-                 tool_call_id,
+                 tool_call_id, tool_outcomes.tool_kind(session_id, server_name, mcp_tool),
                  timestamp, session_id, project_id, mcp_tool)
             )
         except sqlite3.Error as e:
@@ -2993,15 +3088,15 @@ def parse_codex_sessions(
                             conn.execute(
                                 """INSERT INTO mcp_tool_calls
                                    (timestamp, session_id, project_id, user_id, host_id, tool_name, server_name, cwd, git_branch,
-                                    tool_call_id)
-                                   SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                                    tool_call_id, kind)
+                                   SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                                    WHERE NOT EXISTS (
                                        SELECT 1 FROM mcp_tool_calls
                                        WHERE timestamp = ? AND session_id = ? AND project_id = ? AND tool_name = ?
                                    )""",
                                 (msg_timestamp, sid_mcp, project_id, user_id, host_id,
                                  tool_name, server_name, session_ctx.get("cwd", ""), session_ctx.get("git_branch", ""),
-                                 call_id,
+                                 call_id, tool_outcomes.tool_kind(sid_mcp, server_name, tool_name),
                                  msg_timestamp, sid_mcp, project_id, tool_name)
                             )
                         except sqlite3.Error as e:
@@ -3899,8 +3994,8 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                 cur = conn.execute("""
                     INSERT INTO mcp_tool_calls
                     (timestamp, session_id, project_id, user_id, host_id, tool_name, server_name, cwd, git_branch,
-                     tool_call_id, is_error, duration_ms, error_text)
-                    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                     tool_call_id, is_error, duration_ms, error_text, kind)
+                    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                     WHERE NOT EXISTS (
                         SELECT 1 FROM mcp_tool_calls
                         WHERE timestamp = ? AND session_id = ? AND project_id = ? AND tool_name = ?
@@ -3911,6 +4006,13 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                     mc.get("cwd", ""), mc.get("git_branch", ""),
                     mc.get("tool_call_id", "") or "", mc.get("is_error"), mc.get("duration_ms"),
                     mc.get("error_text", "") or "",
+                    # LAV-85: RECOMPUTED locally, never taken from the payload — same
+                    # rule LAV-79 applies to cmd_name. kind is a pure function of three
+                    # columns that travel anyway, so deriving it here makes agent/
+                    # collector version skew a non-issue in both directions: an agent on
+                    # older code ships no kind, and a collector on older code ignores it.
+                    tool_outcomes.tool_kind(session_id, mc.get("server_name", ""),
+                                            mc.get("tool_name", "")),
                     mc.get("timestamp", ""), session_id, project_id, mc.get("tool_name", ""),
                 ))
                 stats["mcp_tool_calls"] += 1
