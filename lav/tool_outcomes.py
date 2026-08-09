@@ -68,11 +68,17 @@ TOOL_TABLES = (
 # NO NOT NULL anywhere: SQLite forbids ADD COLUMN NOT NULL without a constant
 # default, and the parsers use INSERT OR IGNORE, where a constraint violation
 # would SILENTLY DISCARD THE ROW.
+# LAV-85 added error_text to the four thin tables. It is not cosmetic: without
+# it those tables can report THAT a call failed but not HOW, so the error
+# taxonomy (queries._error_class_expr) cannot tell a real failure from a call
+# that never ran — a denied permission or a cancelled sibling. `never_executed`
+# stays NULL = "unknown" for any table without it, never 0.
 OUTCOME_COLUMNS = {
     "file_operations": [
         ("tool_call_id", "TEXT DEFAULT ''"),
         ("is_error", "INTEGER"),
         ("duration_ms", "INTEGER"),
+        ("error_text", "TEXT DEFAULT ''"),
     ],
     "bash_commands": [
         ("tool_call_id", "TEXT DEFAULT ''"),
@@ -85,16 +91,19 @@ OUTCOME_COLUMNS = {
         ("tool_call_id", "TEXT DEFAULT ''"),
         ("is_error", "INTEGER"),
         ("duration_ms", "INTEGER"),
+        ("error_text", "TEXT DEFAULT ''"),
     ],
     "skill_invocations": [
         ("tool_call_id", "TEXT DEFAULT ''"),
         ("is_error", "INTEGER"),
         ("duration_ms", "INTEGER"),
+        ("error_text", "TEXT DEFAULT ''"),
     ],
     "subagent_invocations": [
         ("tool_call_id", "TEXT DEFAULT ''"),
         ("is_error", "INTEGER"),
         ("duration_ms", "INTEGER"),
+        ("error_text", "TEXT DEFAULT ''"),
     ],
     "mcp_tool_calls": [
         ("tool_call_id", "TEXT DEFAULT ''"),

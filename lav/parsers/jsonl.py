@@ -159,6 +159,9 @@ CREATE TABLE IF NOT EXISTS file_operations (
     tool_call_id TEXT DEFAULT '',
     is_error INTEGER,
     duration_ms INTEGER,
+    -- LAV-85: without the text there is no way to tell a real failure from a
+    -- call that never ran (denied permission / cancelled sibling).
+    error_text TEXT DEFAULT '',
     UNIQUE(timestamp, session_id, project_id, tool, file_path)
 );
 
@@ -203,10 +206,11 @@ CREATE TABLE IF NOT EXISTS search_operations (
     path TEXT,
     output_mode TEXT,
     cwd TEXT,
-    -- LAV-78 outcome columns (see file_operations above)
+    -- LAV-78 outcome columns (see file_operations above); error_text is LAV-85
     tool_call_id TEXT DEFAULT '',
     is_error INTEGER,
-    duration_ms INTEGER
+    duration_ms INTEGER,
+    error_text TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS skill_invocations (
@@ -224,6 +228,7 @@ CREATE TABLE IF NOT EXISTS skill_invocations (
     tool_call_id TEXT DEFAULT '',
     is_error INTEGER,
     duration_ms INTEGER,
+    error_text TEXT DEFAULT '',   -- LAV-85
     UNIQUE(timestamp, session_id, project_id, skill_name)
 );
 
@@ -245,6 +250,7 @@ CREATE TABLE IF NOT EXISTS subagent_invocations (
     tool_call_id TEXT DEFAULT '',
     is_error INTEGER,
     duration_ms INTEGER,
+    error_text TEXT DEFAULT '',   -- LAV-85
     -- LAV-82: which tool spawned this ('Task' | 'Agent' | 'Workflow') and, for a
     -- Workflow run, the wf_<id> cohort its child agents share. Both are derived
     -- ATTRIBUTES of the call, deliberately NOT part of the UNIQUE key below:
@@ -3990,13 +3996,14 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                 cur = conn.execute("""
                     INSERT OR IGNORE INTO file_operations
                     (timestamp, session_id, project_id, user_id, host_id, tool, file_path, cwd, git_branch,
-                     tool_call_id, is_error, duration_ms)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     tool_call_id, is_error, duration_ms, error_text)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     fo.get("timestamp", ""), session_id, project_id, r_user_id, r_host_id,
                     fo.get("tool", ""), fo.get("file_path", ""),
                     fo.get("cwd", ""), fo.get("git_branch", ""),
                     fo.get("tool_call_id", "") or "", fo.get("is_error"), fo.get("duration_ms"),
+                    fo.get("error_text", "") or "",
                 ))
                 stats["file_operations"] += 1
                 if cur.rowcount == 0:
@@ -4055,8 +4062,8 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                 cur = conn.execute("""
                     INSERT INTO search_operations
                     (timestamp, session_id, project_id, user_id, host_id, tool, pattern, path, output_mode, cwd,
-                     tool_call_id, is_error, duration_ms)
-                    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                     tool_call_id, is_error, duration_ms, error_text)
+                    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                     WHERE NOT EXISTS (
                         SELECT 1 FROM search_operations
                         WHERE timestamp = ? AND session_id = ? AND project_id = ? AND tool = ? AND pattern = ?
@@ -4066,6 +4073,7 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                     so.get("tool", ""), so.get("pattern", ""),
                     so.get("path", ""), so.get("output_mode", ""), so.get("cwd", ""),
                     so.get("tool_call_id", "") or "", so.get("is_error"), so.get("duration_ms"),
+                    so.get("error_text", "") or "",
                     so.get("timestamp", ""), session_id, project_id, so.get("tool", ""), so.get("pattern", ""),
                 ))
                 stats["search_operations"] += 1
@@ -4086,13 +4094,14 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                 cur = conn.execute("""
                     INSERT OR IGNORE INTO skill_invocations
                     (timestamp, session_id, project_id, user_id, host_id, skill_name, args, cwd, git_branch,
-                     tool_call_id, is_error, duration_ms)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     tool_call_id, is_error, duration_ms, error_text)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     si.get("timestamp", ""), session_id, project_id, r_user_id, r_host_id,
                     si.get("skill_name", ""), si.get("args", ""),
                     si.get("cwd", ""), si.get("git_branch", ""),
                     si.get("tool_call_id", "") or "", si.get("is_error"), si.get("duration_ms"),
+                    si.get("error_text", "") or "",
                 ))
                 stats["skill_invocations"] += 1
                 if cur.rowcount == 0:
@@ -4112,8 +4121,8 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                     INSERT OR IGNORE INTO subagent_invocations
                     (timestamp, session_id, project_id, user_id, host_id, subagent_type, description,
                      prompt, model, run_in_background, cwd, git_branch,
-                     tool_call_id, is_error, duration_ms, spawn_tool, workflow_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     tool_call_id, is_error, duration_ms, error_text, spawn_tool, workflow_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     sa.get("timestamp", ""), session_id, project_id, r_user_id, r_host_id,
                     sa.get("subagent_type", ""), sa.get("description", ""),
@@ -4121,6 +4130,7 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                     sa.get("run_in_background", 0),
                     sa.get("cwd", ""), sa.get("git_branch", ""),
                     sa.get("tool_call_id", "") or "", sa.get("is_error"), sa.get("duration_ms"),
+                    sa.get("error_text", "") or "",
                     # LAV-82: taken from the payload, NOT re-derived — unlike `kind`
                     # these are not functions of columns that travel. spawn_tool comes
                     # from the tool_use name and workflow_id from a tool_result the

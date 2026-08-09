@@ -184,6 +184,164 @@ _OUTCOME_AGG_MISSING = """
 
 
 # ===========================================================================
+# ERROR TAXONOMY (LAV-85)
+# ===========================================================================
+#
+# `is_error = 1` is not the same thing as "the tool ran and failed". Measured
+# over the 7.245 bash errors on prod, 1.838 of them — 25,4% — are calls that
+# NEVER EXECUTED: 1.080 permission refusals, 713 cancelled siblings (a parallel
+# call in the same block failed, so this one was never dispatched), 45
+# interruptions. Counting those as failures overstates the Bash error rate from
+# ~5,2% to 6,9% and, worse, ranks tools by how often the user declines a prompt
+# rather than by how often they break.
+#
+# So every error gets a CLASS, and the three "never executed" classes can be
+# excluded from both numerator and denominator: a call that never ran can
+# neither succeed nor fail, so it belongs in neither.
+#
+# The markers below are not guesses — they are the literal strings the harness
+# writes, taken from the real corpus with their frequencies:
+#   "The user doesn't want to proceed with this tool use"                273
+#   "<tool_use_error>Sibling tool call errored</tool_use_error>"         145
+#   "Permission to use Bash has been denied. IMPORTANT: ..."              80
+#   "Tool permission request failed: Error: Stream closed"                33
+#   "Permission to use Bash with command ..."                             45+
+#   "Permission to use Bash has been auto-denied (prompts unavailable)"   29
+#   "Permission for this action was denied by the ... auto mode classifier" 36
+#   "<tool_use_error>Cancelled: parallel tool call Bash(...)"             12
+#   "Permission for this tool use was denied"                              9
+
+ERROR_CLASS_SIBLING = "sibling"          # a parallel call failed -> never dispatched
+ERROR_CLASS_DENIED = "denied"            # permission refused / blocked -> never ran
+ERROR_CLASS_INTERRUPTED = "interrupted"  # aborted / prompt stream broke -> never ran
+ERROR_CLASS_REJECTED = "rejected"        # malformed or unavailable call -> never ran
+ERROR_CLASS_FAILED = "failed"            # it RAN and failed. The only real failure.
+ERROR_CLASS_UNKNOWN = "unknown"          # is_error = 1 but no text to classify by
+
+# Classes whose calls never executed. Excluded from BOTH sides of the real error
+# rate. Single source of truth for SQL, JSON and any frontend legend.
+ERROR_CLASSES_NEVER_EXECUTED = (ERROR_CLASS_SIBLING, ERROR_CLASS_DENIED,
+                                ERROR_CLASS_INTERRUPTED, ERROR_CLASS_REJECTED)
+
+ERROR_CLASSES = (ERROR_CLASS_FAILED, ERROR_CLASS_DENIED, ERROR_CLASS_SIBLING,
+                 ERROR_CLASS_INTERRUPTED, ERROR_CLASS_REJECTED, ERROR_CLASS_UNKNOWN)
+
+# ORDER IS LOAD-BEARING, not alphabetical. A cancelled-sibling payload quotes the
+# command that was cancelled and can therefore contain the word "Permission";
+# sibling must win. Likewise a denial whose prompt stream then closed must read
+# as denied, not interrupted.
+#
+# The marker set was TUNED AGAINST THE CORPUS, not guessed: a first pass left
+# 2.756 rows in `failed`, and reading the ones with no exit_code surfaced four
+# whole families that had been missed — "doesn't want to TAKE THIS ACTION" (the
+# variant of the most common denial), "was blocked. For security ...",
+# "<tool_use_error>Blocked: sleep ...", and "requires approval". Re-tune the same
+# way: filter on class = 'failed' AND exit_code IS NULL and read what is left.
+_ERROR_CLASS_MARKERS = (
+    (ERROR_CLASS_SIBLING, (
+        "Sibling tool call errored",
+        "Cancelled: parallel tool call",
+    )),
+    (ERROR_CLASS_DENIED, (
+        # "doesn't want to" covers both "...to proceed with this tool use" and
+        # "...to take this action right now" — two spellings of one refusal.
+        "doesn't want to",
+        "Permission to use",
+        "Permission for this",
+        "auto-denied",
+        "was denied by the",
+        "was blocked",
+        "Blocked:",
+        "requires approval",
+        "require approval",
+        # "...operations require EXPLICIT approval..." — the adverb defeats the
+        # marker above, which is how this family was missed on the first pass.
+        "require explicit approval",
+        # The harness's own preamble to a security refusal; catches the whole
+        # family regardless of how the sentence before it is phrased.
+        "For security, Claude Code",
+    )),
+    (ERROR_CLASS_INTERRUPTED, (
+        "Tool permission request failed",
+        "Request interrupted",
+        "AbortError",
+        # The safety classifier could not be reached, so the call was never let
+        # through: not the tool's fault, and not the user's either.
+        "auto mode cannot determine",
+    )),
+    (ERROR_CLASS_REJECTED, (
+        "InputValidationError",
+        "Failed to parse command",
+        "No such tool available",
+    )),
+)
+
+
+def _error_class_expr(alias, has_error_text=True):
+    """SQL CASE mapping one row to an ERROR_CLASS_*, or NULL when not an error.
+
+    NULL for is_error 0 or NULL is deliberate and mirrors _outcome_agg: a row
+    that never failed has no error class, and a row that was never measured has
+    no class either — neither is 'failed'.
+
+    instr(), never LIKE: these are exact substrings and LIKE would give '_' and
+    '%' inside a harness message a wildcard meaning.
+
+    `has_error_text=False` collapses to 'unknown' for every error — the honest
+    answer for a table (or a DB) without the column, and the reason
+    `never_executed` must be reported as NULL rather than 0 for those.
+
+    `alias` and every marker are literals from this module; no user value is
+    interpolated.
+    """
+    if not has_error_text:
+        return (f"CASE WHEN {alias}.is_error = 1 THEN '{ERROR_CLASS_UNKNOWN}' "
+                f"ELSE NULL END")
+
+    branches = [f"WHEN {alias}.is_error IS NULL OR {alias}.is_error = 0 THEN NULL"]
+    for cls, markers in _ERROR_CLASS_MARKERS:
+        # SQL-escape the apostrophe: the most frequent marker of all is
+        # "doesn't want to proceed" (273 rows), and an unescaped ' terminates
+        # the literal and produces a syntax error at query time, not import
+        # time. The markers are module constants, never user input — this is
+        # correctness, not injection defence.
+        test = " OR ".join(
+            "instr({a}.error_text, '{m}') > 0".format(a=alias, m=m.replace("'", "''"))
+            for m in markers)
+        branches.append(f"WHEN {test} THEN '{cls}'")
+    branches.append(
+        f"WHEN {alias}.error_text IS NULL OR {alias}.error_text = '' "
+        f"THEN '{ERROR_CLASS_UNKNOWN}'")
+    branches.append(f"ELSE '{ERROR_CLASS_FAILED}'")
+    return "CASE " + " ".join(branches) + " END"
+
+
+def _never_executed_agg(alias, has_error_text=True):
+    """SELECT fragment: `never_executed` + `errors_unclassified` for a group.
+
+    TWO numbers, and the second is not optional. `never_executed` alone is a
+    trap in the window between the migration (which adds error_text) and the
+    backfill (which fills it): the column exists, every historical row holds '',
+    every error classifies as `unknown`, and never_executed comes back 0 —
+    reading as "none of these were denied/cancelled" when the truth is "we have
+    not looked yet". `errors_unclassified` is what lets a caller tell those two
+    apart, and it is why the UI can say "N of M errors carry no text".
+
+    NULL — not 0 — for a table with no error_text at all: "we cannot tell" must
+    not render as "none of them", the same trap as counting is_error NULL as
+    success.
+    """
+    if not has_error_text:
+        return "NULL as never_executed, NULL as errors_unclassified"
+    cls = _error_class_expr(alias)
+    marks = ", ".join(f"'{c}'" for c in ERROR_CLASSES_NEVER_EXECUTED)
+    return (f"COALESCE(SUM(CASE WHEN {cls} IN ({marks}) THEN 1 ELSE 0 END), 0) "
+            f"as never_executed, "
+            f"COALESCE(SUM(CASE WHEN {cls} = '{ERROR_CLASS_UNKNOWN}' THEN 1 ELSE 0 END), 0) "
+            f"as errors_unclassified")
+
+
+# ===========================================================================
 # TOKEN STATS
 # ===========================================================================
 
@@ -309,8 +467,20 @@ def get_files_stats(conn, project_id=None, user_id=None, host_id=None,
     )
     join = _join_session_sources('fo')
 
+    # LAV-85: same graceful-degradation guard as get_mcp_stats — on a DB where
+    # the migration has not run (or half-failed) the outcome keys come back NULL
+    # instead of taking the whole /api/data response down.
+    fo_cols = _table_columns(conn, 'file_operations')
+    has_outcome = 'is_error' in fo_cols
+    has_error_text = 'error_text' in fo_cols
+    outcome_agg = _outcome_agg('fo') if has_outcome else _OUTCOME_AGG_MISSING
+    never_agg = (_never_executed_agg('fo', has_error_text) if has_outcome
+                 else "NULL as never_executed, NULL as errors_unclassified")
+
     by_tool = run_query(conn, f"""
-        SELECT tool, COUNT(*) as count
+        SELECT tool, COUNT(*) as count,
+            {outcome_agg},
+            {never_agg}
         FROM file_operations fo
         {join}
         {where}
@@ -362,7 +532,9 @@ def get_files_stats(conn, project_id=None, user_id=None, host_id=None,
         SELECT
             COUNT(*) as total_ops,
             COUNT(DISTINCT file_path) as unique_files,
-            COUNT(DISTINCT fo.session_id) as sessions
+            COUNT(DISTINCT fo.session_id) as sessions,
+            {outcome_agg},
+            {never_agg}
         FROM file_operations fo
         {join}
         {where}
@@ -391,8 +563,16 @@ def get_skills_stats(conn, project_id=None, user_id=None, host_id=None,
     )
     join = _join_session_sources('si')
 
+    si_cols = _table_columns(conn, 'skill_invocations')
+    has_outcome = 'is_error' in si_cols
+    outcome_agg = _outcome_agg('si') if has_outcome else _OUTCOME_AGG_MISSING
+    never_agg = (_never_executed_agg('si', 'error_text' in si_cols) if has_outcome
+                 else "NULL as never_executed, NULL as errors_unclassified")
+
     top_skills = run_query(conn, f"""
-        SELECT skill_name, COUNT(*) as count
+        SELECT skill_name, COUNT(*) as count,
+            {outcome_agg},
+            {never_agg}
         FROM skill_invocations si
         {join}
         {where}
@@ -422,14 +602,40 @@ def get_subagents_stats(conn, project_id=None, user_id=None, host_id=None,
     )
     join = _join_session_sources('sa')
 
+    sa_cols = _table_columns(conn, 'subagent_invocations')
+    has_outcome = 'is_error' in sa_cols
+    has_spawn = 'spawn_tool' in sa_cols
+    outcome_agg = _outcome_agg('sa') if has_outcome else _OUTCOME_AGG_MISSING
+    never_agg = (_never_executed_agg('sa', 'error_text' in sa_cols) if has_outcome
+                 else "NULL as never_executed, NULL as errors_unclassified")
+    # LAV-82: '' is the honest value for the five rows written between the
+    # Task->Agent rename and this ticket, so it is surfaced as its own bucket
+    # rather than folded into 'Task'.
+    spawn_expr = ("COALESCE(NULLIF(sa.spawn_tool, ''), '(unknown)')" if has_spawn
+                  else "'(unknown)'")
+
     top_subagents = run_query(conn, f"""
-        SELECT subagent_type, COUNT(*) as count
+        SELECT subagent_type, COUNT(*) as count,
+            {outcome_agg},
+            {never_agg}
         FROM subagent_invocations sa
         {join}
         {where}
         GROUP BY subagent_type
         ORDER BY count DESC
         LIMIT 20
+    """, params if params else None)
+
+    # LAV-82: which tool generation spawned these. The Task/Agent split is the
+    # only way to see, from the dashboard, that the table was frozen for months.
+    by_spawn_tool = run_query(conn, f"""
+        SELECT {spawn_expr} as spawn_tool, COUNT(*) as count,
+            {outcome_agg}
+        FROM subagent_invocations sa
+        {join}
+        {where}
+        GROUP BY spawn_tool
+        ORDER BY count DESC
     """, params if params else None)
 
     daily = run_query(conn, f"""
@@ -441,7 +647,7 @@ def get_subagents_stats(conn, project_id=None, user_id=None, host_id=None,
         ORDER BY date
     """, params if params else None)
 
-    return {"top": top_subagents, "daily": daily}
+    return {"top": top_subagents, "daily": daily, "by_spawn_tool": by_spawn_tool}
 
 
 def get_mcp_stats(conn, project_id=None, user_id=None, host_id=None,
@@ -463,12 +669,17 @@ def get_mcp_stats(conn, project_id=None, user_id=None, host_id=None,
     has_outcome = 'is_error' in mcp_cols
     outcome_agg = _outcome_agg('mt') if has_outcome else _OUTCOME_AGG_MISSING
     error_text_expr = "mt.error_text" if 'error_text' in mcp_cols else "''"
+    # LAV-85: all six tool tables expose the same outcome shape, so the
+    # cross-table leaderboard can UNION them without special-casing any of them.
+    never_agg = (_never_executed_agg('mt', 'error_text' in mcp_cols) if has_outcome
+                 else "NULL as never_executed, NULL as errors_unclassified")
 
     by_server = run_query(conn, f"""
         SELECT
             server_name,
             COUNT(*) as count,
-            {outcome_agg}
+            {outcome_agg},
+            {never_agg}
         FROM mcp_tool_calls mt
         {join}
         {where}
@@ -481,7 +692,8 @@ def get_mcp_stats(conn, project_id=None, user_id=None, host_id=None,
             tool_name,
             server_name,
             COUNT(*) as count,
-            {outcome_agg}
+            {outcome_agg},
+            {never_agg}
         FROM mcp_tool_calls mt
         {join}
         {where}
@@ -695,6 +907,8 @@ def get_bash_stats(conn, project_id=None, user_id=None, host_id=None,
     has_outcome = 'is_error' in bash_cols
     outcome_agg = _outcome_agg('bc') if has_outcome else _OUTCOME_AGG_MISSING
     error_text_expr = "bc.error_text" if 'error_text' in bash_cols else "''"
+    never_agg = (_never_executed_agg('bc', 'error_text' in bash_cols) if has_outcome
+                 else "NULL as never_executed, NULL as errors_unclassified")
     exit_code_expr = "bc.exit_code" if 'exit_code' in bash_cols else "NULL"
 
     # LAV-79 primary path vs the pre-LAV-79 LIKE ladder. cmd_name is a real
@@ -708,7 +922,8 @@ def get_bash_stats(conn, project_id=None, user_id=None, host_id=None,
         SELECT
             {cmd_type_expr} as cmd_type,
             COUNT(*) as count,
-            {outcome_agg}
+            {outcome_agg},
+            {never_agg}
         FROM bash_commands bc
         {join}
         {where}
@@ -748,7 +963,8 @@ def get_bash_stats(conn, project_id=None, user_id=None, host_id=None,
         SELECT
             COUNT(*) as total_commands,
             COUNT(DISTINCT target_file) as unique_files,
-            {outcome_agg}
+            {outcome_agg},
+            {never_agg}
         FROM bash_commands bc
         {join}
         {where}
@@ -827,8 +1043,16 @@ def get_searches_stats(conn, project_id=None, user_id=None, host_id=None,
     )
     join = _join_session_sources('so')
 
+    so_cols = _table_columns(conn, 'search_operations')
+    has_outcome = 'is_error' in so_cols
+    outcome_agg = _outcome_agg('so') if has_outcome else _OUTCOME_AGG_MISSING
+    never_agg = (_never_executed_agg('so', 'error_text' in so_cols) if has_outcome
+                 else "NULL as never_executed, NULL as errors_unclassified")
+
     by_tool = run_query(conn, f"""
-        SELECT tool, COUNT(*) as count
+        SELECT tool, COUNT(*) as count,
+            {outcome_agg},
+            {never_agg}
         FROM search_operations so
         {join}
         {where}

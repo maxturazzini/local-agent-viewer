@@ -71,7 +71,7 @@ CHILD_TABLES: List[Tuple[str, List[str], bool]] = [
     ("file_operations", [
         "timestamp", "session_id", "project_id", "user_id", "host_id",
         "tool", "file_path", "cwd", "git_branch",
-        "tool_call_id", "is_error", "duration_ms",
+        "tool_call_id", "is_error", "duration_ms", "error_text",
     ], True),
     ("bash_commands", [
         "timestamp", "session_id", "project_id", "user_id", "host_id",
@@ -82,18 +82,18 @@ CHILD_TABLES: List[Tuple[str, List[str], bool]] = [
     ("search_operations", [
         "timestamp", "session_id", "project_id", "user_id", "host_id",
         "tool", "pattern", "path", "output_mode", "cwd",
-        "tool_call_id", "is_error", "duration_ms",
+        "tool_call_id", "is_error", "duration_ms", "error_text",
     ], True),
     ("skill_invocations", [
         "timestamp", "session_id", "project_id", "user_id", "host_id",
         "skill_name", "args", "cwd", "git_branch",
-        "tool_call_id", "is_error", "duration_ms",
+        "tool_call_id", "is_error", "duration_ms", "error_text",
     ], True),
     ("subagent_invocations", [
         "timestamp", "session_id", "project_id", "user_id", "host_id",
         "subagent_type", "description", "prompt", "model", "run_in_background",
         "cwd", "git_branch",
-        "tool_call_id", "is_error", "duration_ms",
+        "tool_call_id", "is_error", "duration_ms", "error_text",
         "spawn_tool", "workflow_id",
     ], True),
     ("mcp_tool_calls", [
@@ -103,6 +103,36 @@ CHILD_TABLES: List[Tuple[str, List[str], bool]] = [
         "kind",
     ], True),
 ]
+
+def _assert_outcome_columns_shipped():
+    """LAV-85: fail loudly if CHILD_TABLES drifts from OUTCOME_COLUMNS.
+
+    The comment above has asked for these lists to be kept in sync since LAV-78,
+    and they drifted anyway the moment error_text was added to four more tables —
+    which is exactly the failure it warned about, and a silent one: the snapshot
+    path would simply stop carrying the column, with no error anywhere.
+
+    A comment cannot enforce an invariant. This can, at import time, for free.
+    """
+    from lav.tool_outcomes import OUTCOME_COLUMNS
+
+    shipped = {name: set(cols) for name, cols, _ in CHILD_TABLES}
+    missing = {
+        table: sorted(col for col, _decl in cols if col not in shipped.get(table, ()))
+        for table, cols in OUTCOME_COLUMNS.items()
+        if table in shipped
+    }
+    missing = {t: c for t, c in missing.items() if c}
+    if missing:
+        raise AssertionError(
+            "lav/backfill.py CHILD_TABLES is missing outcome columns that "
+            f"lav/tool_outcomes.py declares: {missing}. Add them, or the snapshot "
+            "backfill will silently stop shipping them."
+        )
+
+
+_assert_outcome_columns_shipped()
+
 
 INTERACTION_COLUMNS = [
     "session_id", "project_id", "user_id", "host_id", "timestamp", "display",
