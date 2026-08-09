@@ -258,6 +258,38 @@ def copy_interactions(conn: sqlite3.Connection,
         cur = conn.executemany(insert_sql, batch)
         inserted += cur.rowcount if cur.rowcount > 0 else 0
 
+    # LAV-82: heal workflow_id on sessions the collector ALREADY has.
+    #
+    # The INSERT above is OR IGNORE, so a child session pulled before this ticket
+    # keeps its old row — with workflow_id ''. And it can never be fixed by a
+    # normal pull either: its timestamp is far behind the export cursor. Without
+    # this, the collector's cohort view stays permanently empty while the agent's
+    # is complete, which reads as a sync bug and is not one.
+    #
+    # FILL-ONLY: the id is derived from the transcript PATH, which exists only on
+    # the agent's disk, so an agent on older code sends '' and must not be able to
+    # erase an id already recovered locally.
+    healed = 0
+    try:
+        # One pass over the snapshot's workflow children — a query per session
+        # would be thousands of round trips for a handful of hits.
+        src_wf = conn.execute(
+            "SELECT session_id, project_id, workflow_id FROM src.interactions "
+            "WHERE COALESCE(workflow_id, '') != ''"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        src_wf = []   # agent predates LAV-82: no such column, nothing to heal
+    for sid, src_pid, wf in src_wf:
+        if (sid, src_pid) not in session_keys or src_pid not in proj_map:
+            continue
+        healed += conn.execute(
+            "UPDATE interactions SET workflow_id = ? "
+            " WHERE session_id = ? AND project_id = ? AND COALESCE(workflow_id, '') = ''",
+            (wf, sid, proj_map[src_pid]),
+        ).rowcount
+    if healed:
+        print(f"  LAV-82: healed workflow_id on {healed} existing interaction(s)")
+
     # Also copy session_sources (composite PK on session_id+project_id+source)
     session_keys_translated = [(sid, proj_map[src_pid]) for sid, src_pid in sessions]
     # Build SELECT with IN clause for src.session_sources
