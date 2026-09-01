@@ -471,14 +471,17 @@
            Closed by default → list is full-width (today's behaviour untouched).
            Open → flex row: list (flex) | divider | dock (fixed width, persisted).
            ===================================================================== */
-        .workspace-split { display: flex; align-items: stretch; gap: 0; }
+        /* flex-start, not stretch: the dock owns a fixed viewport height (LAV-88),
+           and stretch would inflate the list to match it, adding dead space and a
+           page scrollbar when the filter returns few rows. */
+        .workspace-split { display: flex; flex-wrap: nowrap; align-items: flex-start; gap: 0; }
         .interactions-container { flex: 1 1 auto; min-width: 0; }   /* min-width:0 lets the grid overflow-scroll when narrow */
         .workspace-split--closed .dock-divider,
         .workspace-split--closed .dock-panel { display: none; }
 
         .dock-divider {
             flex: 0 0 10px;
-            align-self: stretch;
+            align-self: stretch;   /* row is flex-start now; stretch keeps the grab strip full-height */
             position: relative;
             cursor: col-resize;
         }
@@ -501,15 +504,27 @@
         .dock-panel {
             flex: 0 0 auto;              /* width set inline by JS (persisted) */
             min-width: 360px;
-            align-self: stretch;         /* match the grid column height (LAV-67) */
+            /* Own the height instead of inheriting the flex row's (LAV-88): with
+               align-self:stretch the panel was as tall as the LIST, so a filter
+               returning few rows squashed the transcript. The height is the space
+               left BELOW the panel's own top offset -- a flat 100vh would overflow
+               past the fold by exactly that offset and push the footer down. */
+            align-self: flex-start;
             position: sticky;
             top: 12px;
-            max-height: calc(100vh - 24px);
+            height: var(--dock-avail-height, calc(100vh - 258px));
             background: var(--white);
             border-radius: 8px;
             box-shadow: 0 2px 8px rgba(0,0,0,0.06);
             overflow: hidden;
         }
+        /* Narrow layout: the stacked filters eat the viewport, so the dock reverts to
+           content height and scrolls with the page instead of being pinned (LAV-88). */
+        .workspace-split--short .dock-panel {
+            position: relative;   /* NOT static: .tx inside is absolute/inset:0 */
+            height: calc(100vh - 24px);
+        }
+
         /* Transcript fills the docked frame WITHOUT inflating the row: absolute so
            the frame's height is driven by the grid, and .tx-body scrolls inside. */
         .dock-panel > .tx { position: absolute; inset: 0; }
@@ -2392,6 +2407,23 @@
 
     var DOCK_LOADING_HTML = '<div class="tx"><div class="tx-head"><div class="tx-head-top"><h2 class="tx-title" id="txDialogTitle">Loading transcript...</h2><button class="tx-close" type="button" aria-label="Close">' + TX_ICONS.close + '</button></div></div><div class="tx-body"><div class="loading">Loading transcript</div></div></div>';
 
+    /* The dock is sticky at top:12px but starts below the header/filters, so its
+       height is the viewport MINUS the chrome above it (LAV-88). Measured, not
+       hardcoded: the filters bar wraps to two rows on narrow windows.
+       Measured off the SPLIT (not the panel): on a narrow window the panel wraps
+       under the list, and its own offsetTop would then be the list's height. */
+    function syncDockOffset(){
+        var split = document.getElementById('workspaceSplit');
+        if (!split || !split.classList.contains('workspace-split--docked')) return;
+        var top = split.getBoundingClientRect().top + window.scrollY;
+        var avail = Math.max(320, window.innerHeight - Math.round(top) - 12);
+        document.documentElement.style.setProperty('--dock-avail-height', avail + 'px');
+        /* Below the narrow breakpoint the filters bar becomes a tall column and the
+           residual height is not worth pinning: let the dock scroll with the page. */
+        split.classList.toggle('workspace-split--short', window.innerWidth <= 900);
+    }
+    window.addEventListener('resize', syncDockOffset);
+
     // Open the dock: reveal the split panel, apply persisted width. Idempotent.
     function openDock(){
         var split = document.getElementById('workspaceSplit');
@@ -2400,6 +2432,7 @@
         split.classList.remove('workspace-split--closed');
         split.classList.add('workspace-split--docked');
         applyColumnGridOnly();   // summary -> fixed width + pins on
+        syncDockOffset();
     }
     function closeDock(){
         var split = document.getElementById('workspaceSplit');
