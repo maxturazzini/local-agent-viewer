@@ -37,6 +37,9 @@ DEFAULT_PRICING = [
     # (model, from_date) constraint to dedupe (LAV-76).
     ("claude-opus-5", "anthropic", 5.00, 25.00, 6.25, 0.50, "2024-01-01"),
     ("claude-fable-5", "anthropic", 10.00, 50.00, 12.50, 1.00, "2024-01-01"),
+    # Fable 5.1 succeeds Fable 5 at the same per-token input/output price, but
+    # cuts cache_read to $0.25/MTok (vs $1.00 on Fable 5) — see claude-api skill.
+    ("claude-fable-5-1", "anthropic", 10.00, 50.00, 12.50, 0.25, "2026-09-02"),
     ("claude-opus-4-8", "anthropic", 5.00, 25.00, 6.25, 0.50, "2024-01-01"),
     ("claude-opus-4-7", "anthropic", 5.00, 25.00, 6.25, 0.50, "2024-01-01"),
     ("claude-opus-4-6", "anthropic", 5.00, 25.00, 6.25, 0.50, "2024-01-01"),
