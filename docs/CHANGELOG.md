@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+LAV-90: the kb_indexer was the only pipeline still billed to the Anthropic Console balance, and it stopped silently when that balance emptied.
+- **Symptom**: `lav-classify` kept working while semantic search fell behind. Every interaction in the indexer log ended `ERROR: Error code: 400 ... credit balance is too low`, and a run reported `indexed=0 errors=23` while reporting DONE, exit code 0.
+- **Cause**: `generate_tags()` hardcoded `anthropic.Anthropic` + Haiku. The classifier had already moved to Azure Foundry (prepaid) under `LAV_CLASSIFY_BACKEND`, but the indexer had no equivalent switch, so the two pipelines were billed to different accounts with no way to tell from config.
+- **Fix**: `LAV_INDEX_BACKEND` (default `foundry`) selects between Foundry and Anthropic. The Foundry path reuses `classifiers.foundry.client.make_client`, so it shares the endpoint and key already configured for `lav-classify`; the deployment comes from `LAV_INDEX_MODEL`, falling back to `LAV_CLASSIFY_MODEL`. `reasoning_effort` is never sent (DeepSeek-Flash rejects it) and the token kwarg falls back from `max_completion_tokens` to `max_tokens`. `import anthropic` moved inside its own branch, so the dependency is only needed when that backend is chosen.
+
+LAV-89: pricing seed — `claude-fable-5-1` (released 2026-09-02), same $10/$50 per-MTok input/output as Fable 5, but cache_read cut to $0.25/MTok (vs Fable 5's $1.00) per the new reduced cache-read tier that ships with it.
+
 LAV-88: the docked transcript panel took its height from the LIST, so filtering to a few rows squashed it.
 - **Symptom**: search narrowed to ~6 interactions and the right-hand detail panel shrank to the height of the result list (~329px on a 900px-tall viewport), truncating the transcript. The fewer the results, the smaller the reading surface — exactly backwards.
 - **Cause**: `.dock-panel` carried `align-self: stretch` (LAV-67) plus a `max-height`, and no `min-height`. In a flex row `stretch` means "match the row", and the row is sized by its tallest child — the list. `max-height` is a ceiling, never a floor. The transcript inside is `position: absolute; inset: 0` (deliberately, so it cannot inflate the row), so it could not push the panel open from within either.

@@ -1,7 +1,17 @@
 """
 InteractionIndexer - Pipeline for indexing interactions with auto-tagging.
 
-Uses Haiku for fast metadata extraction (summary, classification, topics, etc.)
+Fast metadata extraction (summary, classification, topics, etc.) via one of two
+backends, selected by LAV_INDEX_BACKEND:
+
+    foundry (default)  Azure AI Foundry, deployment from LAV_INDEX_MODEL
+                       (falls back to LAV_CLASSIFY_MODEL, then deepseek-v4-flash).
+                       Prepaid Azure capacity, same endpoint/key as lav-classify.
+    anthropic          Haiku via the pay-as-you-go Anthropic API.
+
+Foundry is the default because the Anthropic path is metered against a Console
+credit balance that can empty silently: when it does, every interaction fails with
+a 400 and the semantic index stops growing while classification keeps working.
 """
 
 from datetime import datetime
@@ -9,8 +19,6 @@ from typing import Any, Dict, List, Optional, Set
 import json
 import os
 import re
-
-import anthropic
 
 from lav import config
 from .store import InteractionVectorStore
@@ -43,25 +51,73 @@ NOTES:
 """
 
 
-def generate_tags(text: str, api_key: Optional[str] = None) -> Dict[str, Any]:
-    """Generate metadata via Haiku LLM (~1-2 sec)."""
+DEFAULT_INDEX_MODEL = "deepseek-v4-flash"
+
+
+def _index_model() -> str:
+    """Foundry deployment for tagging: explicit override, else the classifier's."""
+    return (
+        os.getenv("LAV_INDEX_MODEL", "").strip()
+        or os.getenv("LAV_CLASSIFY_MODEL", "").strip()
+        or DEFAULT_INDEX_MODEL
+    )
+
+
+def _tags_via_foundry(prompt: str) -> str:
+    """Tagging call against an Azure Foundry deployment. Returns raw model text.
+
+    Mirrors lav.classifiers.foundry.classify: ask for JSON, and fall back when a
+    deployment rejects the token-param name. DeepSeek-Flash does not accept
+    reasoning_effort, so it is never sent from here.
+    """
+    from lav.classifiers.foundry.client import make_client
+
+    model = _index_model()
+    client = make_client(model)
+
+    def _call(token_kwargs):
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            **token_kwargs,
+        )
+        return resp.choices[0].message.content or ""
+
+    budget = int(os.getenv("LAV_FOUNDRY_MAX_TOKENS", "4000"))
+    try:
+        return _call({"max_completion_tokens": budget})
+    except Exception:
+        return _call({"max_tokens": budget})
+
+
+def _tags_via_anthropic(prompt: str, api_key: Optional[str] = None) -> str:
+    """Tagging call against the Anthropic API. Returns raw model text."""
+    import anthropic
+
     key = api_key or os.getenv("ANTHROPIC_API_KEY")
     if not key:
         raise ValueError("Anthropic API key required. Set ANTHROPIC_API_KEY env var.")
 
     client = anthropic.Anthropic(api_key=key)
-    text_truncated = text[:8000]
-
     response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model=os.getenv("LAV_INDEX_MODEL_ANTHROPIC", "claude-haiku-4-5-20251001"),
         max_tokens=500,
-        messages=[{
-            "role": "user",
-            "content": TAGGING_PROMPT.format(interaction=text_truncated)
-        }]
+        messages=[{"role": "user", "content": prompt}],
     )
+    return response.content[0].text
 
-    response_text = response.content[0].text.strip()
+
+def generate_tags(text: str, api_key: Optional[str] = None) -> Dict[str, Any]:
+    """Generate metadata via the configured LLM backend (~1-2 sec)."""
+    prompt = TAGGING_PROMPT.format(interaction=text[:8000])
+
+    backend = os.getenv("LAV_INDEX_BACKEND", "foundry").strip().lower()
+    if backend == "anthropic":
+        response_text = _tags_via_anthropic(prompt, api_key)
+    else:
+        response_text = _tags_via_foundry(prompt)
+    response_text = (response_text or "").strip()
 
     json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', response_text)
     if json_match:
@@ -89,9 +145,9 @@ def generate_tags(text: str, api_key: Optional[str] = None) -> Dict[str, Any]:
         "data_sensitivity": "internal",
         "sensitive_data_types": []
     }
-    for key, default in defaults.items():
-        if key not in result:
-            result[key] = default
+    for field, default in defaults.items():
+        if field not in result:
+            result[field] = default
 
     return result
 
