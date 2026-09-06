@@ -42,6 +42,7 @@ from lav.config import (
     SOURCE_CODEX_LOCAL,
     get_claude_projects_dirs,
     get_codex_sessions_dirs,
+    get_codex_state_db,
     get_cowork_sessions_dirs,
     load_runtime_config,
 )
@@ -1218,11 +1219,43 @@ def smart_title(display: str) -> str:
 # can be entirely made of these wrappers (slash-command invocations, IDE state,
 # hook output) — using it as interaction display/summary shows noise like
 # "<local-command-caveat>Caveat: The messages below..." instead of real text.
-_SYSTEM_TAG_NAMES = (
+_CLAUDE_SYSTEM_TAG_NAMES = (
     "local-command-caveat", "local-command-stdout", "local-command-stderr",
     "command-name", "command-message", "command-args", "command-contents",
     "ide_opened_file", "ide_opened_files", "ide_selection", "ide_diagnostics",
     "system-reminder", "session-start-hook",
+)
+
+# LAV-91: Codex injects its own context the same way, and marks it `role: "user"`
+# with nothing to distinguish it from a real message. This list was NOT guessed —
+# it is every wrapper actually observed as the leading text of a Codex session on
+# prod (190 `permissions instructions`, 21 `app-context`, 10 `skills_instructions`,
+# 4 `environment_context`). Note the SPACE inside "permissions instructions": that
+# is Codex's real tag, not a typo, and it matches because the space sits inside
+# the alternation group, before the regexes' optional-attributes part.
+_CODEX_SYSTEM_TAG_NAMES = (
+    "permissions instructions", "app-context", "skills_instructions",
+    "environment_context", "recommended_plugins", "user_instructions",
+    # Found by re-running the residual scan after the first four were stripped:
+    # both were hiding BEHIND `permissions instructions` in the same message and
+    # are invisible until it is removed. Tune this list against the corpus, never
+    # by reading one example — `lav backfill codex-titles` reports the residual
+    # as `injected_titles_after` for exactly this reason.
+    "collaboration_mode", "apps_instructions", "plugins_instructions",
+)
+
+_SYSTEM_TAG_NAMES = _CLAUDE_SYSTEM_TAG_NAMES + _CODEX_SYSTEM_TAG_NAMES
+
+# LAV-91: two Codex blocks carry no tag at all, so the regexes above cannot see
+# them — they are plain text that just happens to be injected. Matched on the
+# leading prefix instead. Kept deliberately long and specific: a real message
+# that opens with one of these is not a thing, and even if it were, the caller
+# falls back to the raw first message rather than losing the title.
+_INJECTED_TEXT_PREFIXES = (
+    # Both spellings occur: with and without the trailing path.
+    "# AGENTS.md instructions",
+    "Thread coordination:",
+    "You are an agent in a team of agents collaborating",
 )
 _SYSTEM_TAG_BLOCK_RE = re.compile(
     r"<(" + "|".join(_SYSTEM_TAG_NAMES) + r")(?:\s[^>]*)?>.*?</\1\s*>",
@@ -1236,8 +1269,15 @@ _SYSTEM_TAG_LONE_RE = re.compile(
 
 def strip_system_tags(text: str) -> str:
     """Remove system wrapper tag blocks; returns '' if nothing real remains."""
-    if not text or "<" not in text:
-        return (text or "").strip()
+    if not text:
+        return ""
+    # LAV-91: untagged injected blocks are checked BEFORE the "<" shortcut —
+    # they contain no angle bracket at all, so the fast path would let them pass.
+    stripped = text.strip()
+    if stripped.startswith(_INJECTED_TEXT_PREFIXES):
+        return ""
+    if "<" not in text:
+        return stripped
     cleaned = _SYSTEM_TAG_BLOCK_RE.sub("", text)
     cleaned = _SYSTEM_TAG_LONE_RE.sub("", cleaned)
     return cleaned.strip()
@@ -1265,6 +1305,112 @@ def format_codex_session_id(session_id: str) -> str:
     if session_id.startswith("codex:"):
         return session_id
     return f"codex:{session_id}"
+
+
+# LAV-91: the two title fields of Codex's own `threads` table, in the order the
+# app-server protocol defines them. `name` is the real title (there is a
+# `thread/setName` method and a ThreadNameUpdated notification for it) but it is
+# OPTIONAL and rare — 11 of 290 threads on macChia. `preview` is declared
+# `required` in the ThreadListResponse schema and holds the first user message
+# already stripped of injected context, which is exactly the title we want.
+# The table's own `title` column is deliberately NOT read: it does not exist in
+# the protocol and duplicates `preview`.
+_CODEX_TITLE_COLUMNS = ("name", "preview")
+
+
+def load_codex_thread_titles(state_db_path=None) -> dict:
+    """Map Codex thread id -> title, read from Codex's state DB (LAV-91).
+
+    ``state_db_path`` overrides discovery, which is what lets a node apply the
+    titles of a DIFFERENT machine: Codex's state DB never leaves the host it
+    runs on, and the collector's own copy knows nothing about the agent's
+    threads (measured: 0 of 235 macChia sessions resolve against miniMacs').
+
+    Every failure degrades to an empty dict — a missing, locked or restructured
+    DB must cost us the nicer title, never the parse. Callers then fall back to
+    deriving the title from message text.
+    """
+    path = state_db_path if state_db_path else get_codex_state_db()
+    if not path:
+        return {}
+    path = Path(path)
+    if not path.exists():
+        print(f"  Codex state DB not found: {path}")
+        return {}
+
+    try:
+        # mode=ro, never immutable=1: Codex is usually running and holds recent
+        # rows in the -wal file, which immutable=1 would silently skip.
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
+    except sqlite3.Error as e:
+        print(f"  Codex state DB unreadable ({path}): {e}")
+        return {}
+
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(threads)")}
+        if not cols:
+            print(f"  Codex state DB has no 'threads' table ({path}) — titles skipped")
+            return {}
+        available = [c for c in _CODEX_TITLE_COLUMNS if c in cols]
+        if "id" not in cols or not available:
+            # Structure moved under us. Say so loudly and take nothing: a
+            # half-understood schema is how you write confidently wrong titles.
+            print(f"  Codex state DB schema unexpected ({path}): "
+                  f"columns={sorted(cols)[:8]} — titles skipped")
+            return {}
+
+        rows = conn.execute(
+            f"SELECT id, {', '.join(available)} FROM threads"
+        ).fetchall()
+    except sqlite3.Error as e:
+        print(f"  Codex state DB query failed ({path}): {e}")
+        return {}
+    finally:
+        conn.close()
+
+    titles = {}
+    for row in rows:
+        thread_id = (row[0] or "").strip()
+        if not thread_id:
+            continue
+        for value in row[1:]:
+            value = (value or "").strip()
+            if value:
+                titles[thread_id] = value
+                break
+    return titles
+
+
+# LAV-91: Codex sometimes stores a title that is itself wrapped — sub-agent
+# delegations arrive as `<task> ...` or `<realtime_delegation> <input>...`.
+# Unlike the injected blocks above these are NOT noise: the real text sits
+# inside the tag, so they are UNWRAPPED (tags dropped, content kept) rather
+# than stripped. Applied only to titles read from Codex, and only when the
+# title starts with a tag, so an ordinary title is never touched.
+_ANGLE_TAG_RE = re.compile(r"</?[a-zA-Z_][\w.-]{0,40}\s*/?>")
+
+
+def codex_title_for(titles: dict, session_id: str) -> Optional[str]:
+    """Look up a `codex:`-prefixed session in a load_codex_thread_titles() map.
+
+    Runs the result through smart_title() so a Codex title is capped the same
+    way every other source's is — the UI lists `summary`, and one source
+    shipping 600-char rows would break the column. Returns None (not ""), which
+    is what update_interaction() reads as "derive it from the messages".
+    """
+    if not titles or not session_id:
+        return None
+    raw = session_id[len("codex:"):] if session_id.startswith("codex:") else session_id
+    title = (titles.get(raw) or "").strip()
+    if not title:
+        return None
+    if title.startswith("<"):
+        unwrapped = _ANGLE_TAG_RE.sub(" ", title).strip()
+        # Keep the wrapped original if unwrapping leaves nothing — a title with
+        # angle brackets beats no title at all.
+        if unwrapped:
+            title = " ".join(unwrapped.split())
+    return smart_title(title)
 
 
 # Explicit CLI-family originators that all collapse to codex_cli.
@@ -2983,6 +3129,7 @@ def parse_codex_sessions(
     project_filter: Optional[str] = None,
     codex_sessions_dirs: Optional[list[Path]] = None,
     since: Optional[tuple] = None,
+    state_db_path: Optional[Path] = None,
 ) -> list:
     """Parse Codex CLI sessions into the unified DB.
 
@@ -3019,6 +3166,12 @@ def parse_codex_sessions(
 
     jsonl_files = sorted(jsonl_files)
     print(f"  Found {len(jsonl_files)} session files")
+
+    # LAV-91: loaded ONCE per pass, not per session — it is a full table read of
+    # a DB another process is writing to. Empty dict = no titles available, and
+    # update_interaction() falls back to deriving one from the message text.
+    codex_titles = load_codex_thread_titles(state_db_path)
+    print(f"  Codex thread titles available: {len(codex_titles)}")
     if full_reparse:
         print("  Full reparse: ignoring watermark, wiping reparsed Codex rows")
 
@@ -3268,7 +3421,10 @@ def parse_codex_sessions(
             project_name_by_id.setdefault(project_id, project_name)  # LAV-79: refusal label
             for sid in sessions_updated:
                 if sid:
-                    update_interaction(sid, project_name, conn, project_id, user_id, host_id)
+                    # LAV-91: `summary=None` means "derive it from the messages";
+                    # a real string wins over that derivation.
+                    update_interaction(sid, project_name, conn, project_id, user_id, host_id,
+                                       summary=codex_title_for(codex_titles, sid))
             conn.commit()
 
             all_stats.append({
@@ -3631,6 +3787,10 @@ def main():
     parser.add_argument("--include-cowork", action="store_true", help="Include Cowork/Claude Desktop sessions")
     parser.add_argument("--claude-projects-dir", action="append", default=None)
     parser.add_argument("--codex-sessions-dir", action="append", default=None)
+    parser.add_argument("--codex-state-db", default=None,
+                        help="Path to Codex's state_<N>.sqlite (LAV-91 thread titles). "
+                             "Defaults to the highest generation in ~/.codex/. Point it at a "
+                             "copy from another machine to apply that machine's titles.")
     parser.add_argument("--cowork-sessions-dir", action="append", default=None)
 
     args = parser.parse_args()
@@ -3694,7 +3854,8 @@ def main():
             print("Use --list to see available projects")
         if not args.exclude_codex:
             parse_codex_sessions(conn, args.full, project_filter=args.project,
-                                 codex_sessions_dirs=codex_roots, since=since)
+                                 codex_sessions_dirs=codex_roots, since=since,
+                                 state_db_path=args.codex_state_db)
         if args.include_cowork:
             parse_cowork_sessions(conn, args.full, project_filter=args.project,
                                   cowork_sessions_dirs=cowork_roots, since=since)
@@ -3711,7 +3872,8 @@ def main():
                     all_stats.append(stats)
 
         if not args.exclude_codex:
-            parse_codex_sessions(conn, args.full, codex_sessions_dirs=codex_roots, since=since)
+            parse_codex_sessions(conn, args.full, codex_sessions_dirs=codex_roots, since=since,
+                                 state_db_path=args.codex_state_db)
         if args.include_cowork:
             parse_cowork_sessions(conn, args.full, cowork_sessions_dirs=cowork_roots, since=since)
 

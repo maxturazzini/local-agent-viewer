@@ -30,7 +30,8 @@ CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 CLAUDE_DESKTOP_SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "Claude"
 
 # Source directory for Codex sessions
-CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
+CODEX_HOME = Path.home() / ".codex"
+CODEX_SESSIONS_DIR = CODEX_HOME / "sessions"
 
 # Cowork / Claude Desktop sessions (JSONL audit logs)
 # Pre-v1.1.4498: "local-agent-mode-sessions", post-v1.1.4498: "claude-code-sessions"
@@ -282,6 +283,46 @@ def get_codex_sessions_dirs(
             dirs = [CODEX_SESSIONS_DIR]
 
     return [d for d in dirs if d.exists() and d.is_dir()]
+
+
+def get_codex_state_db(override: Optional[str] = None) -> Optional[Path]:
+    """Resolve Codex's state DB — the ONLY place a thread title is stored (LAV-91).
+
+    Rollout JSONL carries no title of any kind: every event type was checked.
+    The title lives in ``~/.codex/state_<N>.sqlite``, table ``threads``, which
+    is what the app-server's official ``thread/list`` method reads.
+
+    The ``<N>`` is the file GENERATION, not a revision counter: compatible
+    changes are applied in place (``state_5.sqlite`` already carries 52 rows in
+    its own ``_sqlx_migrations``), and the number only moves when Codex starts
+    over from an empty file — at which point the old one is deleted. So the
+    newest generation is the highest number present, and hardcoding one is how
+    this silently reads a stale DB after an upgrade.
+
+    Precedence: explicit override -> settings.local.json -> highest generation.
+    Returns None when nothing is found; the caller degrades to titles derived
+    from message text.
+    """
+    if override:
+        p = _expand_path(override)
+        return p if p.exists() else None
+
+    settings = load_local_settings()
+    configured = (settings.get("sources") or {}).get("codex_state_db")
+    if configured:
+        p = _expand_path(configured)
+        return p if p.exists() else None
+
+    best: Optional[Path] = None
+    best_gen = -1
+    for path in CODEX_HOME.glob("state_*.sqlite"):
+        stem = path.stem[len("state_"):]
+        if not stem.isdigit():
+            continue
+        gen = int(stem)
+        if gen > best_gen:
+            best, best_gen = path, gen
+    return best
 
 
 def get_chatgpt_export_path(override: Optional[str] = None) -> Optional[Path]:

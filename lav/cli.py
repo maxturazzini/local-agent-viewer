@@ -630,6 +630,8 @@ def cmd_backfill(args):
         return cmd_backfill_tool_kind(args)
     if args.backfill_command == "claude-ai-outcomes":
         return cmd_backfill_claude_ai_outcomes(args)
+    if args.backfill_command == "codex-titles":
+        return cmd_backfill_codex_titles(args)
     _die(f"Unknown backfill subcommand '{args.backfill_command}'.")
 
 
@@ -875,6 +877,118 @@ def cmd_backfill_tool_kind(args):
         "unclassified": after.get("", 0),
         "kinds": [TOOL_KIND_MCP, TOOL_KIND_BUILTIN_HOST],
     }, args.format)
+
+
+def cmd_backfill_codex_titles(args):
+    """LAV-91: rewrite display/summary of past Codex interactions.
+
+    Two independent repairs, both operating on rows already in the local DB —
+    no reparse, no rollout file is read:
+
+    1. `display` is re-derived from `messages`, now that strip_system_tags()
+       knows Codex's injected wrappers. This works for EVERY Codex session,
+       including those whose rollout file Codex has since deleted.
+    2. `summary` is taken from Codex's own state DB when the thread is there.
+
+    Local DB only, like every other backfill — run it on each node. And note the
+    asymmetry that makes this command's --state-db necessary: Codex's state DB
+    never leaves its host, so the collector cannot resolve the agent's threads
+    on its own (0 of 235 macChia sessions resolve against miniMacs' state DB).
+    Copy the agent's state_<N>.sqlite over and point --state-db at it.
+    """
+    from lav.parsers.jsonl import (
+        init_db, update_interaction, load_codex_thread_titles, codex_title_for,
+    )
+
+    db_path = Path(args.db) if getattr(args, "db", None) else UNIFIED_DB_PATH
+    if not db_path.exists():
+        _die(f"No database at {db_path}. Run lav-parse first.")
+
+    state_db = getattr(args, "state_db", None)
+    titles = load_codex_thread_titles(state_db)
+    if not titles:
+        # Not fatal: repair 1 still runs and fixes display for every row. But it
+        # is the difference between "titles from Codex" and "titles guessed from
+        # text", so it must not scroll by silently.
+        print("[backfill] WARNING: no Codex thread titles loaded — summaries will be "
+              "derived from message text only. Pass --state-db to point at a state_<N>.sqlite "
+              "(including one copied from another machine).", file=sys.stderr)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute("""
+            SELECT i.session_id, i.project_id, i.user_id, i.host_id,
+                   COALESCE(NULLIF(i.project, ''), p.name, '') AS project_name,
+                   i.display, i.summary
+            FROM interactions i
+            LEFT JOIN projects p ON p.id = i.project_id
+            WHERE i.session_id LIKE 'codex:%'
+            ORDER BY i.timestamp ASC
+        """).fetchall()
+
+        stats = {"scanned": 0, "titled_from_codex": 0, "changed": 0, "failed": 0}
+        before_broken = 0
+        samples = []
+
+        for session_id, project_id, user_id, host_id, project_name, old_display, old_summary in rows:
+            stats["scanned"] += 1
+            if _bf_looks_injected(old_summary) or _bf_looks_injected(old_display):
+                before_broken += 1
+            title = codex_title_for(titles, session_id)
+            if title:
+                stats["titled_from_codex"] += 1
+            try:
+                update_interaction(session_id, project_name, conn, project_id,
+                                   user_id, host_id, summary=title)
+            except Exception as e:  # noqa: BLE001 - one bad row must not stop the pass
+                stats["failed"] += 1
+                print(f"[backfill] {session_id} failed: {e}", file=sys.stderr)
+                continue
+            new = conn.execute(
+                "SELECT display, summary FROM interactions WHERE session_id = ? AND project_id = ?",
+                (session_id, project_id)).fetchone()
+            if new and (new[0] != old_display or new[1] != old_summary):
+                stats["changed"] += 1
+                if len(samples) < 5:
+                    samples.append({"session_id": session_id,
+                                    "before": (old_summary or "")[:60],
+                                    "after": (new[1] or "")[:60]})
+
+        after_broken = conn.execute("""
+            SELECT COUNT(*) FROM interactions
+            WHERE session_id LIKE 'codex:%' AND (
+                TRIM(COALESCE(summary, '')) LIKE '<%' OR TRIM(COALESCE(display, '')) LIKE '<%')
+        """).fetchone()[0]
+
+        if getattr(args, "dry_run", False):
+            conn.rollback()
+        else:
+            conn.commit()
+    finally:
+        conn.close()
+
+    _output({
+        "db": str(db_path),
+        "state_db": str(state_db) if state_db else "(auto-discovered)",
+        "dry_run": bool(getattr(args, "dry_run", False)),
+        "codex_titles_loaded": len(titles),
+        "sessions_scanned": stats["scanned"],
+        "titled_from_codex": stats["titled_from_codex"],
+        "rows_changed": stats["changed"],
+        "failed": stats["failed"],
+        "injected_titles_before": before_broken,
+        # Read this one: it is the residual. Non-zero after a real (non-dry) run
+        # means a wrapper is being missed and _CODEX_SYSTEM_TAG_NAMES needs it.
+        "injected_titles_after": after_broken,
+        "samples": samples,
+    }, args.format)
+
+
+def _bf_looks_injected(text) -> bool:
+    """True when a stored title is one of Codex's injected blocks, not a message."""
+    from lav.parsers.jsonl import _INJECTED_TEXT_PREFIXES
+    t = (text or "").strip()
+    return bool(t) and (t.startswith("<") or t.startswith(_INJECTED_TEXT_PREFIXES))
 
 
 def cmd_backfill_tool_outcomes(args):
@@ -1262,6 +1376,28 @@ def build_parser():
                          help="Process at most N sessions; 0 = none, omit for no limit")
     _add_format_arg(p_bf_ca)
     p_bf_ca.set_defaults(func=cmd_backfill)
+
+    # backfill codex-titles
+    p_bf_ct = bf_sub.add_parser(
+        "codex-titles",
+        help="LAV-91: rebuild Codex display/summary (injected wrappers -> real title)",
+        description="Codex marks its injected context (permissions, skills, app-context) "
+                    "as role:user, so the first-message heuristic titled 90% of Codex "
+                    "interactions with a wrapper. This re-derives display from messages "
+                    "with those wrappers stripped, and takes summary from Codex's own "
+                    "state_<N>.sqlite when the thread is still there. Local DB only: run "
+                    "it on each node. The collector cannot see the agent's state DB, so "
+                    "copy the agent's state_<N>.sqlite over and pass --state-db.",
+    )
+    p_bf_ct.add_argument("--db", help=f"SQLite DB path (default: {UNIFIED_DB_PATH})")
+    p_bf_ct.add_argument("--state-db", dest="state_db",
+                         help="Codex state_<N>.sqlite to read titles from. Default: highest "
+                              "generation in ~/.codex/. Pass a copy from another machine to "
+                              "apply that machine's titles.")
+    p_bf_ct.add_argument("--dry-run", action="store_true",
+                         help="Report what would change, roll everything back, write nothing")
+    _add_format_arg(p_bf_ct)
+    p_bf_ct.set_defaults(func=cmd_backfill)
 
     return parser
 

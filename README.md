@@ -193,6 +193,10 @@ lav pricing add --model gpt-5.4 --input 2.0 --output 8.0 --from-date 2026-04-01
 
 # Backfill tool outcomes (status / error / duration) on historical tool rows
 lav backfill tool-outcomes
+
+# Rebuild Codex titles (see "Codex titles" below)
+lav backfill codex-titles
+lav backfill codex-titles --state-db /tmp/agent_state_5.sqlite   # another node's titles
 ```
 
 **Output formats**: JSON (default, for piping/scripting), `--format table` (human-readable), `--format brief` (one line per result).
@@ -211,6 +215,25 @@ lav-parse --since 2026-06-01     # bounded re-read: widen the window, insert onl
 lav-parse-chatgpt               # parse ChatGPT export
 lav-parse-chatgpt --full        # full reparse
 ```
+
+**Codex titles.** Codex injects its context (permissions, skills, app-context) as messages
+marked `role: "user"`, indistinguishable from a real one, so the "first user message" heuristic
+titled 90% of Codex interactions with a wrapper like `<permissions instructions>`. The real
+title is not in the rollout files at all — it lives in Codex's own state database,
+`~/.codex/state_<N>.sqlite`, which is what the Codex app-server's `thread/list` method reads.
+The parser now reads it from there (`name`, falling back to the always-present `preview`),
+picking the **highest** `state_<N>` generation present; a missing or unreadable database costs
+you the nicer title and nothing else.
+
+`lav backfill codex-titles` repairs interactions parsed before this change, with no reparse:
+it re-derives `display` from the stored messages and takes `summary` from the state database.
+
+- **Run it on every machine**, like every other backfill.
+- **The collector cannot do it alone.** Codex's state database never leaves the machine Codex
+  runs on, so the collector can resolve none of the agent's threads. Copy the agent's
+  `state_<N>.sqlite` across and point `--state-db` at the copy.
+- **Check `injected_titles_after` in the output.** It is the residual — how many rows are still
+  titled with an injected block. Anything above a handful means a wrapper is being missed.
 
 **`--since <ISO>` — bounded re-read.** An incremental parse only reads what arrived after the
 stored watermark. `--since` temporarily lowers that watermark so the parser re-reads a window
