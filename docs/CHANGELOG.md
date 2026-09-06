@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+LAV-90: pricing seed — `gpt-6-astra` (OpenAI, released 2026-09-03): $10/$50 per-MTok input/output, cached input $1.00/MTok, cache_write 0 like every other OpenAI row (OpenAI caching is automatic and not billed on write — OpenRouter's $12.50 figure is the Anthropic model, not this one). `from_date` is the real release date, not the 2024-01-01 placeholder, same as `gpt-5.4` and `claude-fable-5-1`. Fast mode (2x), batch/flex (0.5x) and the >272K-token tier ($20/$75) are NOT modelled — the table has no column for them; the row's `notes` says so. Rows were also added by hand on both nodes, since the seed only fills models with no pricing at all.
+
 LAV-90: the kb_indexer was the only pipeline still billed to the Anthropic Console balance, and it stopped silently when that balance emptied.
 - **Symptom**: `lav-classify` kept working while semantic search fell behind. Every interaction in the indexer log ended `ERROR: Error code: 400 ... credit balance is too low`, and a run reported `indexed=0 errors=23` while reporting DONE, exit code 0.
 - **Cause**: `generate_tags()` hardcoded `anthropic.Anthropic` + Haiku. The classifier had already moved to Azure Foundry (prepaid) under `LAV_CLASSIFY_BACKEND`, but the indexer had no equivalent switch, so the two pipelines were billed to different accounts with no way to tell from config.

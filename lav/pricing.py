@@ -67,6 +67,14 @@ DEFAULT_PRICING = [
     ("gpt-5.6-sol", "openai", 5.00, 30.00, 0, 0.50, "2024-01-01"),
     ("gpt-5.6-terra", "openai", 2.50, 15.00, 0, 0.25, "2024-01-01"),
     ("gpt-5.6-luna", "openai", 1.00, 6.00, 0, 0.10, "2024-01-01"),
+    # GPT-6 Astra, uscita 2026-09-03: from_date reale, non il 2024-01-01 di
+    # comodo, perche' prima non esisteva. Cached input 1.00/MTok; il cache
+    # write resta 0 come per gli altri OpenAI (caching automatico, non
+    # fatturato in scrittura). Fast mode 2x, batch/flex 0.5x e la fascia
+    # oltre 272K token (20/75) non sono modellati qui.
+    ("gpt-6-astra", "openai", 10.00, 50.00, 0, 1.00, "2026-09-03", None,
+     "GPT-6 Astra launch pricing (openai.com/index/gpt-6-astra, 2026-09-06). "
+     "Fast mode 2x, batch/flex 0.5x, oltre 272K token 20/75: non modellati."),
     # LAV-76: hidden Codex slug (models_cache.json: "Automatic approval review
     # model for Codex"), used when approval_policy=never + reviewer=auto_review.
     # No public OpenAI listing; spend rides the ChatGPT plan, not per-token.
