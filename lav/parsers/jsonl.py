@@ -1242,6 +1242,9 @@ _CODEX_SYSTEM_TAG_NAMES = (
     # by reading one example — `lav backfill codex-titles` reports the residual
     # as `injected_titles_after` for exactly this reason.
     "collaboration_mode", "apps_instructions", "plugins_instructions",
+    # Only ever seen from the NEWER Codex on prod-host (0.147-alpha), not on
+    # dev-host (0.144.4): the list has to be re-checked per node, not once.
+    "multi_agent_mode",
 )
 
 _SYSTEM_TAG_NAMES = _CLAUDE_SYSTEM_TAG_NAMES + _CODEX_SYSTEM_TAG_NAMES
