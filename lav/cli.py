@@ -904,8 +904,15 @@ def cmd_backfill_codex_titles(args):
     if not db_path.exists():
         _die(f"No database at {db_path}. Run lav-parse first.")
 
-    state_db = getattr(args, "state_db", None)
-    titles = load_codex_thread_titles(state_db)
+    # LAV-91: repeatable, because a collector needs the titles of EVERY node in
+    # ONE pass. Two sequential runs do not compose: the second re-derives the
+    # summary of every session its own state DB does not know, wiping the titles
+    # the first run just wrote. Earlier paths win on conflict.
+    state_dbs = getattr(args, "state_db", None) or [None]
+    titles = {}
+    for one in state_dbs:
+        for k, v in load_codex_thread_titles(one).items():
+            titles.setdefault(k, v)
     if not titles:
         # Not fatal: repair 1 still runs and fixes display for every row. But it
         # is the difference between "titles from Codex" and "titles guessed from
@@ -919,6 +926,16 @@ def cmd_backfill_codex_titles(args):
     # update_interaction() SWALLOWS sqlite3.Error (it prints and moves on), so
     # without this every row silently no-ops and the run still reports failed=0.
     conn.execute("PRAGMA busy_timeout = 30000")
+    try:
+        # Claim the write lock UP FRONT rather than inferring the lock later from
+        # "0 rows changed" — that inference cannot tell a locked DB from an
+        # already-clean one, and got it wrong in both directions.
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("ROLLBACK")
+    except sqlite3.OperationalError as e:
+        conn.close()
+        _die(f"{db_path} is locked by another process ({e}). The scheduled lav-parse "
+             f"or lav-server holds it; re-run when it is idle. Nothing was written.")
     try:
         rows = conn.execute("""
             SELECT i.session_id, i.project_id, i.user_id, i.host_id,
@@ -971,20 +988,9 @@ def cmd_backfill_codex_titles(args):
     finally:
         conn.close()
 
-    # Honest failure reporting: update_interaction() swallows sqlite3.Error, so
-    # "0 changed" while injected titles remain is a silent no-op (a locked DB),
-    # NOT a clean run. Say so instead of returning a reassuring failed=0.
-    warning = None
-    if stats["changed"] == 0 and after_broken > 0:
-        warning = (f"NOTHING WAS WRITTEN but {after_broken} rows still carry an injected "
-                   f"title. The DB was most likely locked by another process (scheduled "
-                   f"lav-parse or lav-server). Re-run when it is idle.")
-        print(f"[backfill] WARNING: {warning}", file=sys.stderr)
-
     _output({
         "db": str(db_path),
-        "warning": warning,
-        "state_db": str(state_db) if state_db else "(auto-discovered)",
+        "state_db": [str(d) for d in state_dbs if d] or "(auto-discovered)",
         "dry_run": bool(getattr(args, "dry_run", False)),
         "codex_titles_loaded": len(titles),
         "sessions_scanned": stats["scanned"],
@@ -1405,10 +1411,11 @@ def build_parser():
                     "copy the agent's state_<N>.sqlite over and pass --state-db.",
     )
     p_bf_ct.add_argument("--db", help=f"SQLite DB path (default: {UNIFIED_DB_PATH})")
-    p_bf_ct.add_argument("--state-db", dest="state_db",
+    p_bf_ct.add_argument("--state-db", dest="state_db", action="append",
                          help="Codex state_<N>.sqlite to read titles from. Default: highest "
-                              "generation in ~/.codex/. Pass a copy from another machine to "
-                              "apply that machine's titles.")
+                              "generation in ~/.codex/. Repeatable, and earlier paths win: a "
+                              "collector needs every node's titles in ONE pass, since a second "
+                              "run re-derives (and so wipes) titles the first one wrote.")
     p_bf_ct.add_argument("--dry-run", action="store_true",
                          help="Report what would change, roll everything back, write nothing")
     _add_format_arg(p_bf_ct)
