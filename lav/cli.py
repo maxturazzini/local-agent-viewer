@@ -915,6 +915,10 @@ def cmd_backfill_codex_titles(args):
               "(including one copied from another machine).", file=sys.stderr)
 
     conn = sqlite3.connect(str(db_path))
+    # The scheduled lav-parse holds a write lock for minutes at a time, and
+    # update_interaction() SWALLOWS sqlite3.Error (it prints and moves on), so
+    # without this every row silently no-ops and the run still reports failed=0.
+    conn.execute("PRAGMA busy_timeout = 30000")
     try:
         rows = conn.execute("""
             SELECT i.session_id, i.project_id, i.user_id, i.host_id,
@@ -967,8 +971,19 @@ def cmd_backfill_codex_titles(args):
     finally:
         conn.close()
 
+    # Honest failure reporting: update_interaction() swallows sqlite3.Error, so
+    # "0 changed" while injected titles remain is a silent no-op (a locked DB),
+    # NOT a clean run. Say so instead of returning a reassuring failed=0.
+    warning = None
+    if stats["changed"] == 0 and after_broken > 0:
+        warning = (f"NOTHING WAS WRITTEN but {after_broken} rows still carry an injected "
+                   f"title. The DB was most likely locked by another process (scheduled "
+                   f"lav-parse or lav-server). Re-run when it is idle.")
+        print(f"[backfill] WARNING: {warning}", file=sys.stderr)
+
     _output({
         "db": str(db_path),
+        "warning": warning,
         "state_db": str(state_db) if state_db else "(auto-discovered)",
         "dry_run": bool(getattr(args, "dry_run", False)),
         "codex_titles_loaded": len(titles),
