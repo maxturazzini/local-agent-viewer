@@ -267,3 +267,36 @@ The redesign it proposes is **parked** — but three parts are useful right now,
 | [otel-gap/07-numeri-e-insidie.md](otel-gap/07-numeri-e-insidie.md) | Quantified data losses in the current parsers (e.g. the ChatGPT 2023-05 export is skipped **entirely**, 154/154 conversations) |
 
 Entry point: [otel-gap/00-stato-e-decisioni.md](otel-gap/00-stato-e-decisioni.md).
+
+---
+
+## 7. Entity graph (LAV-93)
+
+`interaction_metadata.people` / `.clients` are per-interaction tags written by the classifier. The entity graph turns them into things that can be counted, merged and dated. Three tables, created by `init_db()` on every node, filled only where `lav entities` runs (the node that classifies):
+
+| Table | One row per | Key columns |
+|---|---|---|
+| `entities` | name of a person, an organization, or `self` (the user) | `kind`, `name`, `name_key` (accent/space/punctuation-insensitive) |
+| `entity_edges` | relationship between two entities, **always dated** | `src_id`, `relation`, `dst_id`, `valid_from`, `valid_to`, `date_basis`, `source`, `confirmed` |
+| `entity_mentions` | entity named in one interaction | `entity_id`, `session_id`, `project_id`, `root_session_id`, `involvement`, `valid_from`/`valid_to` (first/last message) |
+
+**Edges.** `alias_of` (variant → canonical), `works_for` (person → organization), and the roles `client | prospect | partner | supplier | own | role_unknown` (organization or person → `self`). `valid_from` NULL = start unknown, `valid_to` NULL = still valid. A new period of the same relationship is a new row, so history is never overwritten. `date_basis` says what the start date rests on (`invoice`, `folder`, `session`, `manual`...): most dates imported from records are evidence, not the true start.
+
+**Confirmation.** Rules and imports can propose (`confirmed = 0`); only confirmed `alias_of` edges merge names, and only confirmed role edges give a role. `works_for` may stay a proposal and still carry the organization's role. `lav entities pending` lists what needs a human; `lav entities confirm <id> [--valid-from] [--valid-to] [--reject]` settles it.
+
+**Involvement** is found deterministically in the messages, never asked to the model (`lav/classifiers/sources.py` segments the session):
+
+| Value | The name occurs in |
+|---|---|
+| `conversation` | user or assistant text |
+| `data` | results of a communication tool (taxonomy `entities.communication_tools`) |
+| `listing` | any of the above, in an automated run (taxonomy `entities.automated_prompt_prefixes`) |
+| `instructions` | only a loaded skill body |
+| `tool_output` | only another tool's result |
+| `not_found` | nowhere: the model rewrote or invented it |
+
+**Counting.** `lav entities list` counts ROOT sessions (`<root>::agent-<id>` → `<root>`), so a workflow's subagents count once. By default only `conversation` and `data` count, plus `listing` for entities whose role is known: a daily digest keeps clients and team and drops strangers. `--all` counts everything, `--at DATE` evaluates roles at a date.
+
+**Relations from email addresses.** `entity_sightings` stores every address seen in an interaction (messages and tool results), with the display name when the same record carries one (chat members, attendees). `derive_relations()` matches them to people (display name, or the name inside the address) and proposes `works_for` the organization owning the domain (`entity_domains` from the seed, else an organization whose name is the domain label, else a new organization named after the domain). Dated by the first sighting; an address-only match needs two sessions. Free-mail and technical domains are ignored.
+
+**Seeds.** Roles are facts about relationships, so they come from the user's records, not from the classifier: `lav entities import seed.json` (format: `docs/entities.seed.example.json`). Real seeds contain third-party names and must never be committed.

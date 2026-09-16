@@ -1223,6 +1223,49 @@ def _add_common_args(parser):
                         help="Output format (default: json)")
 
 
+# ── Entities (LAV-93) ───────────────────────────────────────
+
+def _entities_connection(args):
+    db_path = Path(args.db) if getattr(args, "db", None) else UNIFIED_DB_PATH
+    if not db_path.exists():
+        _die(f"No database at {db_path}. Run lav-parse first.")
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
+def cmd_entities(args):
+    """Dispatch `lav entities <subcommand>`. Local DB only: run on the node that classifies."""
+    from lav import entities as ent
+
+    conn = _entities_connection(args)
+    try:
+        if args.entities_command == "build":
+            data = ent.build_mentions(conn, since=args.since, until=args.until,
+                                      project=args.project, dry_run=args.dry_run)
+        elif args.entities_command == "import":
+            with open(args.file, encoding="utf-8") as f:
+                seed = json.load(f)
+            data = ent.import_seed(conn, seed, source_label=Path(args.file).name)
+        elif args.entities_command == "list":
+            data = ent.list_entities(conn, kind=args.kind, at=args.at, since=args.since, until=args.until,
+                                     all_involvements=args.all, role=args.role)
+            if args.format == "brief":
+                data = [{"session_id": f"{d['sessions']:>3}", "project": d["kind"],
+                         "summary": f"{d['name']}  [{d['role'] or '-'}{' @ ' + d['organization'] if d['organization'] else ''}]"}
+                        for d in data]
+        elif args.entities_command == "pending":
+            data = ent.pending(conn, limit=args.limit)
+        elif args.entities_command == "confirm":
+            data = ent.confirm_edge(conn, args.edge_id, valid_from=args.valid_from,
+                                    valid_to=args.valid_to, reject=args.reject)
+        else:
+            _die(f"Unknown entities subcommand '{args.entities_command}'.")
+    finally:
+        conn.close()
+    _output(data, args.format)
+
+
 def _add_format_arg(parser):
     """Add just the --format arg."""
     parser.add_argument("--format", choices=["json", "table", "brief"], default="json",
@@ -1421,6 +1464,61 @@ def build_parser():
     _add_format_arg(p_bf_ct)
     p_bf_ct.set_defaults(func=cmd_backfill)
 
+    # entities (LAV-93)
+    p_ent = sub.add_parser("entities", help="LAV-93: people/organizations graph with dated edges")
+    ent_sub = p_ent.add_subparsers(dest="entities_command")
+
+    p_ent_b = ent_sub.add_parser(
+        "build", help="Derive entity mentions from classified interactions in a time window",
+        description="Reads interaction_metadata.people/clients, creates the entities, and records "
+                    "for each interaction HOW the entity was involved (conversation, data, listing, "
+                    "instructions, tool_output, not_found), found deterministically in the messages. "
+                    "Idempotent per interaction. Proposes alias_of edges for partial names "
+                    "(confirmed = 0). Local DB only.")
+    p_ent_b.add_argument("--db", help=f"SQLite DB path (default: {UNIFIED_DB_PATH})")
+    p_ent_b.add_argument("--since", help="Interactions started at/after this ISO date")
+    p_ent_b.add_argument("--until", help="Interactions started before this ISO date")
+    p_ent_b.add_argument("--project", help="Only this project name")
+    p_ent_b.add_argument("--dry-run", action="store_true", help="Compute and report, roll everything back")
+    _add_format_arg(p_ent_b)
+    p_ent_b.set_defaults(func=cmd_entities)
+
+    p_ent_i = ent_sub.add_parser(
+        "import", help="Load a private seed (entities, aliases, dated edges)",
+        description="Seed format: docs/entities.seed.example.json. Keep real seeds OUT of the repo.")
+    p_ent_i.add_argument("file", help="Seed JSON file")
+    p_ent_i.add_argument("--db", help=f"SQLite DB path (default: {UNIFIED_DB_PATH})")
+    _add_format_arg(p_ent_i)
+    p_ent_i.set_defaults(func=cmd_entities)
+
+    p_ent_l = ent_sub.add_parser(
+        "list", help="Canonical entities, role at a date, sessions counted once per root session")
+    p_ent_l.add_argument("--db", help=f"SQLite DB path (default: {UNIFIED_DB_PATH})")
+    p_ent_l.add_argument("--kind", choices=["person", "organization"])
+    p_ent_l.add_argument("--role", help="Only entities with this role (client, prospect, partner, supplier, own)")
+    p_ent_l.add_argument("--at", help="Role valid at this ISO date (default: open edges)")
+    p_ent_l.add_argument("--since", help="Mentions from this ISO date")
+    p_ent_l.add_argument("--until", help="Mentions before this ISO date")
+    p_ent_l.add_argument("--all", action="store_true",
+                         help="Count every involvement (default: conversation/data, plus listing when the role is known)")
+    _add_format_arg(p_ent_l)
+    p_ent_l.set_defaults(func=cmd_entities)
+
+    p_ent_p = ent_sub.add_parser("pending", help="Unconfirmed edges and mentioned entities with no role")
+    p_ent_p.add_argument("--db", help=f"SQLite DB path (default: {UNIFIED_DB_PATH})")
+    p_ent_p.add_argument("--limit", type=_nonneg_int, default=200)
+    _add_format_arg(p_ent_p)
+    p_ent_p.set_defaults(func=cmd_entities)
+
+    p_ent_c = ent_sub.add_parser("confirm", help="Confirm (or reject) a proposed edge, optionally dating it")
+    p_ent_c.add_argument("edge_id", type=int)
+    p_ent_c.add_argument("--db", help=f"SQLite DB path (default: {UNIFIED_DB_PATH})")
+    p_ent_c.add_argument("--valid-from", dest="valid_from")
+    p_ent_c.add_argument("--valid-to", dest="valid_to")
+    p_ent_c.add_argument("--reject", action="store_true", help="Delete an UNCONFIRMED edge")
+    _add_format_arg(p_ent_c)
+    p_ent_c.set_defaults(func=cmd_entities)
+
     return parser
 
 
@@ -1440,6 +1538,10 @@ def main():
     # Handle backfill with no subcommand
     if args.command == "backfill" and not getattr(args, "backfill_command", None):
         parser.parse_args(["backfill", "--help"])
+        sys.exit(2)
+
+    if args.command == "entities" and not getattr(args, "entities_command", None):
+        parser.parse_args(["entities", "--help"])
         sys.exit(2)
 
     if not hasattr(args, "func"):

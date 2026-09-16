@@ -1,0 +1,23 @@
+{
+  "self": "Jane Doe",
+  "entities": [
+    {"kind": "person", "name": "John Placeholder", "aliases": ["Johnny", "J. Placeholder"]},
+    {"kind": "organization", "name": "Example Corp", "aliases": ["Example Corporation"]},
+    {"kind": "organization", "name": "Doe Consulting"}
+  ],
+  "edges": [
+    {"src": ["organization", "Doe Consulting"], "relation": "own", "dst": "self",
+     "valid_from": "2020-01-01", "date_basis": "manual", "confirmed": true},
+    {"src": ["organization", "Example Corp"], "relation": "client", "dst": "self",
+     "valid_from": "2025-09-03", "date_basis": "invoice", "confirmed": true,
+     "note": "first invoice; valid_to stays empty while the relationship is open"},
+    {"src": ["organization", "Example Corp"], "relation": "prospect", "dst": "self",
+     "valid_from": "2025-03-01", "valid_to": "2025-09-02", "date_basis": "folder", "confirmed": true,
+     "note": "an earlier period of the same relationship is a separate edge"},
+    {"src": ["person", "John Placeholder"], "relation": "works_for", "dst": ["organization", "Example Corp"],
+     "valid_from": "2026-01-15", "date_basis": "address_book", "confirmed": true},
+    {"src": ["person", "Alex Sample"], "relation": "works_for", "dst": ["organization", "Example Corp"],
+     "valid_from": "2026-09-15", "date_basis": "session", "confirmed": false,
+     "note": "proposed from the mail domain, to be confirmed"}
+  ]
+}

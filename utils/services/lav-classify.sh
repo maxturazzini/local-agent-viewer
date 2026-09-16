@@ -35,3 +35,14 @@ if [ $EXIT_CODE -ne 0 ]; then
     exit $EXIT_CODE
 fi
 log "OK: $(echo "$OUTPUT" | tail -3 | tr '\n' ' ')"
+
+# LAV-93: refresh the entity graph for the last two days (no model calls, seconds).
+# Two days, not one: a session classified while still running is rebuilt the next hour.
+if [ -x "$VENV/bin/lav" ]; then
+    SINCE=$(date -v-2d +%Y-%m-%d 2>/dev/null || date -d "2 days ago" +%Y-%m-%d)
+    if EOUT=$("$VENV/bin/lav" entities build --since "$SINCE" 2>&1); then
+        log "OK entities build since $SINCE: $(echo "$EOUT" | "$VENV/bin/python" -c 'import json,sys; d=json.load(sys.stdin); print(d["interactions"], "interactions,", d["mentions"], "mentions,", d["relations"].get("edges_created", 0), "new works_for proposals")' 2>/dev/null)"
+    else
+        log "ERROR entities build: $(echo "$EOUT" | tail -3 | tr '\n' ' ')"
+    fi
+fi

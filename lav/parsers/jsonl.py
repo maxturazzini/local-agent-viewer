@@ -885,6 +885,12 @@ def init_db(db_path: Path = UNIFIED_DB_PATH) -> sqlite3.Connection:
         _migrate_add_subagent_spawn(conn)
     except Exception as e:
         print(f"  subagent_spawn migration skipped: {e}")
+    # LAV-93: entity graph tables (entities, entity_edges, entity_mentions)
+    try:
+        from lav.entities import ensure_schema as _ensure_entity_schema
+        _ensure_entity_schema(conn)
+    except Exception as e:
+        print(f"  entity schema skipped: {e}")
     # Migrate conversations -> interactions
     try:
         _migrate_conversations_to_interactions(conn, db_path)
