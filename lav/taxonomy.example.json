@@ -84,5 +84,10 @@
     "contracts",
     "internal_architecture",
     "employee_data"
-  ]
+  ],
+  "entities": {
+    "user_aliases": ["Jane", "Jane Doe", "jdoe"],
+    "communication_tools": ["mcp__gmail__search_*", "mcp__gmail__get_message", "mcp__calendar__list_events", "mcp__slack__list_messages"],
+    "automated_prompt_prefixes": ["Run /daily-digest"]
+  }
 }

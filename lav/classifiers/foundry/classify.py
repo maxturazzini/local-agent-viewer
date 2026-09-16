@@ -6,7 +6,10 @@ file isolates the Foundry-specific call quirks so the working openai_strict path
 stays untouched:
   - token-param name (gpt-5/o-series want `max_completion_tokens`, others `max_tokens`);
   - a json_schema → json_object fallback for serverless endpoints that don't
-    support strict structured outputs.
+    support strict structured outputs;
+  - optional `reasoning_effort` (LAV_FOUNDRY_REASONING_EFFORT) and `temperature`
+    (LAV_FOUNDRY_TEMPERATURE), both opt-in, both off by default, sent on every
+    attempt below (json_schema call, json_object fallback, last-resort call).
 
 Reuses the SAME schema + system prompt as openai_strict (rendered from taxonomy),
 so the task definition never drifts. Selected via LAV_CLASSIFY_BACKEND=foundry.
@@ -78,6 +81,14 @@ def classify(messages: List[Dict], openai_client, model: str = "") -> Dict[str, 
     if _re:
         extra["reasoning_effort"] = _re
 
+    # Temperature override, unset by default (endpoint default applies). Kept OUT of
+    # `extra` on purpose: unlike reasoning_effort, it's sent on every attempt below,
+    # including the last-resort call that drops `extra` for max compatibility.
+    temp = {}
+    _temp = os.getenv("LAV_FOUNDRY_TEMPERATURE", "").strip()
+    if _temp:
+        temp["temperature"] = float(_temp)
+
     _holder = {}
 
     def _call(response_format, user_content, token_kwargs, more):
@@ -95,18 +106,19 @@ def classify(messages: List[Dict], openai_client, model: str = "") -> Dict[str, 
         return resp.choices[0].message.content or ""
 
     try:
-        content = _call(_RESPONSE_FORMAT, user, tok, extra)
+        content = _call(_RESPONSE_FORMAT, user, tok, {**extra, **temp})
     except Exception:
         # Endpoint may not support strict json_schema (some serverless OSS
         # deployments), the token-param name, or reasoning_effort. Fall back to
-        # json_object; last resort drops reasoning_effort and swaps the token kwarg.
+        # json_object; last resort drops reasoning_effort and swaps the token kwarg
+        # (temperature, when set, still goes out on both fallback attempts).
         keys = ", ".join(CLASSIFICATION_SCHEMA["properties"].keys())
         hint = f"{user}\n\nReturn ONLY a JSON object with exactly these keys: {keys}."
         alt = {"max_tokens": 2000} if "max_completion_tokens" in tok else {"max_completion_tokens": 2000}
         try:
-            content = _call({"type": "json_object"}, hint, tok, extra)
+            content = _call({"type": "json_object"}, hint, tok, {**extra, **temp})
         except Exception:
-            content = _call({"type": "json_object"}, hint, alt, {})
+            content = _call({"type": "json_object"}, hint, alt, temp)
 
     _record_usage(model, _holder.get("usage"))
     raw = _parse_json_response(content)

@@ -60,6 +60,20 @@ FIELDS_ITEMS = list(_FIELDS.get("items", []))
 FIELDS_ENTITIES_NOTE = _FIELDS.get("entities_note", "")
 _FIELDS_SAMPLE = _FIELDS.get("sample_json")
 
+# Entities (LAV-92/93). Deployment-specific, so it lives in the private taxonomy file:
+#   user_aliases              names the user goes by. Never extracted as a third party:
+#                             the classifier drops them from `people` deterministically.
+#   communication_tools       fnmatch patterns of tool names whose RESULTS name real
+#                             contacts (mail, calendar, chat). Only their "who" fields
+#                             reach the classifier; every other tool result stays out.
+#   automated_prompt_prefixes first-user-message prefixes of scheduled/automated runs
+#                             (digests, reports). Names they surface are `listing`.
+# All three default to empty, which reproduces the pre-LAV-92 behaviour.
+_ENT = _DATA.get("entities", {}) or {}
+USER_ALIASES = [a for a in _ENT.get("user_aliases", []) if isinstance(a, str) and a.strip()]
+COMMUNICATION_TOOL_PATTERNS = [t for t in _ENT.get("communication_tools", []) if isinstance(t, str) and t.strip()]
+AUTOMATED_PROMPT_PREFIXES = [t for t in _ENT.get("automated_prompt_prefixes", []) if isinstance(t, str) and t.strip()]
+
 CLASSIFICATION_HEADER = _CLS.get("header", "")
 CLASSIFICATION_GUIDANCE = _CLS.get("guidance", "")
 CLASSIFICATION_EXAMPLES = _CLS.get("examples", "")

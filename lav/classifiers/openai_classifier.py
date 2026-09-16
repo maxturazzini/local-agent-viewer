@@ -104,6 +104,12 @@ def _sanitize_result(raw: dict) -> dict:
 
     result["topics"] = result["topics"][:5]
 
+    # The user is never a third party (LAV-92): drop their own alias(es) from
+    # `people` before the sensitivity rule below sees the field. Lazy import:
+    # sources.py imports _clean/_coerce_blocks from this module.
+    from lav.classifiers import sources
+    result["people"] = [p for p in result["people"] if not sources.is_user_alias(p)]
+
     if result["people"] and result["data_sensitivity"] == "public":
         result["data_sensitivity"] = "internal"
 
@@ -245,14 +251,21 @@ def _coerce_blocks(content):
     return None
 
 
-def _blocks_to_text(blocks, rich: bool) -> str:
-    """Extract readable text from content blocks: text + tool names (+ tool results in rich)."""
+def _blocks_to_text(blocks, rich: bool, sources_mod=None) -> str:
+    """Extract readable text from content blocks: text + tool names (+ tool results in rich).
+
+    When ``sources_mod`` is given (the lazily-imported ``lav.classifiers.sources``),
+    a text block carrying a loaded skill body (starts with ``sources.SKILL_PREFIX``)
+    collapses to ``sources.skill_marker()`` instead of the full body (LAV-92)."""
     out = []
     for block in blocks:
         if isinstance(block, dict):
             bt = block.get("type")
             if bt == "text":
-                out.append(block.get("text", ""))
+                text = block.get("text", "")
+                if sources_mod is not None and text.startswith(sources_mod.SKILL_PREFIX):
+                    text = sources_mod.skill_marker(text)
+                out.append(text)
             elif bt == "tool_use":
                 out.append(f"[tool: {block.get('name', '')}]")
             elif bt == "tool_result" and rich:
@@ -261,6 +274,8 @@ def _blocks_to_text(blocks, rich: bool) -> str:
                     tr = " ".join(b.get("text", "") for b in tr if isinstance(b, dict))
                 out.append(f"[result: {_clean(str(tr))[:500]}]")
         elif isinstance(block, str):
+            if sources_mod is not None and block.startswith(sources_mod.SKILL_PREFIX):
+                block = sources_mod.skill_marker(block)
             out.append(block)
     return " ".join(out)
 
@@ -270,9 +285,30 @@ def prepare_messages_for_classification(messages: List[Dict]) -> str:
 
     Cleans base64 blobs, system-wrapper tags, and recurring IDE/harness noise, and
     parses JSON-stringified content-block lists so the model sees real text, not raw
-    JSON. Default mode keeps the user intent (full) + assistant first line and drops
-    tool results; LAV_CLASSIFY_RICH=1 adds full assistant text, tool names, and
-    truncated tool results. Truncated to config.CLASSIFY_MAX_CHARS."""
+    JSON. In both modes, a text block (or plain-string message content) that carries
+    a loaded skill body — starts with ``sources.SKILL_PREFIX`` — collapses to a
+    one-line ``[skill loaded: ...]`` marker instead of the full body (LAV-92): skill
+    instructions are not conversation, and any names in them (contacts, examples)
+    would otherwise leak into `people`/`clients`.
+
+    Default mode keeps the user intent (full) + assistant first line, drops tool
+    results, and appends ``sources.communication_block()`` — the WHO fields (senders,
+    organizers, chat names, members, subjects) of tool results from the
+    deployment's configured communication tools (mail, calendar, chat) — after the
+    conversation text. The conversation text is truncated to
+    ``max(0, config.CLASSIFY_MAX_CHARS - len(block))`` first, so appending the block
+    never pushes the total past the cap and a long conversation never truncates the
+    block away. With no skill bodies and no configured communication tools, the
+    block is empty and the output is unchanged from before LAV-92.
+
+    LAV_CLASSIFY_RICH=1 keeps its own tool-result behaviour instead: full assistant
+    text, tool names, and truncated tool results, with no communication block
+    appended (tool results are already included). Truncated to
+    config.CLASSIFY_MAX_CHARS overall."""
+    # Lazy import: sources.py imports _clean/_coerce_blocks from this module, so a
+    # top-level import here would be circular.
+    from lav.classifiers import sources
+
     rich = os.getenv("LAV_CLASSIFY_RICH", "").strip().lower() in ("1", "true", "yes")
     parts = []
     for msg in messages:
@@ -284,7 +320,9 @@ def prepare_messages_for_classification(messages: List[Dict]) -> str:
             is_tool_result = any(isinstance(b, dict) and b.get("type") == "tool_result" for b in blocks)
             if is_tool_result and not rich:
                 continue
-            content = _blocks_to_text(blocks, rich)
+            content = _blocks_to_text(blocks, rich, sources)
+        elif isinstance(content, str) and content.startswith(sources.SKILL_PREFIX):
+            content = sources.skill_marker(content)
 
         content = _clean(str(content)).strip()
         if not content:
@@ -296,7 +334,13 @@ def prepare_messages_for_classification(messages: List[Dict]) -> str:
             parts.append(f"Assistant: {content[:3000] if rich else content.split(chr(10))[0][:300]}")
 
     text = "\n\n".join(parts)
-    return text[:config.CLASSIFY_MAX_CHARS]
+
+    if rich:
+        return text[:config.CLASSIFY_MAX_CHARS]
+
+    block = sources.communication_block(messages)
+    cap = max(0, config.CLASSIFY_MAX_CHARS - len(block))
+    return text[:cap] + block
 
 
 def full_scan_text(messages: List[Dict]) -> str:
