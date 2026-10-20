@@ -35,26 +35,37 @@ DEFAULT_PRICING = [
     # with no pricing at all (see seed_default_pricing). A model priced by hand
     # at its real release date is left alone; do NOT rely on the UNIQUE
     # (model, from_date) constraint to dedupe (LAV-76).
+    # Opus 5.5 (2026-09-22) taglia del 20% input/output rispetto a Opus 5 e
+    # porta il cache read a 0.05x dell'input (0.20) invece del solito 0.1x.
+    ("claude-opus-5-5", "anthropic", 4.00, 20.00, 5.00, 0.20, "2026-09-22", None,
+     "Opus 5.5 launch pricing (anthropic.com/claude-opus-5-5). Cache read = "
+     "0.05x input, non il 0.1x standard. Fast mode 8/40 e batch 2/10 non modellati."),
     ("claude-opus-5", "anthropic", 5.00, 25.00, 6.25, 0.50, "2024-01-01"),
     ("claude-fable-5", "anthropic", 10.00, 50.00, 12.50, 1.00, "2024-01-01"),
     # Fable 5.1 succeeds Fable 5 at the same per-token input/output price, but
     # cuts cache_read to $0.25/MTok (vs $1.00 on Fable 5) — see claude-api skill.
-    ("claude-fable-5-1", "anthropic", 10.00, 50.00, 12.50, 0.25, "2026-09-02"),
+    # from_date 2026-09-01: il 2026-09-02 lasciava fuori 20 chiamate del giorno 1.
+    ("claude-fable-5-1", "anthropic", 10.00, 50.00, 12.50, 0.25, "2026-09-01"),
     ("claude-opus-4-8", "anthropic", 5.00, 25.00, 6.25, 0.50, "2024-01-01"),
     ("claude-opus-4-7", "anthropic", 5.00, 25.00, 6.25, 0.50, "2024-01-01"),
     ("claude-opus-4-6", "anthropic", 5.00, 25.00, 6.25, 0.50, "2024-01-01"),
     ("claude-opus-4-5-20251101", "anthropic", 5.00, 25.00, 6.25, 0.50, "2024-01-01"),
     ("claude-opus-4-1-20250805", "anthropic", 15.00, 75.00, 18.75, 1.50, "2024-01-01"),
-    # Sonnet 5 ships with intro pricing through 2026-08-31, then standard —
-    # seeded as two historicised rows so a fresh install is correct on both
-    # sides of the switch (only the second one is open-ended).
-    ("claude-sonnet-5", "anthropic", 2.00, 10.00, 2.50, 0.20, "2024-01-01",
-     "2026-09-01", "Sonnet 5 INTRO pricing, valid through 2026-08-31."),
-    ("claude-sonnet-5", "anthropic", 3.00, 15.00, 3.75, 0.30, "2026-09-01",
-     None, "Sonnet 5 standard pricing after the intro period ends."),
+    # Sonnet 5: l'aumento a 3/15 previsto per il 2026-09-01 e' stato annullato,
+    # il prezzo intro 2/10 e' diventato standard (platform.claude.com pricing).
+    # Una riga sola, aperta: le due righe storicizzate precedenti facevano
+    # pagare Sonnet 5 il 50% in piu' da settembre in avanti.
+    ("claude-sonnet-5", "anthropic", 2.00, 10.00, 2.50, 0.20, "2024-01-01", None,
+     "Sonnet 5 standard 2/10. L'aumento a 3/15 del 2026-09-01 e' stato annullato "
+     "da Anthropic: il prezzo intro e' diventato standard."),
     ("claude-sonnet-4-6", "anthropic", 3.00, 15.00, 3.75, 0.30, "2024-01-01"),
     ("claude-sonnet-4-5-20250929", "anthropic", 3.00, 15.00, 3.75, 0.30, "2024-01-01"),
     ("claude-haiku-4-5-20251001", "anthropic", 1.00, 5.00, 1.25, 0.10, "2024-01-01"),
+    # Haiku 5.5: due fasce per lunghezza del prompt, qui solo quella <=100K.
+    # Cache write 5m 1.25x, cache read 0.1x dell'input.
+    ("claude-haiku-5-5", "anthropic", 0.10, 0.50, 0.125, 0.01, "2026-10-01", None,
+     "Haiku 5.5, prompt <=100K token. Oltre 100K 0.50/2.50, cache write 1h 2x: "
+     "non modellati."),
     # cache_read = official cached-input (10% of input) — LAV-74 alignment
     ("gpt-5.2", "openai", 1.75, 14.00, 0, 0.175, "2024-01-01"),
     ("gpt-5.1-codex-max", "openai", 1.25, 10.00, 0, 0.125, "2024-01-01"),
@@ -64,17 +75,41 @@ DEFAULT_PRICING = [
     # developers.openai.com/api/docs/pricing (input / output / cached-input $/Mtok).
     ("gpt-5.4", "openai", 2.50, 15.00, 0, 0.25, "2024-01-01"),
     ("gpt-5.5", "openai", 5.00, 30.00, 0, 0.50, "2024-01-01"),
-    ("gpt-5.6-sol", "openai", 5.00, 30.00, 0, 0.50, "2024-01-01"),
-    ("gpt-5.6-terra", "openai", 2.50, 15.00, 0, 0.25, "2024-01-01"),
-    ("gpt-5.6-luna", "openai", 1.00, 6.00, 0, 0.10, "2024-01-01"),
+    # Famiglia GPT-5.6: corretta il 2026-09-22 sul listino ufficiale, verificato
+    # sul payload della pagina e ricontrollato contro le tabelle batch (meta')
+    # e fast mode (doppio), che tornano entrambe. I valori precedenti
+    # (5/30, 2.50/15, 1.00/6.00) non hanno mai corrisposto al reale.
+    ("gpt-5.6-sol", "openai", 4.00, 20.00, 5.00, 0.40, "2024-01-01", None,
+     "Prezzo promozionale 4/20, garantito almeno fino al 2026-11-21: "
+     "ricontrollare dopo quella data, potrebbe tornare a 5/30."),
+    ("gpt-5.6-terra", "openai", 2.00, 12.00, 2.50, 0.20, "2024-01-01"),
+    ("gpt-5.6-luna", "openai", 0.20, 1.20, 0.25, 0.02, "2024-01-01"),
     # GPT-6 Astra, uscita 2026-09-03: from_date reale, non il 2024-01-01 di
-    # comodo, perche' prima non esisteva. Cached input 1.00/MTok; il cache
-    # write resta 0 come per gli altri OpenAI (caching automatico, non
-    # fatturato in scrittura). Fast mode 2x, batch/flex 0.5x e la fascia
-    # oltre 272K token (20/75) non sono modellati qui.
-    ("gpt-6-astra", "openai", 10.00, 50.00, 0, 1.00, "2026-09-03", None,
+    # comodo, perche' prima non esisteva. Cached input 1.00/MTok.
+    # ATTENZIONE, cambio di regola rispetto ai modelli OpenAI piu' vecchi: dal
+    # 2026-09-22 il cache write NON e' piu' 0. Su gpt-6-* e gpt-5.6-* il listino
+    # ufficiale ha una colonna "Cache writes" con un prezzo vero; su gpt-5.5 e
+    # precedenti quella colonna e' "-", e li' lo 0 resta giusto. Oggi i
+    # transcript Codex riportano cache_creation_tokens = 0, quindi il prezzo non
+    # moltiplica nulla: e' a listino perche' sia corretto se inizieranno ad
+    # arrivare. Fast mode 2x, batch/flex 0.5x e la fascia oltre 272K token
+    # (20/75) non sono modellati qui.
+    ("gpt-6-astra", "openai", 10.00, 50.00, 12.50, 1.00, "2026-09-03", None,
      "GPT-6 Astra launch pricing (openai.com/index/gpt-6-astra, 2026-09-06). "
      "Fast mode 2x, batch/flex 0.5x, oltre 272K token 20/75: non modellati."),
+    ("gpt-6-sol", "openai", 2.00, 10.00, 2.50, 0.20, "2026-09-03", None,
+     "GPT-6 Sol (developers.openai.com/api/docs/pricing). Long context >272K "
+     "4/15, fast 2x, batch/flex 0.5x: non modellati."),
+    # GPT-6.1 Sol: stesso listino di gpt-6-sol, cambia solo il cached input
+    # (0.20 -> 0.10). Cache write 2.50 da fonti secondarie, non dalla pagina
+    # ufficiale. from_date = primo dato in LAV, la data di uscita e' incerta.
+    ("gpt-6.1-sol", "openai", 2.00, 10.00, 2.50, 0.10, "2026-10-01", None,
+     "GPT-6.1 Sol (openai.com/index/introducing-gpt-6-1-sol). Cache write 2.50 "
+     "non verificato sul listino ufficiale. >272K 2x input/cache 1.5x output, "
+     "fast 2x, batch/flex 0.5x: non modellati."),
+    ("gpt-6-luna", "openai", 0.10, 0.50, 0.125, 0.01, "2026-09-03", None,
+     "GPT-6 Luna (developers.openai.com/api/docs/pricing). Long context >272K "
+     "0.20/0.75, fast 2x, batch/flex 0.5x: non modellati."),
     # LAV-76: hidden Codex slug (models_cache.json: "Automatic approval review
     # model for Codex"), used when approval_policy=never + reviewer=auto_review.
     # No public OpenAI listing; spend rides the ChatGPT plan, not per-token.
