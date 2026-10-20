@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+LAV-94: the agent's pull trigger now survives being off the LAN.
+- **Symptom**: away from home the agent's `notify_collector` POST went to `collector.local`, which does not resolve without mDNS, so the collector never pulled and the agent's sessions arrived only on the next parse back home.
+- **Fix**: optional `collector_url_fallback` in the agent's `config.json` (e.g. the collector's VPN address). `notify_collector` tries `collector_url` first, then the fallback, and stops at the first one that answers; the join timeout grows with the number of URLs. Without the key, behaviour is unchanged.
+
 LAV-93: people/clients were tags, and tags cannot be counted, merged, dated or given a role. New entity graph.
 - **Symptom**: over 30 days the "people" cloud was topped by the user himself (79 rows under three spellings), by a name that one workflow with 97 subagents repeated 97 times, and by an organization the model wrote in 33 sessions where it appears nowhere in the text. The same person showed up as "Surname", "Firstname" and "Firstname Surname". Nothing said who works for whom, or what an organization is to the user.
 - **Model**: three tables created by `init_db()` on every node — `entities` (person | organization | self, `name_key` merges accents/spaces/punctuation), `entity_edges` (**always dated**: `valid_from` NULL = start unknown, `valid_to` NULL = still valid; `alias_of`, `works_for`, and the roles `client|prospect|partner|supplier|own|role_unknown` towards `self`), `entity_mentions` (entity → interaction, dated by first/last message, with `root_session_id` and `involvement`). Plus `entity_sightings` (email addresses seen per interaction) and `entity_domains` (mail domains of an organization).

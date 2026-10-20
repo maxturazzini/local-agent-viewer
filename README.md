@@ -469,9 +469,12 @@ Each machine has a **local** config at `~/.local/share/local-agent-viewer/config
 {
   "role": "agent",
   "port": 8764,
-  "collector_url": "http://collector.local:8764"
+  "collector_url": "http://collector.local:8764",
+  "collector_url_fallback": "http://192.0.2.1:8764"
 }
 ```
+
+`collector_url_fallback` (optional) is tried when `collector_url` cannot be reached — e.g. an mDNS `.local` name while the agent is off the LAN and only on a VPN.
 
 ### Data flow
 

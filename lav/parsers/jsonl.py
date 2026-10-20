@@ -3921,12 +3921,16 @@ def main():
 def notify_collector(runtime_config: dict) -> None:
     """Notify the collector to pull from this agent after a parse run.
 
-    Non-blocking HTTP POST to {collector_url}/api/sync. Silent on error.
+    Non-blocking HTTP POST to {collector_url}/api/sync, with a fallback URL
+    for when the primary hostname doesn't resolve (e.g. an mDNS ".local" name
+    while off the LAN, on Tailscale only). Silent on error.
     Only runs when role=agent and collector_url is set in local config.
     Cross-platform: works on Mac, Linux, Windows.
 
     Config example (~/.local/share/local-agent-viewer/config.json on agent):
-        {"role": "agent", "port": 8764, "collector_url": "http://collector.local:8764"}
+        {"role": "agent", "port": 8764,
+         "collector_url": "http://collector.local:8764",
+         "collector_url_fallback": "http://192.0.2.1:8764"}
     """
     collector_url = runtime_config.get("collector_url", "")
     if not collector_url:
@@ -3935,6 +3939,9 @@ def notify_collector(runtime_config: dict) -> None:
     if role != "agent":
         return  # both/collector handle their own pulls; only agent notifies
 
+    fallback_url = runtime_config.get("collector_url_fallback", "")
+    urls = [collector_url] + ([fallback_url] if fallback_url else [])
+
     import threading
     import urllib.request
 
@@ -3942,22 +3949,24 @@ def notify_collector(runtime_config: dict) -> None:
     api_key = os.environ.get("LAV_API_KEY", "")
 
     def _post():
-        try:
-            payload = json.dumps({"api_key": api_key, "scope": "agent"}).encode()
-            req = urllib.request.Request(
-                f"{collector_url}/api/sync",
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            urllib.request.urlopen(req, timeout=5)
-            print(f"[notify_collector] Pull trigger sent to {collector_url}")
-        except Exception as e:
-            print(f"[notify_collector] Could not reach collector at {collector_url}: {e}")
+        for url in urls:
+            try:
+                payload = json.dumps({"api_key": api_key, "scope": "agent"}).encode()
+                req = urllib.request.Request(
+                    f"{url}/api/sync",
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                urllib.request.urlopen(req, timeout=5)
+                print(f"[notify_collector] Pull trigger sent to {url}")
+                return
+            except Exception as e:
+                print(f"[notify_collector] Could not reach collector at {url}: {e}")
 
     t = threading.Thread(target=_post, daemon=True)
     t.start()
-    t.join(timeout=6)
+    t.join(timeout=5 * len(urls) + 1)
 
 
 # ===========================================================================
