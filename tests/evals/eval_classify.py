@@ -283,10 +283,12 @@ def _generate_report(interactions_data, models, timestamp):
 
 # ===========================================================================
 # GOLD SCORING — evaluate models against human labels (ground truth), not a
-# baseline model. Reads the golden-set CSV (internal_docs/golden_set_v1.csv).
+# baseline model. Reads the golden-set CSV (internal_docs/golden_set_v2.csv).
+# v2 = all 98 rows reviewed against taxonomy v2 (LAV-70/72); v1 predates the
+# taxonomy rules distilled from it and scores the current prompt wrongly.
 # ===========================================================================
 
-GOLD_DEFAULT = Path(__file__).resolve().parents[2] / "internal_docs" / "golden_set_v1.csv"
+GOLD_DEFAULT = Path(__file__).resolve().parents[2] / "internal_docs" / "golden_set_v2.csv"
 
 
 def _load_gold(path):
