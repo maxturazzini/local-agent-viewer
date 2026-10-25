@@ -77,7 +77,8 @@ from lav.parsers.jsonl import (
 )
 
 
-DEFAULT_PROJECT = "cowork_remote"
+# Same bucket as cowork_desktop: the Source dimension already tells them apart.
+DEFAULT_PROJECT = "cowork_default"
 STDIO_TAIL = 2000
 
 # ===========================================================================
@@ -397,6 +398,37 @@ def inspect_transcript(path: Path) -> dict:
     return out
 
 
+# Tool-input keys that hold a path. Cowork remote reaches the Mac through the
+# remote-devices tools (device_list_dir: path, device_bash: command), not Read/Bash.
+_PATH_KEYS = ("file_path", "path", "notebook_path", "directory", "cwd")
+
+
+def resolve_project(folders: list, transcript: Optional[Path]) -> str:
+    """The cowork_desktop rule: the first real project name from the granted
+    folders, else from the paths in the cloud tool calls (first hit in file
+    order), else cowork_default. See jsonl.infer_cowork_project."""
+    for folder in folders:
+        project = infer_cowork_project(folder)
+        if project:
+            return project
+    if transcript is not None:
+        for rec in parse_jsonl_file(transcript):
+            if rec.get("remoteSourced") is not True or rec.get("type") != "assistant":
+                continue
+            for call in extract_tool_calls(rec):
+                tool_input = call.get("input") if isinstance(call.get("input"), dict) else {}
+                candidates = [tool_input.get(k) for k in _PATH_KEYS]
+                command = tool_input.get("command")
+                if isinstance(command, str):
+                    candidates += command.split()
+                for candidate in candidates:
+                    if isinstance(candidate, str):
+                        project = infer_cowork_project(candidate.strip("'\""))
+                        if project:
+                            return project
+    return DEFAULT_PROJECT
+
+
 def _remote_uuids(path: Path) -> set:
     return {rec.get("uuid") for rec in parse_jsonl_file(path)
             if rec.get("remoteSourced") is True and rec.get("uuid")}
@@ -494,17 +526,19 @@ def fetch_one(remote_id: str, info: dict, *, sessions_dir: Path, claude_bin: str
         return False
 
     # Sidecar first: the parser only reads a .jsonl that already has its .meta.json.
-    # Folders are frozen at the first fetch: they decide the project, and a new
-    # project would give the session a second interactions row.
+    # Folders and project are frozen at the first fetch: a new project would give
+    # the session a second interactions row (and a re-fetch can add tool paths).
     session_dir = transcript.parent / transcript.stem
     subagent_files = len(list(session_dir.rglob("agent-*.jsonl"))) if session_dir.is_dir() else 0
     old_meta = old_meta or {}
+    folders = old_meta["folders"] if "folders" in old_meta else (info.get("folders") or [])
     _write_json_atomic(p["meta"], {
         "remote_id": remote_id,
         "source": SOURCE_COWORK_REMOTE,
         "family": old_meta.get("family") or info.get("family", ""),
         "tags": sorted(info.get("tags") or old_meta.get("tags") or []),
-        "folders": old_meta["folders"] if "folders" in old_meta else (info.get("folders") or []),
+        "folders": folders,
+        "project": old_meta.get("project") or resolve_project(folders, transcript),
         "memory_enabled": info.get("memory_enabled"),
         "first_seen": info.get("first_seen") or old_meta.get("first_seen"),
         "last_seen": info.get("last_seen") or old_meta.get("last_seen"),
@@ -674,7 +708,7 @@ def parse_cowork_remote_sessions(conn, sessions_dir: Optional[Path] = None,
 
         sid = meta.get("remote_id") or path.stem
         folders = [f for f in (meta.get("folders") or []) if isinstance(f, str)]
-        project_name = next((p for f in folders if (p := infer_cowork_project(f))), DEFAULT_PROJECT)
+        project_name = meta.get("project") or resolve_project(folders, path)
         project_id = get_or_create_project(conn, project_name)
         user_id = get_or_create_user(conn, user or meta.get("fetched_by") or getpass.getuser())
         host_id = get_or_create_host(conn, host or meta.get("fetched_on_host") or _canonical_hostname(),
