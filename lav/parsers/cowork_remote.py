@@ -47,6 +47,7 @@ from typing import Optional
 
 from lav.config import (
     CLAUDE_DESKTOP_LOGS_DIR,
+    CLAUDE_DESKTOP_SUPPORT_DIR,
     COWORK_REMOTE_DIR,
     COWORK_REMOTE_SESSIONS_DIR,
     COWORK_REMOTE_TELEPORT_CWD,
@@ -96,6 +97,7 @@ _DIGEST_RE = re.compile(r'"sessionIdDigest":"sha256_([0-9a-f]{64})"')
 _LOG_GLOBS = ("main*.log", "claude.ai-web*.log")
 
 TAG_SPACES = "spaces"
+TAG_WEB = "web-storage"
 TAG_REMOTE_CONTROL = "remote-control"
 TAG_BRIDGE = "bridge"
 # Families that mean "Cowork". Anything with a [sessions-api] line is Dispatch;
@@ -130,6 +132,118 @@ def _log_ts_utc(line: str) -> Optional[str]:
     return local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# --- Desktop web storage ----------------------------------------------------
+# Claude Desktop's claude.ai web view caches its session list in Chromium
+# LevelDB stores (Local Storage, IndexedDB, Session Storage). It is the most
+# complete local list of cloud ids, but most of it sits in snappy-compressed
+# table blocks: a minimal stdlib reader (LevelDB table format + raw snappy).
+
+def _varint(buf: bytes, pos: int) -> tuple:
+    result = shift = 0
+    while True:
+        byte = buf[pos]
+        pos += 1
+        result |= (byte & 0x7F) << shift
+        shift += 7
+        if byte < 0x80:
+            return result, pos
+
+
+def _snappy_decompress(buf: bytes) -> bytes:
+    _, pos = _varint(buf, 0)
+    out = bytearray()
+    while pos < len(buf):
+        tag = buf[pos]
+        pos += 1
+        kind = tag & 3
+        if kind == 0:  # literal
+            length = tag >> 2
+            if length >= 60:
+                extra = length - 59
+                length = int.from_bytes(buf[pos:pos + extra], "little")
+                pos += extra
+            length += 1
+            out += buf[pos:pos + length]
+            pos += length
+            continue
+        if kind == 1:
+            length = ((tag >> 2) & 7) + 4
+            offset = ((tag >> 5) << 8) | buf[pos]
+            pos += 1
+        elif kind == 2:
+            length = (tag >> 2) + 1
+            offset = int.from_bytes(buf[pos:pos + 2], "little")
+            pos += 2
+        else:
+            length = (tag >> 2) + 1
+            offset = int.from_bytes(buf[pos:pos + 4], "little")
+            pos += 4
+        for _ in range(length):
+            out.append(out[-offset])
+    return bytes(out)
+
+
+def _ldb_blocks(data: bytes):
+    """Every data block of a LevelDB .ldb table, decompressed."""
+    def read_block(offset, size):
+        raw = data[offset:offset + size]
+        return _snappy_decompress(raw) if data[offset + size] == 1 else raw
+
+    footer = data[-48:]
+    _, pos = _varint(footer, 0)
+    _, pos = _varint(footer, pos)            # metaindex handle, unused
+    index_off, pos = _varint(footer, pos)
+    index_size, pos = _varint(footer, pos)
+    index = read_block(index_off, index_size)
+    restarts = int.from_bytes(index[-4:], "little")
+    end = len(index) - 4 - 4 * restarts
+    pos = 0
+    while pos < end:
+        _, pos = _varint(index, pos)
+        unshared, pos = _varint(index, pos)
+        value_len, pos = _varint(index, pos)
+        pos += unshared
+        handle = index[pos:pos + value_len]
+        pos += value_len
+        offset, q = _varint(handle, 0)
+        size, _ = _varint(handle, q)
+        try:
+            yield read_block(offset, size)
+        except (IndexError, ValueError):
+            continue
+
+
+_WEB_ID_RE = re.compile(rb"(?:session|cse)_(01[A-Za-z0-9]{22})(?![A-Za-z0-9])")
+_WEB_ID16_RE = re.compile(rb"(?:s\x00e\x00s\x00s\x00i\x00o\x00n\x00|c\x00s\x00e\x00)_\x00"
+                          rb"(0\x001\x00(?:[A-Za-z0-9]\x00){22})")
+
+
+def web_storage_ids(support_dir: Optional[Path] = None) -> set:
+    """Cloud session ids cached by Desktop's web view (UTF-8 and UTF-16 strings)."""
+    base = Path(support_dir) if support_dir else CLAUDE_DESKTOP_SUPPORT_DIR
+    paths = [*base.glob("Local Storage/leveldb/*"), *base.glob("IndexedDB/*/*"),
+             *base.glob("Session Storage/*")]
+    ids = set()
+    for path in paths:
+        if not path.is_file() or path.suffix not in (".ldb", ".log"):
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        chunks = [data]
+        if path.suffix == ".ldb":
+            try:
+                chunks += list(_ldb_blocks(data))
+            except (IndexError, ValueError):
+                pass  # not a table we understand: the raw bytes were still scanned
+        for chunk in chunks:
+            ids |= {f"session_{m.group(1).decode()}" for m in _WEB_ID_RE.finditer(chunk)}
+            ids |= {"session_" + m.group(1).replace(b"\x00", b"").decode()
+                    for m in _WEB_ID16_RE.finditer(chunk)}
+    return ids
+
+
 def session_digest(remote_id: str) -> str:
     """The digest Desktop logs for a cloud session (see _DIGEST_RE)."""
     suffix = remote_id.split("_", 1)[-1]
@@ -150,7 +264,8 @@ def normalize_remote_id(value: str) -> str:
 
 
 def discover(spaces_files: Optional[list] = None, logs_dir: Optional[Path] = None,
-             desktop_session_dirs: Optional[list] = None) -> tuple:
+             desktop_session_dirs: Optional[list] = None,
+             support_dir: Optional[Path] = None) -> tuple:
     """Every cloud session id Claude Desktop knows about, with where it was seen.
 
     Returns ({remote_id: info}, {digest: (first_seen, last_seen)}).
@@ -214,6 +329,11 @@ def discover(spaces_files: Optional[list] = None, logs_dir: Optional[Path] = Non
         for ts in stamps:
             _touch(info, ts)
 
+    # Ids the logs never show in clear. Alone they say nothing about the family
+    # (a Remote Control mirror of a local session looks the same): see below.
+    for rid in web_storage_ids(support_dir):
+        _entry(rid)["tags"].add(TAG_WEB)
+
     # The only trace of a session resumed through the remote-devices tools.
     by_digest = {session_digest(rid): rid for rid in found if rid.startswith("session_")}
     unknown_active: dict = {}
@@ -246,10 +366,15 @@ def discover(spaces_files: Optional[list] = None, logs_dir: Optional[Path] = Non
             info["family"] = "cowork"
         elif "dispatch" in tags:
             info["family"] = "dispatch"
+        elif tags <= {TAG_WEB}:
+            info["family"] = "unknown"
         else:
             info["family"] = "code_cloud"
         if tags & {TAG_REMOTE_CONTROL, TAG_BRIDGE}:
             info["excluded"] = "remote control of a local session (already in LAV as claude_code)"
+        elif info["family"] == "unknown":
+            # Fetching a Remote Control mirror would count a local session twice.
+            info["excluded"] = "seen only in Desktop's web storage, family unknown: fetch only with --id"
         elif not info["remote_id"].startswith("session_"):
             info["excluded"] = "not a cloud session id (session_/cse_): fetch only with --id"
         else:
