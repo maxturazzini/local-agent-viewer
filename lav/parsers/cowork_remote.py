@@ -429,6 +429,21 @@ def resolve_project(folders: list, transcript: Optional[Path]) -> str:
     return DEFAULT_PROJECT
 
 
+# `claude -p --teleport` exits 1 with empty stdout/stderr: the reason is only in
+# its debug log ("[ERROR] Teleport in print mode failed: Session not found: …").
+_TELEPORT_ERROR_RE = re.compile(r"\[ERROR\] (Teleport.*)")
+# Failures a retry cannot fix: never retried automatically (only --id forces them).
+_PERMANENT_MARKERS = ("from a checkout of", "Session not found", "no cloud transcript")
+
+
+def _teleport_errors(debug_file: Path) -> list:
+    try:
+        text = debug_file.read_text(errors="replace")
+    except OSError:
+        return []
+    return [m.group(1).strip() for m in _TELEPORT_ERROR_RE.finditer(text)]
+
+
 def _remote_uuids(path: Path) -> set:
     return {rec.get("uuid") for rec in parse_jsonl_file(path)
             if rec.get("remoteSourced") is True and rec.get("uuid")}
@@ -447,8 +462,12 @@ def fetch_one(remote_id: str, info: dict, *, sessions_dir: Path, claude_bin: str
         raise RuntimeError(f"{COWORK_REMOTE_TELEPORT_CWD} must not be a git checkout")
     _clear_slug_dirs(projects_root, sessions_dir.parent / "orphans")
 
+    debug_file = sessions_dir.parent / "debug" / f"{remote_id}.log"
+    debug_file.parent.mkdir(parents=True, exist_ok=True)
+    debug_file.unlink(missing_ok=True)
     cmd = [claude_bin, "--teleport", remote_id, "-p", "/cost",
-           "--output-format", "json", "--strict-mcp-config", "--no-chrome"]
+           "--output-format", "json", "--strict-mcp-config", "--no-chrome",
+           "--debug-file", str(debug_file)]
     started = time.time()
     timed_out = False
     proc = subprocess.Popen(cmd, cwd=str(COWORK_REMOTE_TELEPORT_CWD), env=env,
@@ -461,6 +480,9 @@ def fetch_one(remote_id: str, info: dict, *, sessions_dir: Path, claude_bin: str
         _kill_group(proc)
         stdout, stderr = proc.communicate()
     duration_s = round(time.time() - started, 1)
+    teleport_errors = _teleport_errors(debug_file)
+    debug_file.unlink(missing_ok=True)
+    (debug_file.parent / "latest").unlink(missing_ok=True)  # symlink claude leaves behind
 
     local_uuid = ""
     for line in reversed((stdout or "").strip().splitlines()):
@@ -490,11 +512,13 @@ def fetch_one(remote_id: str, info: dict, *, sessions_dir: Path, claude_bin: str
     if timed_out:
         error = f"timeout after {timeout}s"
     elif proc.returncode != 0:
-        error = f"exit code {proc.returncode}"
+        error = teleport_errors[-1] if teleport_errors else f"exit code {proc.returncode}"
     elif transcript is None:
         error = f"expected one transcript, found {len(produced)}"
     elif not facts.get("remote_lines"):
-        error = "transcript has no remoteSourced lines"
+        # Teleport worked but the cloud copy is empty: the session ran on this
+        # Mac (Desktop's Code tab, Dispatch) and its transcript is local.
+        error = "no cloud transcript (the session ran locally)"
     elif missing:
         error = f"re-fetch lacks {missing} cloud lines of the stored transcript: kept the stored one"
 
@@ -516,8 +540,7 @@ def fetch_one(remote_id: str, info: dict, *, sessions_dir: Path, claude_bin: str
                 "attempts": int(prev.get("attempts") or 0) + 1,
                 "last_attempt_at": now,
                 "exit_code": proc.returncode,
-                # Repo-bound Code sessions can only be resumed from a checkout of their repo.
-                "permanent": "from a checkout of" in (stderr or ""),
+                "permanent": any(m in f"{error}\n{stderr or ''}" for m in _PERMANENT_MARKERS),
                 "teleport_claude_version": claude_version,
                 "stdout_tail": (stdout or "")[-STDIO_TAIL:],
                 "stderr_tail": (stderr or "")[-STDIO_TAIL:],
@@ -592,9 +615,9 @@ def select_for_fetch(discovered: dict, sessions_dir: Path, *, explicit_ids: list
                      refetch_all: bool = False) -> list:
     """Ids to teleport this run, in order: never-fetched sessions first, then
     stale ones (re-fetch); with `refetch_all`, every fetched one last (manual
-    brute force). Explicit ids replace the automatic selection and bypass
-    its exclusions and idle check, and re-fetch an already fetched session: they
-    are the owner's call."""
+    brute force). Explicit ids replace the automatic selection and are always
+    teleported, whatever their exclusion, activity or status (fetched, failed,
+    permanent): they are the owner's call."""
     chosen = []
     for raw in explicit_ids:
         rid = normalize_remote_id(raw)
@@ -602,11 +625,7 @@ def select_for_fetch(discovered: dict, sessions_dir: Path, *, explicit_ids: list
                                        "folders": [], "excluded": ""}
         if info.get("excluded"):
             print(f"  [note] {rid} is excluded by discovery ({info['excluded']}): fetching anyway (--id)")
-        status = session_status(rid, sessions_dir)
-        if status == "failed-permanent" or (status == "failed" and not retry_failed):
-            print(f"  [skip] {rid} is {status} (use --retry-failed for a non-permanent failure)")
-        else:
-            chosen.append((rid, info))
+        chosen.append((rid, info))
     if explicit_ids:
         return chosen[:max_fetch] if max_fetch >= 0 else chosen
 
@@ -801,15 +820,16 @@ def main() -> int:
     ap.add_argument("--scheduled", action="store_true",
                     help='Fetch only if config.json has "cowork_remote_fetch": true (lav-parser.sh)')
     ap.add_argument("--id", action="append", default=[],
-                    help="Fetch this session (session_…, cse_… or claude.ai URL), or re-fetch it "
-                         "if already fetched. Repeatable. Bypasses the discovery exclusions "
-                         "and the idle check")
+                    help="Teleport this session (session_…, cse_… or claude.ai URL) whatever its "
+                         "status: fetch, re-fetch or retry. Repeatable. Bypasses the discovery "
+                         "exclusions and the idle check")
     ap.add_argument("--max-fetch", type=int, default=3,
                     help="Max teleports per run (default 3, -1 = no cap)")
     ap.add_argument("--min-idle-minutes", type=int, default=30,
                     help="Skip sessions seen in the Desktop logs more recently than this (default 30)")
     ap.add_argument("--retry-failed", action="store_true",
-                    help="Retry non-permanent failures")
+                    help="Retry non-permanent failures (permanent: session not found, no cloud "
+                         "transcript, repo-bound; only --id retries those)")
     ap.add_argument("--refetch-all", action="store_true",
                     help="Brute force, manual only: re-fetch EVERY already fetched session, "
                          "not just the stale ones (still capped by --max-fetch, -1 = no cap)")

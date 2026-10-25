@@ -1555,6 +1555,7 @@ _COWORK_GENERIC_SEGMENTS = frozenset({
     "downloads", "desktop", "documents", "applications", "movies", "music", "pictures",
     "public", "library", "cloudstorage", "tool-results", "tool_results", "sessions",
     "artifacts", "shared", "var", "folders", "private", "users", "skills", "uploads",
+    "user-data",  # LAV-94: cloud Cowork VM mount (/mnt/user-data/outputs), not a project
     ".claude", ".skills", ".config", ".local-plugins", ".git", "node_modules",
 })
 # Segment names after which the NEXT segment is the real project root.
