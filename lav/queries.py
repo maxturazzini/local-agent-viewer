@@ -369,12 +369,12 @@ def get_token_stats(conn, project_id=None, user_id=None, host_id=None,
             SUM(tu.cache_read_tokens) as cache_read,
             ROUND(SUM(COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0), 4) as cost_input,
             ROUND(SUM(COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0), 4) as cost_output,
-            ROUND(SUM(COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0), 4) as cost_cache_write,
+            ROUND(SUM(((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0), 4) as cost_cache_write,
             ROUND(SUM(COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0), 4) as cost_cache_read,
             ROUND(SUM(
                 COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
                 + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-                + COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0
+                + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
                 + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
             ), 4) as cost_usd,
             MAX(mp.input_price_per_mtok IS NOT NULL) as has_price
@@ -396,7 +396,7 @@ def get_token_stats(conn, project_id=None, user_id=None, host_id=None,
             ROUND(SUM(
                 COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
                 + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-                + COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0
+                + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
                 + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
             ), 4) as cost_usd
         FROM token_usage tu
@@ -416,12 +416,12 @@ def get_token_stats(conn, project_id=None, user_id=None, host_id=None,
             SUM(tu.cache_read_tokens) as cache_read,
             ROUND(SUM(COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0), 4) as cost_input,
             ROUND(SUM(COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0), 4) as cost_output,
-            ROUND(SUM(COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0), 4) as cost_cache_write,
+            ROUND(SUM(((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0), 4) as cost_cache_write,
             ROUND(SUM(COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0), 4) as cost_cache_read,
             ROUND(SUM(
                 COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
                 + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-                + COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0
+                + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
                 + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
             ), 4) as cost_usd
         FROM token_usage tu
@@ -1779,7 +1779,7 @@ def get_interactions_list(conn, project_id=None, user_id=None, host_id=None,
                 SELECT ROUND(SUM(
                     COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
                     + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-                    + COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0
+                    + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
                     + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
                 ), 4)
                 FROM token_usage tu
@@ -1828,7 +1828,7 @@ def _per_session_cost_subquery():
                 SELECT ROUND(SUM(
                     COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
                     + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-                    + COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0
+                    + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
                     + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
                 ), 4)
                 FROM token_usage tu
@@ -2025,7 +2025,7 @@ def get_interaction_detail(conn, session_id, project_id=None):
                 SELECT ROUND(SUM(
                     COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
                     + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-                    + COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0
+                    + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
                     + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
                 ), 4)
                 FROM token_usage tu
@@ -2408,10 +2408,13 @@ def get_tagcloud_data(conn, project_id=None, user_id=None, host_id=None,
 # COST INTELLIGENCE
 # ===========================================================================
 
+# LAV-96: every cost expression in this module prices cache writes in two parts:
+# the 5-minute ones at model_pricing.cache_write_price_per_mtok (1.25x input) and
+# token_usage.cache_creation_1h_tokens at 2x input, Anthropic's 1-hour rate.
 _COST_EXPR = """ROUND(
     COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
     + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-    + COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0
+    + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
     + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
 , 6)"""
 
@@ -2438,7 +2441,7 @@ def get_session_cost_profile(conn, session_id, project_id=None):
             {_COST_EXPR} as cost_usd,
             ROUND(COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0, 6) as cost_input,
             ROUND(COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0, 6) as cost_output,
-            ROUND(COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0, 6) as cost_cache_write,
+            ROUND(((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0, 6) as cost_cache_write,
             ROUND(COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0, 6) as cost_cache_read
         FROM token_usage tu
         {_PRICE_JOIN}
@@ -2616,7 +2619,7 @@ def get_work_pattern_stats(conn, project_id=None, user_id=None, host_id=None,
                 ROUND(SUM(
                     COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
                     + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-                    + COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0
+                    + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
                     + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
                 ), 4) as session_cost,
                 CASE WHEN SUM(COALESCE(tu.input_tokens, 0) + COALESCE(tu.cache_read_tokens, 0) + COALESCE(tu.cache_creation_tokens, 0)) > 0
@@ -2670,7 +2673,7 @@ def get_work_pattern_stats(conn, project_id=None, user_id=None, host_id=None,
                         SELECT ROUND(SUM(
                             COALESCE(tu2.input_tokens, 0) * COALESCE(mp2.input_price_per_mtok, 0) / 1000000.0
                             + COALESCE(tu2.output_tokens, 0) * COALESCE(mp2.output_price_per_mtok, 0) / 1000000.0
-                            + COALESCE(tu2.cache_creation_tokens, 0) * COALESCE(mp2.cache_write_price_per_mtok, 0) / 1000000.0
+                            + ((COALESCE(tu2.cache_creation_tokens, 0) - COALESCE(tu2.cache_creation_1h_tokens, 0)) * COALESCE(mp2.cache_write_price_per_mtok, 0) + COALESCE(tu2.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp2.input_price_per_mtok, 0)) / 1000000.0
                             + COALESCE(tu2.cache_read_tokens, 0) * COALESCE(mp2.cache_read_price_per_mtok, 0) / 1000000.0
                         ), 4)
                         FROM token_usage tu2
@@ -2738,7 +2741,7 @@ def get_task_type_costs(conn, project_id=None, user_id=None, host_id=None,
                         SELECT ROUND(SUM(
                             COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
                             + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-                            + COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0
+                            + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
                             + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
                         ), 4)
                         FROM token_usage tu
@@ -2800,7 +2803,7 @@ def get_efficiency_metrics(conn, project_id=None, user_id=None, host_id=None,
             ROUND(SUM(
                 COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
                 + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-                + COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0
+                + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
                 + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
             ) / NULLIF(COUNT(*), 0), 4) as avg_cost_per_call
         FROM token_usage tu
@@ -2832,7 +2835,7 @@ def get_efficiency_metrics(conn, project_id=None, user_id=None, host_id=None,
                 ROUND(SUM(
                     COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
                     + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-                    + COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0
+                    + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
                     + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
                 ), 4) as session_cost,
                 SUM(COALESCE(tu.input_tokens, 0) + COALESCE(tu.output_tokens, 0)) as session_tokens
@@ -2861,7 +2864,7 @@ def get_efficiency_metrics(conn, project_id=None, user_id=None, host_id=None,
                 ROUND(SUM(
                     COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
                     + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-                    + COALESCE(tu.cache_creation_tokens, 0) * COALESCE(mp.cache_write_price_per_mtok, 0) / 1000000.0
+                    + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
                     + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
                 ), 4) as session_cost,
                 CASE WHEN SUM(COALESCE(tu.input_tokens, 0) + COALESCE(tu.cache_read_tokens, 0) + COALESCE(tu.cache_creation_tokens, 0)) > 0

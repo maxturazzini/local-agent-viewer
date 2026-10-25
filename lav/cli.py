@@ -632,6 +632,8 @@ def cmd_backfill(args):
         return cmd_backfill_claude_ai_outcomes(args)
     if args.backfill_command == "codex-titles":
         return cmd_backfill_codex_titles(args)
+    if args.backfill_command == "cache-ttl":
+        return cmd_backfill_cache_ttl(args)
     _die(f"Unknown backfill subcommand '{args.backfill_command}'.")
 
 
@@ -877,6 +879,93 @@ def cmd_backfill_tool_kind(args):
         "unclassified": after.get("", 0),
         "kinds": [TOOL_KIND_MCP, TOOL_KIND_BUILTIN_HOST],
     }, args.format)
+
+
+def _scan_cache_1h(roots) -> dict:
+    """{api_message_id: 1-hour cache-write tokens} from every transcript under roots."""
+    from lav.parsers.jsonl import cache_1h_tokens
+
+    found = {}
+    for root in roots:
+        for dirpath, _, names in os.walk(root):
+            for name in names:
+                if not name.endswith(".jsonl"):
+                    continue
+                try:
+                    fh = open(os.path.join(dirpath, name), encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                with fh:
+                    for line in fh:
+                        if '"ephemeral_1h_input_tokens"' not in line:
+                            continue
+                        try:
+                            rec = json.loads(line)
+                        except ValueError:
+                            continue
+                        msg = rec.get("message") if isinstance(rec.get("message"), dict) else {}
+                        tokens = cache_1h_tokens(msg.get("usage") or {})
+                        if tokens and msg.get("id"):
+                            found[msg["id"]] = tokens
+    return found
+
+
+def cmd_backfill_cache_ttl(args):
+    """LAV-96: fill token_usage.cache_creation_1h_tokens on rows parsed before it.
+
+    The split lives only in the transcripts (usage.cache_creation), so this re-reads
+    them: Claude Code projects, Cowork audit logs, cowork_remote sessions. Matched by
+    api_message_id, only rows still at 0 are touched: idempotent.
+
+    The collector holds the agent's rows but not its transcripts, and the sync never
+    updates an existing row. So: `--dump-map FILE` on the agent, copy the file over,
+    `--map FILE` on the collector (it also reads its own transcripts).
+    """
+    from lav.config import (COWORK_REMOTE_SESSIONS_DIR, get_claude_projects_dirs,
+                            get_cowork_sessions_dirs)
+    from lav.parsers.jsonl import init_db
+
+    db_path = Path(args.db).expanduser() if args.db else UNIFIED_DB_PATH
+    roots = [*get_claude_projects_dirs(include_desktop_hint=False), *get_cowork_sessions_dirs()]
+    if COWORK_REMOTE_SESSIONS_DIR.is_dir():
+        roots.append(COWORK_REMOTE_SESSIONS_DIR)
+    t0 = time.time()
+    mapping = _scan_cache_1h(roots)
+    for path in args.map or []:
+        mapping.update({k: int(v) for k, v in json.loads(Path(path).expanduser().read_text()).items()})
+    if args.dump_map:
+        Path(args.dump_map).expanduser().write_text(json.dumps(mapping))
+
+    conn = init_db(db_path)  # runs the column migration
+    try:
+        todo = conn.execute(
+            "SELECT id, api_message_id FROM token_usage WHERE cache_creation_tokens > 0 "
+            "AND COALESCE(cache_creation_1h_tokens, 0) = 0 AND api_message_id != ''"
+        ).fetchall()
+        updates = [(mapping[mid], rid) for rid, mid in todo if mid in mapping]
+        if not args.dry_run:
+            conn.executemany("UPDATE token_usage SET cache_creation_1h_tokens = ? WHERE id = ?", updates)
+            conn.commit()
+        left = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(cache_creation_tokens), 0) FROM token_usage "
+            "WHERE cache_creation_tokens > 0 AND COALESCE(cache_creation_1h_tokens, 0) = 0"
+        ).fetchone()
+    finally:
+        conn.close()
+    result = {
+        "status": "DRY-RUN" if args.dry_run else "APPLIED",
+        "transcript_messages_with_1h": len(mapping),
+        "rows_without_split": len(todo),
+        "rows_updated": len(updates),
+        # 5-minute writes, or rows whose transcript is gone: both stay at the 5m price.
+        "rows_still_5m_priced": left[0],
+        "cache_write_tokens_still_5m_priced": left[1],
+        "seconds": round(time.time() - t0, 1),
+    }
+    if args.format == "brief":
+        print(" ".join(f"{k}={v}" for k, v in result.items()))
+    else:
+        _output(result, args.format)
 
 
 def cmd_backfill_codex_titles(args):
@@ -1463,6 +1552,25 @@ def build_parser():
                          help="Report what would change, roll everything back, write nothing")
     _add_format_arg(p_bf_ct)
     p_bf_ct.set_defaults(func=cmd_backfill)
+
+    # backfill cache-ttl (LAV-96)
+    p_bf_cc = bf_sub.add_parser(
+        "cache-ttl",
+        help="LAV-96: store the 1-hour cache-write tokens on rows parsed before the column",
+        description="A 1-hour cache write costs 2x the input price, a 5-minute one 1.25x. "
+                    "The split is only in the transcripts, so this re-reads them and fills "
+                    "token_usage.cache_creation_1h_tokens by api_message_id. Local DB only: "
+                    "run it on each node. The collector has no agent transcripts: run "
+                    "--dump-map on the agent, copy the file, pass it with --map.",
+    )
+    p_bf_cc.add_argument("--db", help=f"SQLite DB path (default: {UNIFIED_DB_PATH})")
+    p_bf_cc.add_argument("--map", action="append",
+                         help="JSON {api_message_id: tokens} from another node's --dump-map. Repeatable")
+    p_bf_cc.add_argument("--dump-map", dest="dump_map",
+                         help="Write this node's {api_message_id: tokens} map to FILE (for the collector)")
+    p_bf_cc.add_argument("--dry-run", action="store_true", help="Report only, write nothing")
+    _add_format_arg(p_bf_cc)
+    p_bf_cc.set_defaults(func=cmd_backfill)
 
     # entities (LAV-93)
     p_ent = sub.add_parser("entities", help="LAV-93: people/organizations graph with dated edges")

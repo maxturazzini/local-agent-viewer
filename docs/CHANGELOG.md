@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+LAV-96: cache writes were all priced at the 5-minute rate; Claude Code writes the 1-hour cache, which costs 2x input instead of 1.25x.
+- **Symptom**: a teleported turn that Claude Code itself reports at $0.59684 came out at $0.3815 in LAV.
+- **Measured** (274k API messages on the dev node): 1-hour share of cache writes per month 0% (Nov-Dec 2025), 11% (Jan), 98% (Feb), 77% (Mar), 93% (Apr), 100% since May 2026. So one price per model cannot be right.
+- **Fix**: new column `token_usage.cache_creation_1h_tokens` (part of `cache_creation_tokens`), filled by the parser from `usage.cache_creation.ephemeral_1h_input_tokens`, shipped by export/ingest and by the snapshot backfill. Every cost expression in `queries.py` (16) prices it at 2x `input_price_per_mtok`, the rest at `cache_write_price_per_mtok`. No pricing-table change. The same turn now costs $0.59684.
+- **History**: `lav backfill cache-ttl` re-reads the transcripts (Claude Code projects, Cowork audit logs, cowork_remote sessions) and fills the column by `api_message_id`, only where it is 0: idempotent. The collector has no agent transcripts and the sync never updates a row: run `--dump-map FILE` on the agent and `--map FILE` on the collector.
+
 LAV-94: Cowork sessions disappeared after 2026-07-31 — they are logged in the cloud now. New source `cowork_remote`, fetched with `claude --teleport`.
 - **Symptom**: `cowork_desktop` stopped at 2026-07-31 (211 sessions). Since then Cowork runs its commands in the Mac's VM but logs transcript and usage on Anthropic's side; the local `audit.jsonl` files receive nothing. The sessions only exist as ids in Claude Desktop's `remote-session-spaces.json` and logs.
 - **Model**: `claude --teleport <id> -p "/cost"`, run from an empty non-git dir, writes the full transcript (Claude Code JSONL, `message.usage` on every answer) without calling the model. `lav-parse-cowork-remote` discovers the ids (spaces file + Desktop logs; `cse_X`, `session_X`, `rcw-x` are one session), teleports the pending ones (`--fetch`), and parses every fetched transcript into the normal tables as source `cowork_remote`, `session_id` = the bare cloud id. Host and user = the machine and user that fetched it. Project = the `cowork_desktop` rule: the first real name among the session's granted folders, else the paths in its cloud tool calls (Read/Write/Edit/Bash and the `remote-devices` tools), else `cowork_default`; resolved at the first fetch and frozen in the sidecar, so a re-fetch never moves a session to a second project row.

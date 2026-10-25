@@ -304,6 +304,7 @@ CREATE TABLE IF NOT EXISTS token_usage (
     cache_read_tokens INTEGER DEFAULT 0,
     cwd TEXT,
     api_message_id TEXT DEFAULT '',
+    cache_creation_1h_tokens INTEGER DEFAULT 0,  -- LAV-96: part of cache_creation_tokens
     UNIQUE(timestamp, session_id, project_id)
 );
 -- LAV-39: idx_token_usage_api_msg partial UNIQUE created in _migrate_add_api_message_id
@@ -487,6 +488,23 @@ def _migrate_add_api_message_id(conn: sqlite3.Connection):
         "ON token_usage(session_id, project_id, api_message_id) "
         "WHERE api_message_id != ''"
     )
+    conn.commit()
+
+
+def _migrate_add_cache_1h(conn: sqlite3.Connection):
+    """LAV-96: token_usage.cache_creation_1h_tokens, the part of
+    cache_creation_tokens written to the 1-hour cache.
+
+    Anthropic bills a 1-hour cache write at 2x the input price, a 5-minute one at
+    1.25x (model_pricing.cache_write_price_per_mtok). Claude Code went from 5m to
+    1h between January and April 2026 and is 100% 1h since May, so one price per
+    model cannot be right: the split is stored per row, from
+    usage.cache_creation.ephemeral_1h_input_tokens. Rows parsed before this
+    column get it from `lav backfill cache-ttl`.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(token_usage)").fetchall()}
+    if "cache_creation_1h_tokens" not in cols:
+        conn.execute("ALTER TABLE token_usage ADD COLUMN cache_creation_1h_tokens INTEGER DEFAULT 0")
     conn.commit()
 
 
@@ -861,6 +879,11 @@ def init_db(db_path: Path = UNIFIED_DB_PATH) -> sqlite3.Connection:
         _migrate_add_api_message_id(conn)
     except Exception as e:
         print(f"  api_message_id migration skipped: {e}")
+    # LAV-96: 1-hour cache-write split in token_usage
+    try:
+        _migrate_add_cache_1h(conn)
+    except Exception as e:
+        print(f"  cache_creation_1h_tokens migration skipped: {e}")
     # LAV-66: add agent_id column to messages
     try:
         _migrate_add_agent_id(conn)
@@ -1936,8 +1959,17 @@ def extract_token_usage(message: dict) -> Optional[dict]:
         "output_tokens": usage.get("output_tokens", 0),
         "cache_creation_tokens": usage.get("cache_creation_input_tokens", 0),
         "cache_read_tokens": usage.get("cache_read_input_tokens", 0),
+        "cache_creation_1h_tokens": cache_1h_tokens(usage),
         "api_message_id": msg_data.get("id", "") or "",
     }
+
+
+def cache_1h_tokens(usage: dict) -> int:
+    """LAV-96: tokens written to the 1-hour cache (0 when the split is absent)."""
+    split = usage.get("cache_creation") if isinstance(usage, dict) else None
+    if not isinstance(split, dict):
+        return 0
+    return int(split.get("ephemeral_1h_input_tokens") or 0)
 
 
 # ===========================================================================
@@ -1959,12 +1991,12 @@ def process_token_usage(message: dict, conn: sqlite3.Connection, project_id: int
             """INSERT OR IGNORE INTO token_usage
                (timestamp, session_id, project_id, user_id, host_id,
                 model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cwd,
-                api_message_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                api_message_id, cache_creation_1h_tokens)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (timestamp, session_id, project_id, user_id, host_id,
              usage["model"], usage["input_tokens"], usage["output_tokens"],
              usage["cache_creation_tokens"], usage["cache_read_tokens"], cwd,
-             usage.get("api_message_id", ""))
+             usage.get("api_message_id", ""), usage.get("cache_creation_1h_tokens", 0))
         )
     except sqlite3.Error as e:
         print(f"DB error (tokens): {e}")
@@ -4155,8 +4187,8 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                     INSERT OR IGNORE INTO token_usage
                     (timestamp, session_id, project_id, user_id, host_id, model,
                      input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cwd,
-                     api_message_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     api_message_id, cache_creation_1h_tokens)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     tu.get("timestamp", ""), session_id, project_id, r_user_id, r_host_id,
                     tu.get("model", ""),
@@ -4164,6 +4196,7 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                     tu.get("cache_creation_tokens", 0), tu.get("cache_read_tokens", 0),
                     tu.get("cwd", ""),
                     tu.get("api_message_id", "") or "",
+                    tu.get("cache_creation_1h_tokens", 0) or 0,  # LAV-96; absent from older agents
                 ))
                 stats["token_usage"] += 1
             except sqlite3.Error:

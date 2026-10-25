@@ -61,7 +61,7 @@ CHILD_TABLES: List[Tuple[str, List[str], bool]] = [
     ("token_usage", [
         "timestamp", "session_id", "project_id", "user_id", "host_id", "model",
         "input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens",
-        "cwd", "api_message_id",
+        "cwd", "api_message_id", "cache_creation_1h_tokens",
     ], True),
     # LAV-78: the six tool tables also ship the outcome columns
     # (tool_call_id/is_error/duration_ms, plus error_text on bash+mcp and
