@@ -98,11 +98,12 @@ _LOG_GLOBS = ("main*.log", "claude.ai-web*.log")
 
 TAG_SPACES = "spaces"
 TAG_WEB = "web-storage"
+TAG_CLOUD = "cloud-list"
 TAG_REMOTE_CONTROL = "remote-control"
 TAG_BRIDGE = "bridge"
 # Families that mean "Cowork". Anything with a [sessions-api] line is Dispatch;
 # the rest (focused in Desktop's Code tab) is Claude Code cloud.
-_COWORK_TAGS = {TAG_SPACES, "vm", "grant", "clear-grant", "web-cowork"}
+_COWORK_TAGS = {TAG_SPACES, "vm", "grant", "clear-grant", "web-cowork", TAG_CLOUD}
 
 
 def _line_tag(line: str) -> str:
@@ -265,7 +266,8 @@ def normalize_remote_id(value: str) -> str:
 
 def discover(spaces_files: Optional[list] = None, logs_dir: Optional[Path] = None,
              desktop_session_dirs: Optional[list] = None,
-             support_dir: Optional[Path] = None) -> tuple:
+             support_dir: Optional[Path] = None,
+             cloud_lists: Optional[list] = None) -> tuple:
     """Every cloud session id Claude Desktop knows about, with where it was seen.
 
     Returns ({remote_id: info}, {digest: (first_seen, last_seen)}).
@@ -359,6 +361,28 @@ def discover(spaces_files: Optional[list] = None, logs_dir: Optional[Path] = Non
                 rid = normalize_remote_id(str(raw))
                 if rid in found:
                     found[rid]["tags"].add(TAG_BRIDGE)
+
+    # The only COMPLETE list: claude.ai's own, exported by whoever can read it (a
+    # logged-in browser), as JSON [{"id", "title"?, "created_at"?, "project"?}].
+    # The Mac misses most cloud ids (33 of 54 on 2026-10-25). It also carries the
+    # claude.ai project, which wins over the folder rule.
+    for path in cloud_lists or []:
+        try:
+            rows = json.loads(Path(path).expanduser().read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"  [warn] cannot read cloud list {path}: {e}")
+            continue
+        for row in rows if isinstance(rows, list) else []:
+            rid = normalize_remote_id(str(row.get("id") or ""))
+            if not rid:
+                continue
+            info = _entry(rid)
+            info["tags"].add(TAG_CLOUD)
+            _touch(info, (row.get("created_at") or "")[:19].replace(" ", "T") + "Z" if row.get("created_at") else None)
+            if row.get("project"):
+                info["claude_project"] = row["project"]
+            if row.get("title"):
+                info["title"] = row["title"]
 
     for info in found.values():
         tags = info["tags"]
@@ -686,7 +710,10 @@ def fetch_one(remote_id: str, info: dict, *, sessions_dir: Path, claude_bin: str
         "family": old_meta.get("family") or info.get("family", ""),
         "tags": sorted(info.get("tags") or old_meta.get("tags") or []),
         "folders": folders,
-        "project": old_meta.get("project") or resolve_project(folders, transcript),
+        "claude_project": info.get("claude_project") or old_meta.get("claude_project") or "",
+        "title": info.get("title") or old_meta.get("title") or "",
+        "project": (old_meta.get("project") or info.get("claude_project")
+                    or resolve_project(folders, transcript)),
         "memory_enabled": info.get("memory_enabled"),
         "first_seen": info.get("first_seen") or old_meta.get("first_seen"),
         "last_seen": info.get("last_seen") or old_meta.get("last_seen"),
@@ -822,6 +849,33 @@ def run_fetch(discovered: dict, sessions_dir: Path, args) -> tuple:
 # PARSE
 # ===========================================================================
 
+# Tables keyed by (session_id, project_id). The data ones are rebuilt by the parse;
+# the derived ones (classification, entities) cost money or time to rebuild, so
+# they are moved instead.
+_REBUILT_TABLES = ("messages", "token_usage", "file_operations", "bash_commands",
+                   "search_operations", "skill_invocations", "subagent_invocations",
+                   "mcp_tool_calls", "interactions", "session_sources")
+_MOVED_TABLES = ("interaction_metadata", "entity_mentions", "entity_sightings")
+
+
+def _follow_sidecar_project(conn, sid: str, project_id: int) -> int:
+    """A cowork_remote session lives in the project its sidecar names. When the
+    sidecar changed (claude.ai project assigned later, a wrong rule fixed), the
+    rows under the old project are dropped and the parse re-inserts them under
+    the new one. Same transcript, so nothing is lost; scoped to this session and
+    this source, never to anything else."""
+    old = [r[0] for r in conn.execute(
+        "SELECT project_id FROM session_sources WHERE session_id = ? AND source = ? "
+        "AND project_id != ?", (sid, SOURCE_COWORK_REMOTE, project_id))]
+    for pid in old:
+        for table in _MOVED_TABLES:
+            conn.execute(f"UPDATE OR IGNORE {table} SET project_id = ? "
+                         f"WHERE session_id = ? AND project_id = ?", (project_id, sid, pid))
+        for table in _REBUILT_TABLES + _MOVED_TABLES:
+            conn.execute(f"DELETE FROM {table} WHERE session_id = ? AND project_id = ?", (sid, pid))
+    return len(old)
+
+
 def parse_cowork_remote_sessions(conn, sessions_dir: Optional[Path] = None,
                                  user: Optional[str] = None, host: Optional[str] = None) -> list:
     """Parse every fetched transcript into the unified DB as source cowork_remote.
@@ -854,6 +908,9 @@ def parse_cowork_remote_sessions(conn, sessions_dir: Optional[Path] = None,
         folders = [f for f in (meta.get("folders") or []) if isinstance(f, str)]
         project_name = meta.get("project") or resolve_project(folders, path)
         project_id = get_or_create_project(conn, project_name)
+        if _follow_sidecar_project(conn, sid, project_id):
+            print(f"  {sid}: moved to project {project_name}")
+            stats["moved"] = stats.get("moved", 0) + 1
         user_id = get_or_create_user(conn, user or meta.get("fetched_by") or getpass.getuser())
         host_id = get_or_create_host(conn, host or meta.get("fetched_on_host") or _canonical_hostname(),
                                      meta.get("fetched_on_os") or "", meta.get("fetched_home") or "")
@@ -964,6 +1021,11 @@ def main() -> int:
                     help=f"Transcripts folder (default {COWORK_REMOTE_SESSIONS_DIR})")
     ap.add_argument("--spaces-file", action="append", default=None,
                     help="remote-session-spaces.json to read (default: auto-discovered)")
+    ap.add_argument("--cloud-list", action="append", default=None,
+                    help="JSON list of claude.ai's own cloud sessions "
+                         '[{"id","title","created_at","project"}], read from a logged-in '
+                         "browser: the only complete source of ids, and of claude.ai project "
+                         "names (they win over the folder rule)")
     ap.add_argument("--logs-dir", default=None,
                     help=f"Claude Desktop logs folder (default {CLAUDE_DESKTOP_LOGS_DIR})")
     ap.add_argument("--claude-bin", default=None, help="Path to the claude CLI")
@@ -980,7 +1042,8 @@ def main() -> int:
     if args.list or do_fetch:
         discovered, unknown_active = discover(
             spaces_files=args.spaces_file,
-            logs_dir=Path(args.logs_dir).expanduser() if args.logs_dir else None)
+            logs_dir=Path(args.logs_dir).expanduser() if args.logs_dir else None,
+            cloud_lists=args.cloud_list)
         if args.list:
             _print_list(discovered, unknown_active, sessions_dir)
             return 0
