@@ -44,6 +44,7 @@ from lav.config import (
     get_codex_sessions_dirs,
     get_codex_state_db,
     get_cowork_sessions_dirs,
+    is_lav_internal_project_dir,
     load_runtime_config,
 )
 # LAV-78: tool-call outcomes. tool_outcomes imports lav.config only (it pulls the
@@ -3832,7 +3833,7 @@ def main():
         print("Available projects in Claude Code:")
         for root in claude_roots:
             for project_dir in sorted(root.iterdir()):
-                if project_dir.is_dir():
+                if project_dir.is_dir() and not is_lav_internal_project_dir(project_dir):
                     name = extract_project_name(project_dir)
                     count = len(list(project_dir.glob("*.jsonl")))
                     print(f"  {name}: {count} interaction files")
@@ -3850,7 +3851,7 @@ def main():
         found = False
         for root in claude_roots:
             for project_dir in root.iterdir():
-                if project_dir.is_dir():
+                if project_dir.is_dir() and not is_lav_internal_project_dir(project_dir):
                     name = extract_project_name(project_dir)
                     if name == args.project:
                         parse_project(project_dir, conn, args.full, since=since)
@@ -3876,7 +3877,7 @@ def main():
         all_stats = []
         for root in claude_roots:
             for project_dir in sorted(root.iterdir()):
-                if project_dir.is_dir():
+                if project_dir.is_dir() and not is_lav_internal_project_dir(project_dir):
                     stats = parse_project(project_dir, conn, args.full, since=since)
                     all_stats.append(stats)
 

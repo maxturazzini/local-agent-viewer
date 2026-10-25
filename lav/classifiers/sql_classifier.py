@@ -375,7 +375,7 @@ Examples:
     parser.add_argument("--project", metavar="NAME",
         help="Filter by project name")
     parser.add_argument("--source", metavar="SRC",
-        choices=["claude_code", "chatgpt", "codex_cli", "cowork_desktop"],
+        choices=["claude_code", "chatgpt", "codex_cli", "cowork_desktop", "cowork_remote"],
         help="Filter by source tool")
     parser.add_argument("--host", metavar="HOSTNAME",
         help="Filter by hostname (partial match)")

@@ -1478,6 +1478,8 @@
         if (!sid) return '';
         // For chatgpt:UUID, show first 8 chars of the UUID part
         if (sid.startsWith('chatgpt:')) return sid.substring(8, 16);
+        // LAV-94: cowork_remote ids are the bare cloud id session_01…
+        if (sid.startsWith('session_')) return sid.substring(8, 16);
         return sid.substring(0, 8);
     }
 
@@ -1566,6 +1568,7 @@
                 claude_code: 'Claude Code',
                 codex_cli: 'Codex CLI',
                 cowork_desktop: 'Claude Desktop',
+                cowork_remote: 'Cowork Remote',
                 chatgpt: 'ChatGPT',
                 claude_ai: 'Claude.ai',
                 chatgpt_work_desktop: 'ChatGPT Work Desktop',
@@ -1826,7 +1829,7 @@
                     <div class="conv-tokens" data-col="tokens">${formatNumber(conv.total_tokens)}</div>
                     <div class="conv-cost" data-col="cost" style="font-size:0.82rem;color:var(--spring-green);font-weight:600;">$${(conv.cost_usd || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
                     <div class="conv-messages" data-col="messages">${conv.message_count || 0} msgs</div>
-                    <div data-col="session"><span class="conv-session-id" data-full-id="${escapeAttr(conv.session_id || '')}" onclick="event.stopPropagation(); copySessionId(this);">${escapeHtml((conv.session_id || '').substring(0, 8))}</span></div>
+                    <div data-col="session"><span class="conv-session-id" data-full-id="${escapeAttr(conv.session_id || '')}" onclick="event.stopPropagation(); copySessionId(this);">${escapeHtml(shortenSessionId(conv.session_id || ''))}</span></div>
                 `);
 
                 row.addEventListener('click', (e) => {
@@ -1899,7 +1902,7 @@
             <div class="conv-tokens" data-col="tokens">${formatNumber(child.total_tokens)}</div>
             <div class="conv-cost" data-col="cost" style="font-size:0.82rem;color:var(--spring-green);font-weight:600;">$${(child.cost_usd || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
             <div class="conv-messages" data-col="messages">${child.message_count || 0} msgs</div>
-            <div data-col="session"><span class="conv-session-id" data-full-id="${escapeAttr(sid)}" onclick="event.stopPropagation(); copySessionId(this);">${escapeHtml(sid.substring(0, 8))}</span></div>
+            <div data-col="session"><span class="conv-session-id" data-full-id="${escapeAttr(sid)}" onclick="event.stopPropagation(); copySessionId(this);">${escapeHtml(shortenSessionId(sid))}</span></div>
         `);
         row.addEventListener('click', (e) => {
             if (e.target.closest('.conv-session-id')) return;

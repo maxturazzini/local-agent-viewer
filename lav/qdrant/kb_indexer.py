@@ -23,7 +23,7 @@ Payload stored in Qdrant per interaction:
     project         str         Workspace name (e.g. miniMe)
     user            str         Username
     host            str         Hostname where interaction happened
-    source          str         Tool: claude_code | chatgpt | codex_cli | cowork_desktop
+    source          str         Tool: claude_code | chatgpt | codex_cli | cowork_desktop | cowork_remote
     timestamp       str (ISO)   First message timestamp
     indexed_at      str (ISO)   When indexed
     summary         str         1-2 sentence summary (Haiku)
@@ -348,7 +348,7 @@ Examples:
     parser.add_argument("--source", metavar="SRC",
         choices=["claude_code", "chatgpt", "claude_ai", "codex_cli",
                  "codex_desktop", "codex_vscode", "chatgpt_work_desktop",
-                 "codex_local", "cowork_desktop"],
+                 "codex_local", "cowork_desktop", "cowork_remote"],
         help="Filter by source tool")
     parser.add_argument("--host", metavar="HOSTNAME",
         help="Filter by hostname (partial match)")

@@ -9,13 +9,13 @@
 
 ---
 
-## 1. The 5 sources and the 4 filter dimensions
+## 1. The 6 sources and the 4 filter dimensions
 
 LAV reads logs from different agents and normalizes them into **a single
 SQLite database**. Every conversation is tagged with its source
 (`session_sources.source`).
 
-### The 5 sources
+### The 6 sources
 
 | Source (`source`) | Where from | `session_id` prefix |
 |---|---|---|
@@ -24,6 +24,7 @@ SQLite database**. Every conversation is tagged with its source
 | `cowork_desktop` | Cowork (Claude Desktop app) | `cowork:` + uuid |
 | `chatgpt` | ChatGPT export | `chatgpt:` + id |
 | `claude_ai` | claude.ai account export | `claudeai:` + id |
+| `cowork_remote` | Cowork / Claude Code sessions logged in the cloud, fetched with `claude --teleport` (LAV-94) | none — the real cloud id, e.g. `session_01X9Nuwi...` |
 
 #### Codex surfaces (LAV-74)
 
@@ -59,7 +60,9 @@ sources are never touched).
 | **Total** | **5789** |
 
 The `session_id` prefix is the fastest way to recognize the source at a
-glance: `claude_code` uses the bare UUID, all others are prefixed.
+glance: `claude_code` uses the bare UUID, `cowork_remote` the bare cloud id
+(`session_01…`, which is what `claude --teleport` and claude.ai URLs take), all
+others are prefixed.
 
 ### The 4 filter dimensions
 
@@ -85,7 +88,7 @@ LAV reconciles them with **two strategies**:
 
 | Model | Typical source | Relationship | `parent_session_id` |
 |---|---|---|---|
-| **MERGED** | `cowork_desktop` | one conversation = one row | always `NULL` |
+| **MERGED** | `cowork_desktop`, `cowork_remote` | one conversation = one row | always `NULL` |
 | **MASTER / DERIVED** | `claude_code` | one master + N subagents | children point to the master |
 
 ### 2.1 MERGED model — Cowork
@@ -204,7 +207,7 @@ Returns `{ interactions, total, limit, offset }`. Each element of
 `interactions` includes, besides the base fields (`session_id`, `project_id`,
 `model`, `message_count`, `display`, `summary`, ...):
 
-- `client_source` — the source (`claude_code`, `cowork_desktop`, ...);
+- `client_source` — the source (`claude_code`, `cowork_desktop`, `cowork_remote`, ...);
 - `cost_usd` — cost calculated at query-time via LEFT JOIN on
   `model_pricing` (never materialized);
 - `total_tokens` — in grouped mode, already rolled up across the tree;

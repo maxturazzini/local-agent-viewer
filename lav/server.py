@@ -36,9 +36,11 @@ from lav.config import (
     SOURCE_CODEX_CLI,
     SOURCE_COWORK_DESKTOP,
     SOURCE_CHATGPT,
+    SOURCE_COWORK_REMOTE,
     CODEX_SOURCE_ALIASES,
     get_claude_projects_dirs,
     get_chatgpt_export_path,
+    is_lav_internal_project_dir,
     load_runtime_config,
 )
 from lav.parsers.jsonl import (
@@ -61,6 +63,7 @@ from lav.parsers.jsonl import (
     ingest_remote_sessions,
 )
 from lav.parsers.chatgpt import parse_chatgpt_export
+from lav.parsers.cowork_remote import parse_cowork_remote_sessions
 from lav.queries import (
     run_query,
     build_filters,
@@ -363,7 +366,7 @@ def sync_data(scope: str, project: str = None, user: str = None,
                 claude_roots = get_claude_projects_dirs(include_desktop_hint=False)
                 for root in claude_roots:
                     for project_dir in sorted(root.iterdir()):
-                        if project_dir.is_dir():
+                        if project_dir.is_dir() and not is_lav_internal_project_dir(project_dir):
                             _sync_status["progress"] = f"Parsing {extract_project_name(project_dir)}..."
                             stats = parse_project(project_dir, conn, full)
                             results.append(stats)
@@ -391,7 +394,8 @@ def sync_data(scope: str, project: str = None, user: str = None,
                 found = False
                 for root in claude_roots:
                     for project_dir in root.iterdir():
-                        if project_dir.is_dir() and extract_project_name(project_dir) == project:
+                        if (project_dir.is_dir() and not is_lav_internal_project_dir(project_dir)
+                                and extract_project_name(project_dir) == project):
                             stats = parse_project(project_dir, conn, full)
                             results.append(stats)
                             found = True
@@ -412,7 +416,7 @@ def sync_data(scope: str, project: str = None, user: str = None,
                     claude_roots = get_claude_projects_dirs(include_desktop_hint=False)
                     for root in claude_roots:
                         for project_dir in sorted(root.iterdir()):
-                            if project_dir.is_dir():
+                            if project_dir.is_dir() and not is_lav_internal_project_dir(project_dir):
                                 stats = parse_project(project_dir, conn, full)
                                 results.append(stats)
                 elif source in CODEX_SOURCE_ALIASES:
@@ -432,6 +436,10 @@ def sync_data(scope: str, project: str = None, user: str = None,
                             results.append(chatgpt_stats)
                     except Exception as e:
                         print(f"[sync] ChatGPT parse failed (non-fatal): {e}")
+                elif source == SOURCE_COWORK_REMOTE:
+                    # LAV-94: parse-only. The `claude --teleport` fetch never runs
+                    # from the server: it is lav-parse-cowork-remote's job.
+                    results.extend(parse_cowork_remote_sessions(conn))
 
             conn.close()
 

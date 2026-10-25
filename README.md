@@ -57,6 +57,7 @@ No cloud. No accounts. No external dependencies. Just `pip install` and go.
 | **Codex** (CLI, Desktop, VS Code, ChatGPT Work Desktop) | JSONL | `~/.codex/sessions/` |
 | **Claude Desktop (Cowork)** | JSONL | `~/Library/Application Support/Claude/local-agent-mode-sessions/` |
 | **ChatGPT** | JSON export | Manual (`conversations.json` from data export) |
+| **Cowork remote / Claude Code cloud** | JSONL via `claude --teleport` | Session ids from Claude Desktop (`remote-session-spaces.json`, logs) |
 
 > Codex rollouts are attributed to their real surface from
 > `session_meta.payload.originator`: `codex_cli`, `codex_desktop`,
@@ -153,6 +154,7 @@ The database is created automatically at `~/.local/share/local-agent-viewer/loca
 | `lav-parse` | Parse JSONL interactions (Claude Code, Codex, Desktop) | — |
 | `lav-parse-chatgpt` | Parse ChatGPT export | `CHATGPT_EXPORT_PATH` |
 | `lav-parse-claude-ai` | Parse Anthropic claude.ai account export | `CLAUDE_AI_EXPORT_PATH` (or `--folder`) |
+| `lav-parse-cowork-remote` | Fetch (`--fetch`, via `claude --teleport`) and parse cloud Cowork / Claude Code sessions | `claude` CLI logged in to claude.ai (fetch only) |
 | `lav-server` | Start the web server | — |
 | `lav-classify` | Classify interactions via gpt-4.1-mini | `OPENAI_API_KEY` |
 | `lav-index` | Index interactions into Qdrant | `qdrant-client`, `openai` |
@@ -310,7 +312,7 @@ Every query supports four independent dimensions:
 | **Project** | Which codebase |
 | **User** | Which person |
 | **Host** | Which machine |
-| **Source** | Which agent (claude_code, codex_cli, cowork_desktop, chatgpt) |
+| **Source** | Which agent (claude_code, codex_cli, cowork_desktop, cowork_remote, chatgpt, claude_ai) |
 
 ### Search
 - **Full-text search** via SQLite FTS5 — fast, no external dependencies
@@ -650,7 +652,9 @@ local-agent-viewer/
 │   ├── mcp_server.py              # FastMCP server for AI tool integration
 │   ├── parsers/
 │   │   ├── jsonl.py               # JSONL parser (Claude Code, Codex, Desktop)
-│   │   └── chatgpt.py             # ChatGPT export parser
+│   │   ├── chatgpt.py             # ChatGPT export parser
+│   │   ├── claude_ai.py           # claude.ai account export parser
+│   │   └── cowork_remote.py       # Cloud sessions via claude --teleport
 │   ├── classifiers/
 │   │   ├── openai_classifier.py   # OpenAI Structured Outputs classifier
 │   │   └── sql_classifier.py      # Batch CLI classifier (gpt-4.1-mini)

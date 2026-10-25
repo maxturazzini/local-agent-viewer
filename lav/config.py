@@ -40,6 +40,10 @@ COWORK_SESSIONS_DIRS_DEFAULT = [
     CLAUDE_DESKTOP_SUPPORT_DIR / "claude-code-sessions",
 ]
 
+# Claude Desktop logs: the only place cloud session ids show up besides
+# remote-session-spaces.json (LAV-94). They rotate at ~10 MB (main.log, main1.log, ...).
+CLAUDE_DESKTOP_LOGS_DIR = Path.home() / "Library" / "Logs" / "Claude"
+
 # ===========================================================================
 # TOOL CLASSIFICATION
 # ===========================================================================
@@ -124,10 +128,28 @@ LOCAL_DATA_DIR = Path.home() / ".local" / "share" / "local-agent-viewer"
 
 LAV_CONFIG_PATH = LOCAL_DATA_DIR / "config.json"
 
+# LAV-94: cloud sessions (Cowork remote / Claude Code cloud) fetched with
+# `claude --teleport`. Everything lives under one LAV-owned dir. The teleport cwd
+# is NOT configurable: Claude Code writes the transcript into
+# ~/.claude/projects/<slug-of-cwd>/, and is_lav_internal_project_dir() recognises
+# that slug by its constant suffix so the claude_code parser never ingests it.
+# Hyphens only: an underscore in the path would make the slug ambiguous.
+COWORK_REMOTE_DIR = LOCAL_DATA_DIR / "cowork-remote"
+COWORK_REMOTE_SESSIONS_DIR = COWORK_REMOTE_DIR / "sessions"
+COWORK_REMOTE_TELEPORT_CWD = COWORK_REMOTE_DIR / "teleport-cwd"
+_LAV_INTERNAL_SLUG_SUFFIX = "-cowork-remote-teleport-cwd"
+
+
+def is_lav_internal_project_dir(project_dir: Path) -> bool:
+    """True for the ~/.claude/projects/<slug> dir that `claude --teleport` writes
+    into when LAV runs it (LAV-94). Every claude_code dir loop skips it."""
+    return project_dir.name.endswith(_LAV_INTERNAL_SLUG_SUFFIX)
+
 
 def load_runtime_config() -> dict:
     """Load runtime config (role, agents). Default: both, no agents."""
-    defaults = {"role": "both", "port": 8764, "agents": [], "allowed_clients": []}
+    defaults = {"role": "both", "port": 8764, "agents": [], "allowed_clients": [],
+                "cowork_remote_fetch": False}
     LOCAL_DATA_DIR.mkdir(parents=True, exist_ok=True)
     if not LAV_CONFIG_PATH.exists():
         return defaults
@@ -142,6 +164,9 @@ def load_runtime_config() -> dict:
         # "deny" would break every existing install on upgrade. Set it per
         # machine in config.json (untracked) — never in the repo.
         cfg.setdefault("allowed_clients", [])
+        # LAV-94: per-machine switch for the scheduled `claude --teleport` fetch.
+        # Off by default: only the node that owns Claude Desktop turns it on.
+        cfg.setdefault("cowork_remote_fetch", False)
         if cfg["role"] not in ("agent", "collector", "both"):
             cfg["role"] = "both"
         return cfg
@@ -164,6 +189,7 @@ SOURCE_CODEX_CLI = "codex_cli"
 SOURCE_COWORK_DESKTOP = "cowork_desktop"
 SOURCE_CHATGPT = "chatgpt"
 SOURCE_CLAUDE_AI = "claude_ai"
+SOURCE_COWORK_REMOTE = "cowork_remote"  # LAV-94: cloud sessions fetched via teleport
 
 # Codex surfaces derived from session_meta.payload.originator (LAV-74).
 # codex_cli stays the internal watermark key and sync alias for all Codex
@@ -399,3 +425,19 @@ def get_cowork_sessions_dirs(
             dirs = list(COWORK_SESSIONS_DIRS_DEFAULT)
 
     return [d for d in dirs if d.exists() and d.is_dir()]
+
+
+def get_cowork_remote_spaces_files(
+    overrides: Optional[List[str]] = None,
+) -> List[Path]:
+    """Resolve Claude Desktop's remote-session-spaces.json files (LAV-94).
+
+    One per <account>/<org> under local-agent-mode-sessions. No settings key:
+    the default is the same on every Mac, and the CLI flag covers the rest.
+    """
+    if overrides:
+        files = [_expand_path(p) for p in overrides if p and str(p).strip()]
+    else:
+        files = sorted((CLAUDE_DESKTOP_SUPPORT_DIR / "local-agent-mode-sessions")
+                       .glob("*/*/remote-session-spaces.json"))
+    return [f for f in files if f.exists() and f.is_file()]

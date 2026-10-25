@@ -93,3 +93,24 @@ if [ -x "$VENV/bin/lav" ] && "$VENV/bin/lav" backfill tool-outcomes --help > /de
 else
     log "INFO: lav backfill tool-outcomes unavailable in $VENV — skipping (pre-LAV-78 checkout)"
 fi
+
+# 4) Cloud sessions: Cowork remote / Claude Code cloud (LAV-94).
+#    `--scheduled` teleports new sessions ONLY on the node whose config.json has
+#    "cowork_remote_fetch": true (the one with Claude Desktop), at most 3 per run
+#    and never one active in the last 30 min. Every node then re-parses whatever
+#    sits in ~/.local/share/local-agent-viewer/cowork-remote/sessions/ — that
+#    folder is copied over to the collector, because old sessions never travel
+#    over sync. Exit 2 = another fetch holds the lock.
+#
+#    Never fatal, and skipped on a node whose checkout predates the command.
+if [ -x "$VENV/bin/lav-parse-cowork-remote" ]; then
+    CR_OUTPUT=$("$VENV/bin/lav-parse-cowork-remote" --scheduled --max-fetch 3 2>&1)
+    CR_EXIT=$?
+    if [ $CR_EXIT -ne 0 ]; then
+        log "WARN cowork_remote (exit $CR_EXIT): $(echo "$CR_OUTPUT" | grep -E 'FAILED|error|running' | tail -3 | tr '\n' ' ')"
+    else
+        log "OK cowork_remote: $(echo "$CR_OUTPUT" | grep -m1 'Sessions:' || echo "$CR_OUTPUT" | tail -1)"
+    fi
+else
+    log "INFO: lav-parse-cowork-remote unavailable in $VENV — skipping (pre-LAV-94 checkout)"
+fi
