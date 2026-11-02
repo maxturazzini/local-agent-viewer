@@ -1399,7 +1399,28 @@ class APIHandler(SimpleHTTPRequestHandler):
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {args[0]}")
 
 
+def _migrate_pricing_columns():
+    """LAV-98: every cost query reads the long-context columns of model_pricing, and
+    the server's connections are read-only. Without this, a restart after a pull breaks
+    the cost pages until the next lav-parse runs init_db(). Never fatal: that parse
+    still heals it.
+    """
+    from lav.pricing import apply_long_context_tiers, migrate_long_context_columns
+    if not UNIFIED_DB_PATH.exists():
+        return
+    try:
+        conn = sqlite3.connect(str(UNIFIED_DB_PATH), timeout=30)
+        try:
+            migrate_long_context_columns(conn)
+            apply_long_context_tiers(conn)
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        print(f"[server] long-context pricing migration skipped: {e}")
+
+
 def main():
+    _migrate_pricing_columns()
     role = _runtime_config["role"]
     port = _runtime_config.get("port", PORT)
     # Agent and both: bind 0.0.0.0 for remote access; collector-only: localhost

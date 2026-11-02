@@ -435,6 +435,11 @@ CREATE TABLE IF NOT EXISTS model_pricing (
     from_date TEXT NOT NULL,
     to_date TEXT,
     notes TEXT,
+    long_context_threshold INTEGER,
+    lc_input REAL,
+    lc_output REAL,
+    lc_cache_write REAL,
+    lc_cache_read REAL,
     UNIQUE(model, from_date)
 );
 CREATE INDEX IF NOT EXISTS idx_pricing_model_date ON model_pricing(model, from_date);
@@ -861,8 +866,16 @@ def init_db(db_path: Path = UNIFIED_DB_PATH) -> sqlite3.Connection:
     conn.executescript(SCHEMA)
     conn.commit()
     # Seed default model pricing
-    from lav.pricing import ensure_pricing_overlap_guard, seed_default_pricing
+    from lav.pricing import (apply_long_context_tiers, ensure_pricing_overlap_guard,
+                             migrate_long_context_columns, seed_default_pricing)
     seed_default_pricing(conn)
+    # LAV-98: tier columns on existing DBs, then the tiers themselves (after the
+    # seed, so a model just seeded gets its tier too)
+    try:
+        migrate_long_context_columns(conn)
+        apply_long_context_tiers(conn)
+    except Exception as e:
+        print(f"  long-context pricing migration skipped: {e}")
     # LAV-76: one open-ended pricing row per model (warns instead of failing
     # when a pre-existing DB still holds duplicates)
     try:

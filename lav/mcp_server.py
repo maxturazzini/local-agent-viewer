@@ -429,6 +429,11 @@ def manage_pricing(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
     notes: Optional[str] = None,
+    long_context_threshold: Optional[int] = None,
+    lc_input: Optional[float] = None,
+    lc_output: Optional[float] = None,
+    lc_cache_write: Optional[float] = None,
+    lc_cache_read: Optional[float] = None,
 ) -> dict:
     """Manage model pricing data for cost tracking.
 
@@ -444,6 +449,13 @@ def manage_pricing(
         from_date: Start date YYYY-MM-DD (required for add)
         to_date: End date YYYY-MM-DD, exclusive (optional, NULL = current)
         notes: Optional notes
+        long_context_threshold: Prompt tokens (input + cache read + cache write) above
+            which a single request pays the lc_* prices. Tier fields left out are
+            inherited from the row this add closes or replaces.
+        lc_input: Input price per 1M tokens over the threshold
+        lc_output: Output price per 1M tokens over the threshold
+        lc_cache_write: 5-minute cache write price per 1M tokens over the threshold
+        lc_cache_read: Cache read price per 1M tokens over the threshold
     """
     if action == "list":
         if not _check_read_api_key(api_key):
@@ -471,7 +483,9 @@ def manage_pricing(
                 output_price=output_price_per_mtok, from_date=from_date,
                 provider=provider, cache_write=cache_write_price_per_mtok,
                 cache_read=cache_read_price_per_mtok, to_date=to_date,
-                notes=notes,
+                notes=notes, long_context_threshold=long_context_threshold,
+                lc_input=lc_input, lc_output=lc_output,
+                lc_cache_write=lc_cache_write, lc_cache_read=lc_cache_read,
             )
             return {"status": "added", "model": model, "from_date": from_date}
         finally:
@@ -490,10 +504,14 @@ def manage_pricing(
             f"- Input token price\n"
             f"- Output token price\n"
             f"- Cached input price (if available, otherwise 0)\n"
-            f"- Cache write price (if available, otherwise 0)\n\n"
+            f"- Cache write price (if available, otherwise 0)\n"
+            f"- Long-context tier, if the price list charges more above a prompt "
+            f"length: the threshold in tokens and the prices above it (otherwise null)\n\n"
             f"Return ONLY a JSON object:\n"
             f'{{"input_price_per_mtok": X, "output_price_per_mtok": X, '
-            f'"cache_write_price_per_mtok": X, "cache_read_price_per_mtok": X}}\n\n'
+            f'"cache_write_price_per_mtok": X, "cache_read_price_per_mtok": X, '
+            f'"long_context_threshold": X, "lc_input": X, "lc_output": X, '
+            f'"lc_cache_write": X, "lc_cache_read": X}}\n\n'
             f"Provider pricing pages:\n"
             f"- Anthropic: https://docs.anthropic.com/en/docs/about-claude/pricing\n"
             f"- OpenAI: https://platform.openai.com/docs/pricing"

@@ -13,6 +13,7 @@ from typing import Optional
 
 import lav  # noqa: F401 — triggers .env loading
 from lav.config import UNIFIED_DB_PATH, QDRANT_DATA_DIR, QDRANT_COLLECTION, QDRANT_URL
+from lav.pricing import add_long_context_args, long_context_kwargs
 
 _kb_store = None
 
@@ -452,6 +453,7 @@ def cmd_pricing(args):
                 cache_write=args.cache_write or 0,
                 cache_read=args.cache_read or 0,
                 to_date=args.to_date, notes=args.notes,
+                **long_context_kwargs(args),
             )
             _output({"status": "added", "model": args.model, "from_date": args.from_date}, args.format)
         finally:
@@ -1456,6 +1458,7 @@ def build_parser():
     p_pricing.add_argument("--cache-write", type=float, dest="cache_write", help="Cache write price/Mtok")
     p_pricing.add_argument("--cache-read", type=float, dest="cache_read", help="Cache read price/Mtok")
     p_pricing.add_argument("--notes", help="Optional notes")
+    add_long_context_args(p_pricing)
     _add_format_arg(p_pricing)
     p_pricing.set_defaults(func=cmd_pricing)
 

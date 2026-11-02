@@ -23,10 +23,46 @@ CREATE TABLE IF NOT EXISTS model_pricing (
     from_date TEXT NOT NULL,
     to_date TEXT,
     notes TEXT,
+    long_context_threshold INTEGER,
+    lc_input REAL,
+    lc_output REAL,
+    lc_cache_write REAL,
+    lc_cache_read REAL,
     UNIQUE(model, from_date)
 );
 CREATE INDEX IF NOT EXISTS idx_pricing_model_date ON model_pricing(model, from_date);
 """
+
+# LAV-98: the high tier of a model, per single request. NULL threshold = no tier;
+# a NULL lc_* keeps the base price of that component. queries._cost_exprs() is the
+# only reader of these for pricing.
+LONG_CONTEXT_COLUMNS = {
+    "long_context_threshold": "INTEGER",
+    "lc_input": "REAL",
+    "lc_output": "REAL",
+    "lc_cache_write": "REAL",
+    "lc_cache_read": "REAL",
+}
+
+# Anthropic's rule, quoted: "A request's prompt length counts all of its input
+# tokens, including cache reads and cache writes. Each request is priced on its
+# own: a request over the threshold pays the higher prices even when part of its
+# prompt is a cache hit." So strictly greater than, and the whole request moves.
+# No lc price for the 1-hour cache write: it is 2x the input price of the tier
+# applied (1.00 here).
+# Every other Claude model is flat across the context window. OpenAI's tier
+# (>272K, see the notes below) is deliberately not loaded: Codex rows in
+# token_usage hold cumulative totals that are not single requests, so it would
+# price them wrongly. The columns can hold it, no code change needed.
+LONG_CONTEXT_TIERS = {
+    "claude-haiku-5-5": {
+        "long_context_threshold": 100000,
+        "lc_input": 0.50,
+        "lc_output": 2.50,
+        "lc_cache_write": 0.625,
+        "lc_cache_read": 0.05,
+    },
+}
 
 DEFAULT_PRICING = [
     # (model, provider, input, output, cache_write, cache_read, from_date
@@ -154,6 +190,41 @@ def seed_default_pricing(conn: sqlite3.Connection):
     conn.commit()
 
 
+def migrate_long_context_columns(conn: sqlite3.Connection):
+    """LAV-98: add the long-context columns to a model_pricing that lacks them.
+
+    Idempotent, column by column. Lives here rather than with the other migrations
+    in parsers/jsonl.py because the lav-pricing CLI and upsert_pricing() need it
+    too, and they do not go through init_db().
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(model_pricing)")}
+    for col, sql_type in LONG_CONTEXT_COLUMNS.items():
+        if col not in cols:
+            conn.execute(f"ALTER TABLE model_pricing ADD COLUMN {col} {sql_type}")
+    conn.commit()
+
+
+def apply_long_context_tiers(conn: sqlite3.Connection):
+    """LAV-98: load LONG_CONTEXT_TIERS onto the rows of their models.
+
+    Runs on fresh and existing DBs alike, because the seed never touches an
+    existing row (LAV-76). Only rows with a NULL threshold, and no lc_* already
+    there is replaced, so a value set by hand is never overwritten.
+    """
+    for model, tier in LONG_CONTEXT_TIERS.items():
+        conn.execute(
+            """UPDATE model_pricing
+               SET long_context_threshold = ?,
+                   lc_input = COALESCE(lc_input, ?),
+                   lc_output = COALESCE(lc_output, ?),
+                   lc_cache_write = COALESCE(lc_cache_write, ?),
+                   lc_cache_read = COALESCE(lc_cache_read, ?)
+               WHERE model = ? AND long_context_threshold IS NULL""",
+            [tier.get(col) for col in LONG_CONTEXT_COLUMNS] + [model],
+        )
+    conn.commit()
+
+
 def ensure_pricing_overlap_guard(conn: sqlite3.Connection) -> bool:
     """Enforce "at most one open-ended pricing row per model" (LAV-76).
 
@@ -193,8 +264,29 @@ def ensure_pricing_overlap_guard(conn: sqlite3.Connection) -> bool:
 def upsert_pricing(conn: sqlite3.Connection, model: str, input_price: float,
                    output_price: float, from_date: str, provider: str = None,
                    cache_write: float = 0, cache_read: float = 0,
-                   to_date: str = None, notes: str = None):
-    """Add or update a pricing entry. Closes previous entry's to_date if needed."""
+                   to_date: str = None, notes: str = None,
+                   long_context_threshold: int = None, lc_input: float = None,
+                   lc_output: float = None, lc_cache_write: float = None,
+                   lc_cache_read: float = None):
+    """Add or update a pricing entry. Closes previous entry's to_date if needed.
+
+    LAV-98: a tier field left None takes the value of the row this call closes or
+    replaces, so re-pricing a model does not silently lose its tier.
+    """
+    migrate_long_context_columns(conn)  # no init_db() on the CLI and MCP paths
+    tier_cols = ", ".join(LONG_CONTEXT_COLUMNS)
+    # Read before the UPDATE below, which closes the row. The three shapes: same
+    # from_date (REPLACE, UNIQUE(model, from_date)); an older open row (closed
+    # below); a newer open row when this one is open too (REPLACE, LAV-76 index).
+    superseded = conn.execute(
+        f"""SELECT {tier_cols} FROM model_pricing
+            WHERE model = ? AND (from_date = ?
+                OR (to_date IS NULL AND (from_date < ? OR ? IS NULL)))
+            ORDER BY from_date = ? DESC LIMIT 1""",
+        (model, from_date, from_date, to_date, from_date),
+    ).fetchone() or (None,) * len(LONG_CONTEXT_COLUMNS)
+    given = (long_context_threshold, lc_input, lc_output, lc_cache_write, lc_cache_read)
+    tier = [new if new is not None else old for new, old in zip(given, superseded)]
     # Close previous open entry for this model
     conn.execute(
         """UPDATE model_pricing SET to_date = ?
@@ -205,10 +297,11 @@ def upsert_pricing(conn: sqlite3.Connection, model: str, input_price: float,
         """INSERT OR REPLACE INTO model_pricing
            (model, provider, input_price_per_mtok, output_price_per_mtok,
             cache_write_price_per_mtok, cache_read_price_per_mtok,
-            from_date, to_date, notes)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            from_date, to_date, notes, long_context_threshold,
+            lc_input, lc_output, lc_cache_write, lc_cache_read)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (model, provider, input_price, output_price, cache_write, cache_read,
-         from_date, to_date, notes),
+         from_date, to_date, notes, *tier),
     )
     # Verify no overlapping ranges were created
     overlaps = conn.execute(
@@ -233,17 +326,52 @@ def get_pricing(conn: sqlite3.Connection, model: str = None, active_only: bool =
     if active_only:
         clauses.append("to_date IS NULL")
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    # LAV-98: /api/pricing, `lav pricing list` and MCP read on query_only connections
+    # and cannot migrate, so a DB no init_db() has reached yet lists the tier as NULL
+    # instead of raising.
+    have = {row[1] for row in conn.execute("PRAGMA table_info(model_pricing)")}
+    tier_cols = ", ".join(c if c in have else f"NULL AS {c}" for c in LONG_CONTEXT_COLUMNS)
 
     cursor = conn.execute(
         f"""SELECT id, model, provider, input_price_per_mtok, output_price_per_mtok,
                    cache_write_price_per_mtok, cache_read_price_per_mtok,
-                   from_date, to_date, notes
+                   from_date, to_date, notes, {tier_cols}
             FROM model_pricing {where}
             ORDER BY model, from_date""",
         params,
     )
     cols = [d[0] for d in cursor.description]
     return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+
+def add_long_context_args(parser: argparse.ArgumentParser):
+    """The tier options shared by `lav-pricing add` and `lav pricing add`.
+
+    Each dest is a LONG_CONTEXT_COLUMNS key, see long_context_kwargs().
+    """
+    parser.add_argument("--long-context-threshold", type=int,
+                        help="Prompt tokens above which a request pays the lc_* prices "
+                             "(not given: inherited from the row closed or replaced)")
+    parser.add_argument("--lc-input", type=float, help="Input price/Mtok over the threshold")
+    parser.add_argument("--lc-output", type=float, help="Output price/Mtok over the threshold")
+    parser.add_argument("--lc-cache-write", type=float,
+                        help="5-minute cache write price/Mtok over the threshold")
+    parser.add_argument("--lc-cache-read", type=float,
+                        help="Cache read price/Mtok over the threshold")
+
+
+def long_context_kwargs(args: argparse.Namespace) -> dict:
+    """The upsert_pricing() tier arguments from add_long_context_args() options."""
+    return {col: getattr(args, col) for col in LONG_CONTEXT_COLUMNS}
+
+
+def _format_tier(row: dict) -> str:
+    """Tier of a get_pricing() row for the list table, blank if it has none."""
+    if row["long_context_threshold"] is None:
+        return ""
+    prices = "/".join("-" if row[c] is None else f"{row[c]:g}" for c in
+                      ("lc_input", "lc_output", "lc_cache_write", "lc_cache_read"))
+    return f">{row['long_context_threshold']} {prices}"
 
 
 def main():
@@ -270,6 +398,7 @@ def main():
     add_cmd.add_argument("--cache-read", type=float, default=0)
     add_cmd.add_argument("--to-date", help="End date (YYYY-MM-DD, exclusive)")
     add_cmd.add_argument("--notes", help="Optional notes")
+    add_long_context_args(add_cmd)
 
     # seed
     sub.add_parser("seed", help="Insert default pricing (won't overwrite)")
@@ -282,6 +411,8 @@ def main():
 
     conn = sqlite3.connect(str(UNIFIED_DB_PATH))
     conn.executescript(MODEL_PRICING_SCHEMA)
+    migrate_long_context_columns(conn)  # LAV-98
+    apply_long_context_tiers(conn)
     ensure_pricing_overlap_guard(conn)  # LAV-76
 
     try:
@@ -291,10 +422,10 @@ def main():
             if not rows:
                 print("No pricing entries found.")
                 return
-            fmt = "{:<35} {:<12} {:>8} {:>8} {:>8} {:>8}  {:<12} {:<12}"
+            fmt = "{:<35} {:<12} {:>8} {:>8} {:>8} {:>8}  {:<12} {:<12} {}"
             print(fmt.format("MODEL", "PROVIDER", "INPUT", "OUTPUT", "CW", "CR",
-                            "FROM", "TO"))
-            print("-" * 120)
+                            "FROM", "TO", "LONG CONTEXT (>TOKENS IN/OUT/CW/CR)"))
+            print("-" * 140)
             for r in rows:
                 print(fmt.format(
                     r["model"][:35],
@@ -305,6 +436,7 @@ def main():
                     f"${r['cache_read_price_per_mtok']:.2f}",
                     r["from_date"],
                     r["to_date"] or "current",
+                    _format_tier(r),
                 ))
 
         elif args.command == "add":
@@ -313,12 +445,13 @@ def main():
                 output_price=args.output_price, from_date=args.from_date,
                 provider=args.provider, cache_write=args.cache_write,
                 cache_read=args.cache_read, to_date=args.to_date,
-                notes=args.notes,
+                notes=args.notes, **long_context_kwargs(args),
             )
             print(f"Pricing added for {args.model} from {args.from_date}")
 
         elif args.command == "seed":
             seed_default_pricing(conn)
+            apply_long_context_tiers(conn)  # LAV-98: a model just seeded has no tier yet
             print(f"Seeded {len(DEFAULT_PRICING)} default pricing entries.")
     finally:
         conn.close()

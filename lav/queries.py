@@ -5,6 +5,7 @@ All queries support 4-dimensional filtering: project_id, user_id, host_id, sourc
 """
 
 import sqlite3
+from collections import namedtuple
 
 
 def run_query(conn, query, params=None):
@@ -342,6 +343,109 @@ def _never_executed_agg(alias, has_error_text=True):
 
 
 # ===========================================================================
+# COST EXPRESSIONS
+# ===========================================================================
+#
+# The only place that turns a token_usage row and its model_pricing row into USD.
+# Costs are calculated at query time, never materialized, so a second copy of this
+# formula is two pages showing two numbers for the same session.
+
+_CostExprs = namedtuple("_CostExprs", "input output cache_write cache_read total")
+
+
+def _cost_exprs(tu="tu", mp="mp"):
+    """Unrounded SQL expressions pricing one token_usage row, in USD.
+
+    `tu` and `mp` are the aliases of token_usage and of the model_pricing row joined
+    to it (see _price_join). Returns the four components and `total`, their sum.
+
+    LAV-96: cache writes are priced in two parts: the 5-minute ones at
+    cache_write_price_per_mtok (1.25x input) and cache_creation_1h_tokens at 2x
+    input, Anthropic's 1-hour rate.
+
+    LAV-98: long-context tier, per single request. The prompt length is input + cache
+    read + cache write; strictly above long_context_threshold the whole request pays
+    the lc_* prices, cache hits included, and the 2x of the 1-hour write is on the
+    input price of the tier applied. Codex rows store net input, so the sum is the
+    prompt length for every provider. NULL threshold or no pricing row: base prices,
+    0 for an unpriced model (<synthetic>, empty model). NULL lc_*: the base price of
+    that component.
+    """
+    prompt_tokens = (f"COALESCE({tu}.input_tokens, 0) + COALESCE({tu}.cache_read_tokens, 0)"
+                     f" + COALESCE({tu}.cache_creation_tokens, 0)")
+
+    def price(base, long_context):
+        # IS NOT NULL is redundant in logic (x > NULL is not true) but skips the sum
+        # on every row without a tier: get_token_stats goes from +35% to +7% over
+        # the formula without tiers.
+        return (f"COALESCE(CASE WHEN {mp}.long_context_threshold IS NOT NULL"
+                f" AND {prompt_tokens} > {mp}.long_context_threshold"
+                f" THEN COALESCE({mp}.{long_context}, {mp}.{base})"
+                f" ELSE {mp}.{base} END, 0)")
+
+    input_price = price("input_price_per_mtok", "lc_input")
+    output_price = price("output_price_per_mtok", "lc_output")
+    cache_write_price = price("cache_write_price_per_mtok", "lc_cache_write")
+    cache_read_price = price("cache_read_price_per_mtok", "lc_cache_read")
+
+    cost_input = f"COALESCE({tu}.input_tokens, 0) * {input_price} / 1000000.0"
+    cost_output = f"COALESCE({tu}.output_tokens, 0) * {output_price} / 1000000.0"
+    cost_cache_write = (
+        f"((COALESCE({tu}.cache_creation_tokens, 0) - COALESCE({tu}.cache_creation_1h_tokens, 0))"
+        f" * {cache_write_price}"
+        f" + COALESCE({tu}.cache_creation_1h_tokens, 0) * 2 * {input_price}) / 1000000.0")
+    cost_cache_read = f"COALESCE({tu}.cache_read_tokens, 0) * {cache_read_price} / 1000000.0"
+    return _CostExprs(
+        input=f"({cost_input})",
+        output=f"({cost_output})",
+        cache_write=f"({cost_cache_write})",
+        cache_read=f"({cost_cache_read})",
+        total=f"({cost_input} + {cost_output} + {cost_cache_write} + {cost_cache_read})",
+    )
+
+
+def _price_join(tu="tu", mp="mp"):
+    """LEFT JOIN of a token_usage row to the price valid at its timestamp."""
+    return f"""LEFT JOIN model_pricing {mp}
+    ON {mp}.model = {tu}.model
+    AND {tu}.timestamp >= {mp}.from_date
+    AND ({mp}.to_date IS NULL OR {tu}.timestamp < {mp}.to_date)"""
+
+
+_COST = _cost_exprs()
+_COST_EXPR = f"ROUND({_COST.total}, 6)"
+_PRICE_JOIN = _price_join()
+
+
+def _session_cost_sum(tu, mp):
+    """Scalar subquery, correlated on `c`: NULL for a session with no token_usage row."""
+    return f"""(
+                SELECT SUM({_cost_exprs(tu, mp).total})
+                FROM token_usage {tu}
+                {_price_join(tu, mp)}
+                WHERE {tu}.session_id = c.session_id AND {tu}.project_id = c.project_id
+            )"""
+
+
+def _per_session_cost_subquery(tu="tu", mp="mp"):
+    """The per-session cost SQL shape reused across list/detail/children queries.
+
+    Correlated on the outer interactions row `c`. Rounded to 4 decimals, 0 for a
+    session with no token_usage row.
+    """
+    return f"COALESCE(ROUND({_session_cost_sum(tu, mp)}, 4), 0)"
+
+
+def _per_session_cost_unrounded_subquery(tu="tu", mp="mp"):
+    """Same as _per_session_cost_subquery(), unrounded.
+
+    The one to use when adding sessions together: summing rounded costs accumulates
+    the rounding.
+    """
+    return f"COALESCE({_session_cost_sum(tu, mp)}, 0)"
+
+
+# ===========================================================================
 # TOKEN STATS
 # ===========================================================================
 
@@ -354,11 +458,6 @@ def get_token_stats(conn, project_id=None, user_id=None, host_id=None,
     )
     join = _join_session_sources('tu')
 
-    price_join = """LEFT JOIN model_pricing mp
-        ON mp.model = tu.model
-        AND tu.timestamp >= mp.from_date
-        AND (mp.to_date IS NULL OR tu.timestamp < mp.to_date)"""
-
     by_model = run_query(conn, f"""
         SELECT
             tu.model as model,
@@ -367,20 +466,15 @@ def get_token_stats(conn, project_id=None, user_id=None, host_id=None,
             SUM(tu.output_tokens) as output_tokens,
             SUM(tu.cache_creation_tokens) as cache_creation,
             SUM(tu.cache_read_tokens) as cache_read,
-            ROUND(SUM(COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0), 4) as cost_input,
-            ROUND(SUM(COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0), 4) as cost_output,
-            ROUND(SUM(((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0), 4) as cost_cache_write,
-            ROUND(SUM(COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0), 4) as cost_cache_read,
-            ROUND(SUM(
-                COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
-                + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-                + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
-                + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
-            ), 4) as cost_usd,
-            MAX(mp.input_price_per_mtok IS NOT NULL) as has_price
+            ROUND(SUM({_COST.input}), 4) as cost_input,
+            ROUND(SUM({_COST.output}), 4) as cost_output,
+            ROUND(SUM({_COST.cache_write}), 4) as cost_cache_write,
+            ROUND(SUM({_COST.cache_read}), 4) as cost_cache_read,
+            ROUND(SUM({_COST.total}), 4) as cost_usd,
+            MAX(mp.id IS NOT NULL) as has_price
         FROM token_usage tu
         {join}
-        {price_join}
+        {_PRICE_JOIN}
         {where}
         GROUP BY tu.model
         ORDER BY calls DESC
@@ -393,15 +487,10 @@ def get_token_stats(conn, project_id=None, user_id=None, host_id=None,
             SUM(tu.output_tokens) as output_tokens,
             SUM(tu.cache_creation_tokens) as cache_creation,
             SUM(tu.cache_read_tokens) as cache_read,
-            ROUND(SUM(
-                COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
-                + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-                + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
-                + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
-            ), 4) as cost_usd
+            ROUND(SUM({_COST.total}), 4) as cost_usd
         FROM token_usage tu
         {join}
-        {price_join}
+        {_PRICE_JOIN}
         {where}
         GROUP BY DATE(tu.timestamp)
         ORDER BY date
@@ -414,19 +503,14 @@ def get_token_stats(conn, project_id=None, user_id=None, host_id=None,
             SUM(tu.output_tokens) as output_tokens,
             SUM(tu.cache_creation_tokens) as cache_creation,
             SUM(tu.cache_read_tokens) as cache_read,
-            ROUND(SUM(COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0), 4) as cost_input,
-            ROUND(SUM(COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0), 4) as cost_output,
-            ROUND(SUM(((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0), 4) as cost_cache_write,
-            ROUND(SUM(COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0), 4) as cost_cache_read,
-            ROUND(SUM(
-                COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
-                + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-                + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
-                + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
-            ), 4) as cost_usd
+            ROUND(SUM({_COST.input}), 4) as cost_input,
+            ROUND(SUM({_COST.output}), 4) as cost_output,
+            ROUND(SUM({_COST.cache_write}), 4) as cost_cache_write,
+            ROUND(SUM({_COST.cache_read}), 4) as cost_cache_read,
+            ROUND(SUM({_COST.total}), 4) as cost_usd
         FROM token_usage tu
         {join}
-        {price_join}
+        {_PRICE_JOIN}
         {where}
     """, params if params else None)[0]
 
@@ -1775,19 +1859,7 @@ def get_interactions_list(conn, project_id=None, user_id=None, host_id=None,
             cm.classification as meta_classification,
             cm.data_sensitivity as meta_sensitivity,
             cm.summary as meta_summary,
-            COALESCE((
-                SELECT ROUND(SUM(
-                    COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
-                    + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-                    + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
-                    + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
-                ), 4)
-                FROM token_usage tu
-                LEFT JOIN model_pricing mp ON mp.model = tu.model
-                    AND tu.timestamp >= mp.from_date
-                    AND (mp.to_date IS NULL OR tu.timestamp < mp.to_date)
-                WHERE tu.session_id = c.session_id AND tu.project_id = c.project_id
-            ), 0) as cost_usd
+            {_per_session_cost_subquery()} as cost_usd
         FROM interactions c
         {join}
         LEFT JOIN projects p ON p.id = c.project_id
@@ -1820,23 +1892,6 @@ def get_interactions_list(conn, project_id=None, user_id=None, host_id=None,
         "limit": limit,
         "offset": offset,
     }
-
-
-def _per_session_cost_subquery():
-    """The per-session cost SQL shape reused across list/detail/children queries."""
-    return """COALESCE((
-                SELECT ROUND(SUM(
-                    COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
-                    + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-                    + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
-                    + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
-                ), 4)
-                FROM token_usage tu
-                LEFT JOIN model_pricing mp ON mp.model = tu.model
-                    AND tu.timestamp >= mp.from_date
-                    AND (mp.to_date IS NULL OR tu.timestamp < mp.to_date)
-                WHERE tu.session_id = c.session_id AND tu.project_id = c.project_id
-            ), 0)"""
 
 
 def _rollup_descendants(conn, masters):
@@ -2021,19 +2076,7 @@ def get_interaction_children(conn, session_id, project_id=None):
 
 def get_interaction_detail(conn, session_id, project_id=None):
     """Get full interaction transcript with parent info."""
-    cost_subquery = """COALESCE((
-                SELECT ROUND(SUM(
-                    COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
-                    + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-                    + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
-                    + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
-                ), 4)
-                FROM token_usage tu
-                LEFT JOIN model_pricing mp ON mp.model = tu.model
-                    AND tu.timestamp >= mp.from_date
-                    AND (mp.to_date IS NULL OR tu.timestamp < mp.to_date)
-                WHERE tu.session_id = c.session_id AND tu.project_id = c.project_id
-            ), 0) as cost_usd"""
+    cost_subquery = f"{_per_session_cost_subquery()} as cost_usd"
     if project_id is not None:
         conv = run_query(conn, f"""
             SELECT c.*, COALESCE(ss.source, 'unknown') as client_source,
@@ -2408,22 +2451,6 @@ def get_tagcloud_data(conn, project_id=None, user_id=None, host_id=None,
 # COST INTELLIGENCE
 # ===========================================================================
 
-# LAV-96: every cost expression in this module prices cache writes in two parts:
-# the 5-minute ones at model_pricing.cache_write_price_per_mtok (1.25x input) and
-# token_usage.cache_creation_1h_tokens at 2x input, Anthropic's 1-hour rate.
-_COST_EXPR = """ROUND(
-    COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
-    + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-    + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
-    + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
-, 6)"""
-
-_PRICE_JOIN = """LEFT JOIN model_pricing mp
-    ON mp.model = tu.model
-    AND tu.timestamp >= mp.from_date
-    AND (mp.to_date IS NULL OR tu.timestamp < mp.to_date)"""
-
-
 def get_session_cost_profile(conn, session_id, project_id=None):
     """Per-session cost analysis: summary, timeline, and phases."""
     pid_clause = "AND tu.project_id = ?" if project_id is not None else ""
@@ -2439,10 +2466,10 @@ def get_session_cost_profile(conn, session_id, project_id=None):
             COALESCE(tu.cache_read_tokens, 0) as cache_read_tokens,
             COALESCE(tu.api_message_id, '') as api_message_id,
             {_COST_EXPR} as cost_usd,
-            ROUND(COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0, 6) as cost_input,
-            ROUND(COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0, 6) as cost_output,
-            ROUND(((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0, 6) as cost_cache_write,
-            ROUND(COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0, 6) as cost_cache_read
+            ROUND({_COST.input}, 6) as cost_input,
+            ROUND({_COST.output}, 6) as cost_output,
+            ROUND({_COST.cache_write}, 6) as cost_cache_write,
+            ROUND({_COST.cache_read}, 6) as cost_cache_read
         FROM token_usage tu
         {_PRICE_JOIN}
         WHERE tu.session_id = ? {pid_clause}
@@ -2616,12 +2643,7 @@ def get_work_pattern_stats(conn, project_id=None, user_id=None, host_id=None,
                     WHEN COUNT(tu.rowid) < 50 THEN 'medium'
                     ELSE 'deep'
                 END as bucket,
-                ROUND(SUM(
-                    COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
-                    + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-                    + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
-                    + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
-                ), 4) as session_cost,
+                ROUND(SUM({_COST.total}), 4) as session_cost,
                 CASE WHEN SUM(COALESCE(tu.input_tokens, 0) + COALESCE(tu.cache_read_tokens, 0) + COALESCE(tu.cache_creation_tokens, 0)) > 0
                     THEN ROUND(SUM(COALESCE(tu.cache_read_tokens, 0)) * 100.0
                         / SUM(COALESCE(tu.input_tokens, 0) + COALESCE(tu.cache_read_tokens, 0) + COALESCE(tu.cache_creation_tokens, 0)), 1)
@@ -2669,19 +2691,7 @@ def get_work_pattern_stats(conn, project_id=None, user_id=None, host_id=None,
                     c.session_id,
                     c.project_id,
                     (SELECT COUNT(*) FROM messages m WHERE m.session_id = c.session_id AND m.project_id = c.project_id) as msg_count,
-                    COALESCE((
-                        SELECT ROUND(SUM(
-                            COALESCE(tu2.input_tokens, 0) * COALESCE(mp2.input_price_per_mtok, 0) / 1000000.0
-                            + COALESCE(tu2.output_tokens, 0) * COALESCE(mp2.output_price_per_mtok, 0) / 1000000.0
-                            + ((COALESCE(tu2.cache_creation_tokens, 0) - COALESCE(tu2.cache_creation_1h_tokens, 0)) * COALESCE(mp2.cache_write_price_per_mtok, 0) + COALESCE(tu2.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp2.input_price_per_mtok, 0)) / 1000000.0
-                            + COALESCE(tu2.cache_read_tokens, 0) * COALESCE(mp2.cache_read_price_per_mtok, 0) / 1000000.0
-                        ), 4)
-                        FROM token_usage tu2
-                        LEFT JOIN model_pricing mp2 ON mp2.model = tu2.model
-                            AND tu2.timestamp >= mp2.from_date
-                            AND (mp2.to_date IS NULL OR tu2.timestamp < mp2.to_date)
-                        WHERE tu2.session_id = c.session_id AND tu2.project_id = c.project_id
-                    ), 0) as session_cost
+                    {_per_session_cost_subquery(tu="tu2", mp="mp2")} as session_cost
                 FROM interactions c
                 {i_join}
                 {i_where}
@@ -2737,19 +2747,7 @@ def get_task_type_costs(conn, project_id=None, user_id=None, host_id=None,
                 SELECT
                     c.session_id,
                     c.project_id,
-                    COALESCE((
-                        SELECT ROUND(SUM(
-                            COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
-                            + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-                            + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
-                            + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
-                        ), 4)
-                        FROM token_usage tu
-                        LEFT JOIN model_pricing mp ON mp.model = tu.model
-                            AND tu.timestamp >= mp.from_date
-                            AND (mp.to_date IS NULL OR tu.timestamp < mp.to_date)
-                        WHERE tu.session_id = c.session_id AND tu.project_id = c.project_id
-                    ), 0) as session_cost,
+                    {_per_session_cost_subquery()} as session_cost,
                     COALESCE((
                         SELECT SUM(COALESCE(tu.input_tokens, 0) + COALESCE(tu.output_tokens, 0))
                         FROM token_usage tu
@@ -2800,12 +2798,7 @@ def get_efficiency_metrics(conn, project_id=None, user_id=None, host_id=None,
     cost_per_call_trend = run_query(conn, f"""
         SELECT
             DATE(tu.timestamp) as date,
-            ROUND(SUM(
-                COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
-                + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-                + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
-                + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
-            ) / NULLIF(COUNT(*), 0), 4) as avg_cost_per_call
+            ROUND(SUM({_COST.total}) / NULLIF(COUNT(*), 0), 4) as avg_cost_per_call
         FROM token_usage tu
         {join}
         {_PRICE_JOIN}
@@ -2832,12 +2825,7 @@ def get_efficiency_metrics(conn, project_id=None, user_id=None, host_id=None,
                 tu.model,
                 c.session_id,
                 c.project_id,
-                ROUND(SUM(
-                    COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
-                    + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-                    + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
-                    + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
-                ), 4) as session_cost,
+                ROUND(SUM({_COST.total}), 4) as session_cost,
                 SUM(COALESCE(tu.input_tokens, 0) + COALESCE(tu.output_tokens, 0)) as session_tokens
             FROM interactions c
             {i_join}
@@ -2861,12 +2849,7 @@ def get_efficiency_metrics(conn, project_id=None, user_id=None, host_id=None,
             SELECT
                 c.session_id,
                 c.project_id,
-                ROUND(SUM(
-                    COALESCE(tu.input_tokens, 0) * COALESCE(mp.input_price_per_mtok, 0) / 1000000.0
-                    + COALESCE(tu.output_tokens, 0) * COALESCE(mp.output_price_per_mtok, 0) / 1000000.0
-                    + ((COALESCE(tu.cache_creation_tokens, 0) - COALESCE(tu.cache_creation_1h_tokens, 0)) * COALESCE(mp.cache_write_price_per_mtok, 0) + COALESCE(tu.cache_creation_1h_tokens, 0) * 2 * COALESCE(mp.input_price_per_mtok, 0)) / 1000000.0
-                    + COALESCE(tu.cache_read_tokens, 0) * COALESCE(mp.cache_read_price_per_mtok, 0) / 1000000.0
-                ), 4) as session_cost,
+                ROUND(SUM({_COST.total}), 4) as session_cost,
                 CASE WHEN SUM(COALESCE(tu.input_tokens, 0) + COALESCE(tu.cache_read_tokens, 0) + COALESCE(tu.cache_creation_tokens, 0)) > 0
                     THEN ROUND(SUM(COALESCE(tu.cache_read_tokens, 0)) * 100.0
                         / SUM(COALESCE(tu.input_tokens, 0) + COALESCE(tu.cache_read_tokens, 0) + COALESCE(tu.cache_creation_tokens, 0)), 1)
