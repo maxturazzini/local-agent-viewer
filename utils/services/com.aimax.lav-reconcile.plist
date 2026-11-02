@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  macOS LaunchAgent template for the scheduled reconcile (LAV-98). Collector only.
+  Runs utils/services/lav-reconcile.sh every hour: at most one completed run per day
+  (the day starts at 03:30 local), 30 days once a week, 7 days otherwise, with a
+  notification only when rows were missing, on errors, or after 48 hours with no
+  completed run.
+
+  Placeholders:
+    __HOME__        your home directory
+    __NOTIFY_CMD__  the command that sends a notification. It receives the message as
+                    its last argument and runs without a shell. Leave it empty for no
+                    notifications (the log says so). Escape any XML special character.
+
+  Install:
+    cp utils/services/lav-reconcile.sh ~/.local/bin/lav-reconcile.sh
+    chmod +x ~/.local/bin/lav-reconcile.sh
+    sed -e "s|__HOME__|$HOME|g" -e "s|__NOTIFY_CMD__|/path/to/notify-command|g" \
+      utils/services/com.aimax.lav-reconcile.plist \
+      > ~/Library/LaunchAgents/com.aimax.lav-reconcile.plist
+    launchctl load ~/Library/LaunchAgents/com.aimax.lav-reconcile.plist
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.aimax.lav-reconcile.plist
+    rm ~/Library/LaunchAgents/com.aimax.lav-reconcile.plist
+
+  Log: ~/.local/logs/lav-reconcile.log
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aimax.lav-reconcile</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HOME__/.local/bin/lav-reconcile.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StartInterval</key>
+    <integer>3600</integer>
+    <key>StandardOutPath</key>
+    <string>__HOME__/.local/logs/lav-reconcile.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.local/logs/lav-reconcile-err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin</string>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>LAV_NOTIFY_CMD</key>
+        <string>__NOTIFY_CMD__</string>
+    </dict>
+</dict>
+</plist>

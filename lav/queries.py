@@ -2965,39 +2965,154 @@ def generate_insights(work_patterns, task_type_costs, efficiency):
     return insights[:8]
 
 
-def export_sessions(conn, since_ts: str, limit: int = 1000) -> list:
-    """Export sessions with all related data since a timestamp.
+# The child tables that travel from an agent to the collector. The export ships
+# them and the reconcile manifest (LAV-98) compares them, so a table added here is
+# covered by both.
+EXPORT_CHILD_TABLES = (
+    "messages",
+    "token_usage",
+    "file_operations",
+    "bash_commands",
+    "search_operations",
+    "skill_invocations",
+    "subagent_invocations",
+    "mcp_tool_calls",
+)
 
-    `since_ts` is compared against per-session activity (max message timestamp,
-    falling back to interaction.timestamp), so long-running "river" sessions
-    keep being exported as new messages append. Child tables are also filtered
-    to `timestamp > since_ts` so a re-exported session only carries the rows
-    that arrived after the collector's last cursor.
+_EXPORT_INTERACTION_SQL = """
+    SELECT c.*, p.name as project_name, u.username, h.hostname, h.os_type,
+           COALESCE(ss.source, 'unknown') as client_source
+    FROM interactions c
+    LEFT JOIN projects p ON p.id = c.project_id
+    LEFT JOIN users u ON u.id = c.user_id
+    LEFT JOIN hosts h ON h.id = c.host_id
+    LEFT JOIN session_sources ss ON ss.session_id = c.session_id AND ss.project_id = c.project_id
+"""
 
-    Batch-loads all child tables to avoid N+1 queries.
-    Returns list of session dicts with nested data.
+_SESSION_ROW_SQL = """
+    SELECT c.session_id, c.project_id, c.timestamp, c.project, p.name AS project_name
+    FROM interactions c
+    LEFT JOIN projects p ON p.id = c.project_id
+"""
+
+# Keys per query: each (session_id, project_id) pair is two SQL variables and SQLite
+# allows 32766, so a reconcile over the whole history must be split.
+_SESSION_KEY_CHUNK = 5000
+
+
+def _chunks(items: list, size: int):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def _export_project_name(row: dict) -> str:
+    """The project name ingest_remote_sessions() will resolve for this row.
+
+    Project ids differ between nodes, so (session_id, this name) is the identity of
+    a session across them: the manifest and the targeted export must agree with
+    the ingest, including the fallbacks.
     """
-    # Select sessions whose last-activity timestamp is newer than `since_ts`.
-    # `last_activity_ts` is COALESCE(MAX(messages.timestamp), c.timestamp) so
-    # ghost sessions (no messages) still surface once via their interaction ts.
-    interactions = run_query(conn, """
-        SELECT c.*, p.name as project_name, u.username, h.hostname, h.os_type,
-               COALESCE(ss.source, 'unknown') as client_source
-        FROM interactions c
-        LEFT JOIN projects p ON p.id = c.project_id
-        LEFT JOIN users u ON u.id = c.user_id
-        LEFT JOIN hosts h ON h.id = c.host_id
-        LEFT JOIN session_sources ss ON ss.session_id = c.session_id AND ss.project_id = c.project_id
-        LEFT JOIN (
-            SELECT session_id, project_id, MAX(timestamp) AS last_msg_ts
-            FROM messages
-            GROUP BY session_id, project_id
-        ) m ON m.session_id = c.session_id AND m.project_id = c.project_id
-        WHERE COALESCE(m.last_msg_ts, c.timestamp) > ?
-        ORDER BY COALESCE(m.last_msg_ts, c.timestamp) ASC
-        LIMIT ?
-    """, [since_ts, limit])
+    return row.get("project_name") or row.get("project") or "unknown"
 
+
+def _session_rows_by_id(conn, session_ids) -> list:
+    """Interaction rows (id, project, timestamp only) of these session ids, in any project."""
+    rows = []
+    for chunk in _chunks(sorted(set(session_ids)), _SESSION_KEY_CHUNK):
+        placeholders = ",".join("?" for _ in chunk)
+        rows.extend(run_query(
+            conn, f"{_SESSION_ROW_SQL} WHERE c.session_id IN ({placeholders})", chunk))
+    return rows
+
+
+def session_projects(conn, session_ids) -> dict:
+    """{session_id: [{project_id, project_name}, ...]} for the sessions present here."""
+    found = {}
+    for row in _session_rows_by_id(conn, session_ids):
+        found.setdefault(row["session_id"], []).append(
+            {"project_id": row["project_id"], "project_name": _export_project_name(row)})
+    return found
+
+
+def session_manifest(conn, since=None, until=None, keys=None) -> list:
+    """Per-session row counts, to compare two nodes without shipping the rows (LAV-98).
+
+    Sessions come from `keys` ((session_id, project_name) pairs) when given, otherwise
+    from last activity > `since` (no `since`: all of them). The rule is the one in
+    export_sessions(), COALESCE(MAX(messages.timestamp), c.timestamp) > since, written
+    so it can use idx_msg_timestamp: a session has a last message newer than `since`
+    exactly when it has ANY message newer than `since`. MAX over the whole table has to
+    read each row past its content and takes 20 s on a 10 GB DB; this takes under 1 s.
+
+    Returns [{session_id, project_name, last_activity, tables: {table: {count, max_ts}}}].
+    `last_activity` always looks at every message. The counts cover the WHOLE session,
+    not just the window, and with `until` only rows with timestamp <= until: rows the
+    parser is still writing would make every live session look different. A table with
+    no such rows is omitted.
+
+    Read-only on purpose (no temp tables): the agent serves it under PRAGMA query_only=ON.
+    """
+    if keys is not None:
+        wanted = {tuple(key) for key in keys}
+        selected = [r for r in _session_rows_by_id(conn, [key[0] for key in wanted])
+                    if (r["session_id"], _export_project_name(r)) in wanted]
+    elif since is not None:
+        selected = run_query(conn, f"""
+            {_SESSION_ROW_SQL}
+            WHERE (c.session_id, c.project_id) IN (
+                      SELECT session_id, project_id FROM messages WHERE timestamp > ?)
+               OR (c.timestamp > ? AND NOT EXISTS (
+                      SELECT 1 FROM messages m
+                      WHERE m.session_id = c.session_id AND m.project_id = c.project_id
+                        AND m.timestamp IS NOT NULL))
+        """, [since, since])
+    else:
+        selected = run_query(conn, _SESSION_ROW_SQL)
+
+    counted = "timestamp <= ?" if until is not None else "1"
+    counted_params = [until, until] if until is not None else []
+
+    tables = {}
+    newest_message = {}
+    session_keys = [(r["session_id"], r["project_id"]) for r in selected]
+    for chunk in _chunks(session_keys, _SESSION_KEY_CHUNK):
+        placeholders = ",".join(["(?,?)" for _ in chunk])
+        flat_params = [value for key in chunk for value in key]
+        for table in EXPORT_CHILD_TABLES:
+            rows = conn.execute(f"""
+                SELECT session_id, project_id, SUM({counted}),
+                       MAX(CASE WHEN {counted} THEN timestamp END), MAX(timestamp)
+                FROM {table}
+                WHERE (session_id, project_id) IN ({placeholders})
+                GROUP BY session_id, project_id
+            """, counted_params + flat_params)
+            for session_id, project_id, count, max_ts, newest in rows:
+                key = (session_id, project_id)
+                if count:
+                    tables.setdefault(key, {})[table] = {"count": count, "max_ts": max_ts}
+                if table == "messages":
+                    newest_message[key] = newest
+
+    manifest = []
+    for row in selected:
+        key = (row["session_id"], row["project_id"])
+        newest = newest_message.get(key)
+        manifest.append({
+            "session_id": row["session_id"],
+            "project_name": _export_project_name(row),
+            "last_activity": newest if newest is not None else row["timestamp"],
+            "tables": tables.get(key, {}),
+        })
+    manifest.sort(key=lambda s: s["last_activity"] or "")
+    return manifest
+
+
+def _assemble_export(conn, interactions: list, since_ts: str = None) -> list:
+    """Attach the child rows to `interactions`, the shape ingest_remote_sessions() reads.
+
+    With `since_ts`, only child rows newer than it. Batch-loads all child tables to
+    avoid N+1 queries.
+    """
     if not interactions:
         return []
 
@@ -3010,46 +3125,83 @@ def export_sessions(conn, since_ts: str, limit: int = 1000) -> list:
     for sid, pid in session_keys:
         flat_params.extend([sid, pid])
 
-    # Batch load all child tables, restricted to rows newer than `since_ts`
-    # so a re-exported river session ships only its new tail.
-    def batch_load(table, extra_cols=""):
+    time_filter = "AND timestamp > ?" if since_ts is not None else ""
+    time_params = [since_ts] if since_ts is not None else []
+
+    def batch_load(table):
         rows = run_query(conn, f"""
             SELECT * FROM {table}
             WHERE (session_id, project_id) IN ({placeholders})
-              AND timestamp > ?
-        """, flat_params + [since_ts])
+              {time_filter}
+        """, flat_params + time_params)
         grouped = {}
         for r in rows:
             key = (r["session_id"], r["project_id"])
             grouped.setdefault(key, []).append(r)
         return grouped
 
-    messages_map = batch_load("messages")
-    tokens_map = batch_load("token_usage")
-    files_map = batch_load("file_operations")
-    bash_map = batch_load("bash_commands")
-    search_map = batch_load("search_operations")
-    skills_map = batch_load("skill_invocations")
-    subagents_map = batch_load("subagent_invocations")
-    mcp_map = batch_load("mcp_tool_calls")
+    child_maps = {table: batch_load(table) for table in EXPORT_CHILD_TABLES}
 
     # Assemble sessions
     sessions = []
     for conv in interactions:
         key = (conv["session_id"], conv["project_id"])
-        sessions.append({
-            "interaction": conv,
-            "messages": messages_map.get(key, []),
-            "token_usage": tokens_map.get(key, []),
-            "file_operations": files_map.get(key, []),
-            "bash_commands": bash_map.get(key, []),
-            "search_operations": search_map.get(key, []),
-            "skill_invocations": skills_map.get(key, []),
-            "subagent_invocations": subagents_map.get(key, []),
-            "mcp_tool_calls": mcp_map.get(key, []),
-        })
+        session = {"interaction": conv}
+        for table in EXPORT_CHILD_TABLES:
+            session[table] = child_maps[table].get(key, [])
+        sessions.append(session)
 
     return sessions
+
+
+def export_sessions(conn, since_ts: str, limit: int = 1000) -> list:
+    """Export sessions with all related data since a timestamp.
+
+    `since_ts` is compared against per-session activity (max message timestamp,
+    falling back to interaction.timestamp), so long-running "river" sessions
+    keep being exported as new messages append. Child tables are also filtered
+    to `timestamp > since_ts` so a re-exported session only carries the rows
+    that arrived after the collector's last cursor.
+
+    Returns list of session dicts with nested data.
+    """
+    # Select sessions whose last-activity timestamp is newer than `since_ts`.
+    # `last_activity_ts` is COALESCE(MAX(messages.timestamp), c.timestamp) so
+    # ghost sessions (no messages) still surface once via their interaction ts.
+    interactions = run_query(conn, f"""
+        {_EXPORT_INTERACTION_SQL}
+        LEFT JOIN (
+            SELECT session_id, project_id, MAX(timestamp) AS last_msg_ts
+            FROM messages
+            GROUP BY session_id, project_id
+        ) m ON m.session_id = c.session_id AND m.project_id = c.project_id
+        WHERE COALESCE(m.last_msg_ts, c.timestamp) > ?
+        ORDER BY COALESCE(m.last_msg_ts, c.timestamp) ASC
+        LIMIT ?
+    """, [since_ts, limit])
+
+    # Child rows restricted to rows newer than `since_ts` so a re-exported river
+    # session ships only its new tail.
+    return _assemble_export(conn, interactions, since_ts)
+
+
+def export_session_keys(conn, keys) -> list:
+    """Export these sessions whole: `keys` are (session_id, project_name) pairs (LAV-98).
+
+    Same shape as export_sessions(), with NO timestamp filter on the child rows: the
+    reconcile asks for a session because the cursor lost some of its rows, which by
+    definition are older than any cursor. Inserts on the other side are guarded, so
+    shipping the rows it already holds costs bandwidth and nothing else.
+    """
+    wanted = {tuple(key) for key in keys}
+    interactions = []
+    for chunk in _chunks(sorted({key[0] for key in wanted}), _SESSION_KEY_CHUNK):
+        placeholders = ",".join("?" for _ in chunk)
+        rows = run_query(
+            conn, f"{_EXPORT_INTERACTION_SQL} WHERE c.session_id IN ({placeholders})", chunk)
+        interactions.extend(r for r in rows
+                            if (r["session_id"], _export_project_name(r)) in wanted)
+    return _assemble_export(conn, interactions)
 
 
 # ===========================================================================

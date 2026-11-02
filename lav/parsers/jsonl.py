@@ -4148,6 +4148,8 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                 conv.get("workflow_id", "") or "",
             ))
             stats["sessions"] += 1
+        except sqlite3.OperationalError:
+            raise
         except sqlite3.Error:
             continue  # Already exists or error — skip
 
@@ -4170,6 +4172,8 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                       AND source IN (?, ?) AND source <> ?
                 """, (client_source, session_id, project_id,
                       SOURCE_CODEX_CLI, SOURCE_CODEX_LOCAL, client_source))
+        except sqlite3.OperationalError:
+            raise
         except sqlite3.Error:
             pass
 
@@ -4191,6 +4195,8 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                     msg.get("agent_id"),
                 ))
                 stats["messages"] += 1
+            except sqlite3.OperationalError:
+                raise
             except sqlite3.Error:
                 pass
 
@@ -4212,6 +4218,8 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                     tu.get("cache_creation_1h_tokens", 0) or 0,  # LAV-96; absent from older agents
                 ))
                 stats["token_usage"] += 1
+            except sqlite3.OperationalError:
+                raise
             except sqlite3.Error:
                 pass
 
@@ -4244,6 +4252,8 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                          fo.get("tool", ""), fo.get("file_path", "")),
                         fo,
                     )
+            except sqlite3.OperationalError:
+                raise
             except sqlite3.Error:
                 pass
 
@@ -4281,6 +4291,8 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                          bc.get("command", "")),
                         bc,
                     )
+            except sqlite3.OperationalError:
+                raise
             except sqlite3.Error:
                 pass
 
@@ -4314,6 +4326,8 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                          so.get("tool", ""), so.get("pattern", "")),
                         so,
                     )
+            except sqlite3.OperationalError:
+                raise
             except sqlite3.Error:
                 pass
 
@@ -4340,6 +4354,8 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                          si.get("skill_name", "")),
                         si,
                     )
+            except sqlite3.OperationalError:
+                raise
             except sqlite3.Error:
                 pass
 
@@ -4379,6 +4395,8 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                          sa.get("subagent_type", ""), sa.get("description", "")),
                         sa,
                     )
+            except sqlite3.OperationalError:
+                raise
             except sqlite3.Error:
                 pass
 
@@ -4418,6 +4436,8 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                          mc.get("tool_name", "")),
                         mc,
                     )
+            except sqlite3.OperationalError:
+                raise
             except sqlite3.Error:
                 pass
 
@@ -4472,6 +4492,8 @@ def ingest_remote_sessions(conn: sqlite3.Connection, sessions: list,
                       conv.get("agent_id"),
                       conv.get("workflow_id", "") or "",
                       session_id, project_id))
+        except sqlite3.OperationalError:
+            raise
         except sqlite3.Error:
             pass
 

@@ -17,12 +17,12 @@ import socket
 import sqlite3
 import threading
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from socketserver import ThreadingMixIn
 from typing import Optional
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, quote, unquote
 
 from lav import PACKAGE_DIR
 from lav import config
@@ -94,6 +94,8 @@ from lav.queries import (
     get_projects_list,
     get_user_detail,
     export_sessions,
+    export_session_keys,
+    session_manifest,
     get_interaction_metadata,
     get_classification_stats,
     get_tagcloud_data,
@@ -255,6 +257,24 @@ def resolve_ids(conn, params):
 # PULL FROM REMOTE AGENTS
 # ===========================================================================
 
+# How far behind the stored cursor a pull starts. The parser writes rows late (it
+# runs every 15 minutes and commits per project, LAV-98), so a row can reach the
+# agent's DB after the cursor has already passed its timestamp. The overlap saves
+# those for the intra-day view; the guarantee of completeness is `lav reconcile`.
+PULL_OVERLAP = timedelta(hours=1)
+
+
+def _pull_start(cursor: str) -> str:
+    """`cursor` minus PULL_OVERLAP, in the same shape. An unparsable cursor is used as is."""
+    zulu = cursor.endswith("Z")
+    try:
+        parsed = datetime.fromisoformat(cursor[:-1] + "+00:00" if zulu else cursor)
+    except ValueError:
+        return cursor
+    start = (parsed - PULL_OVERLAP).isoformat(timespec="milliseconds")
+    return start[:-6] + "Z" if zulu else start
+
+
 def pull_from_agents(conn, agents_config: list, agent_filter: str = None, full: bool = False) -> dict:
     """Pull data from configured remote agents via /api/export.
 
@@ -271,7 +291,7 @@ def pull_from_agents(conn, agents_config: list, agent_filter: str = None, full: 
             continue
 
         last_pull = get_parse_state(conn, f"last_pull:{name}", project_id=-1, source="remote", host_id=-1)
-        since = "1970-01-01T00:00:00" if full or not last_pull else last_pull
+        since = "1970-01-01T00:00:00" if full or not last_pull else _pull_start(last_pull)
 
         urls = [agent["url"]]
         if "fallback_url" in agent:
@@ -282,7 +302,7 @@ def pull_from_agents(conn, agents_config: list, agent_filter: str = None, full: 
         print(f"[pull] Agent '{name}' — since={since}")
         for url in urls:
             try:
-                export_url = f"{url}/api/export?since={since}"
+                export_url = f"{url}/api/export?since={quote(since)}"
                 resp = urllib.request.urlopen(export_url, timeout=timeout)
                 raw = resp.read()
                 package = json.loads(raw)
@@ -312,9 +332,11 @@ def pull_from_agents(conn, agents_config: list, agent_filter: str = None, full: 
                 # When nothing arrives, keep the cursor where it was so the
                 # next pull retries from the same point (avoids skipping sessions
                 # that arrive on the agent after the pull window opens).
+                # Never backwards: the overlap brings back rows older than the
+                # stored cursor, and a pull can hold nothing else.
                 if latest_ts:
                     set_parse_state(conn, f"last_pull:{name}",
-                                    latest_ts,
+                                    max(latest_ts, last_pull or ""),
                                     project_id=-1, source="remote", host_id=-1)
                 conn.commit()
                 print(f"[pull] Agent '{name}' OK — {stats}")
@@ -323,6 +345,7 @@ def pull_from_agents(conn, agents_config: list, agent_filter: str = None, full: 
                 break
             except Exception as e:
                 print(f"[pull] Agent '{name}' ERROR at {url}: {e}")
+                conn.rollback()
                 results[name] = {"status": "error", "url": url, "error": str(e)}
                 continue
         if not success:
@@ -483,7 +506,8 @@ class APIHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, **kwargs)
 
     # Endpoints allowed in agent-only mode
-    _AGENT_PATHS = {"/api/health", "/api/info", "/api/export"}
+    _AGENT_PATHS = {"/api/health", "/api/info", "/api/export",
+                    "/api/manifest", "/api/export/sessions"}
 
     def _client_allowed(self) -> bool:
         """Peer-IP allowlist. Empty allowlist = open (historical behaviour).
@@ -1077,33 +1101,38 @@ class APIHandler(SimpleHTTPRequestHandler):
         if path == "/api/export":
             since = params.get("since", ["1970-01-01T00:00:00"])[0]
             limit = int(params.get("limit", [1000])[0])
+            self._send_export(lambda conn: export_sessions(conn, since, limit))
+            return
+
+        # LAV-98: GET on purpose, an agent-role node has no POST endpoints. The keys
+        # travel in the URL, which http.server caps at 64 KB: lav/reconcile.py splits
+        # its requests accordingly.
+        if path == "/api/export/sessions":
+            try:
+                keys = [(str(sid), str(name))
+                        for sid, name in json.loads(params.get("keys", ["[]"])[0])]
+            except (ValueError, TypeError):
+                self.send_error(400, "keys must be a JSON list of [session_id, project_name]")
+                return
+            self._send_export(lambda conn: export_session_keys(conn, keys))
+            return
+
+        if path == "/api/manifest":
+            since = params.get("since", [None])[0]
+            until = params.get("until", [None])[0]
             conn = get_read_connection()
             if not conn:
-                self.send_json({
-                    "schema_version": 1,
-                    "host": {"hostname": _canonical_hostname()},
-                    "user": {},
-                    "exported_at": datetime.now().isoformat(),
-                    "sessions": [],
-                })
+                self.send_json({"schema_version": 1, "since": since, "until": until, "sessions": []})
                 return
             try:
-                import platform as _platform
-                sessions = export_sessions(conn, since, limit)
-                package = {
+                self.send_json({
                     "schema_version": 1,
-                    "host": {
-                        "hostname": _canonical_hostname(),
-                        "os_type": _platform.system(),
-                        "home_dir": str(Path.home()),
-                    },
-                    "user": {
-                        "username": getpass.getuser(),
-                    },
-                    "exported_at": datetime.now().isoformat(),
-                    "sessions": sessions,
-                }
-                self.send_json(package)
+                    "since": since,
+                    "until": until,
+                    "sessions": session_manifest(conn, since=since, until=until),
+                })
+            except sqlite3.Error as e:
+                self.send_error(500, f"Manifest error: {e}")
             finally:
                 conn.close()
             return
@@ -1385,6 +1414,41 @@ class APIHandler(SimpleHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
+
+    def _send_export(self, load_sessions):
+        """The package ingest_remote_sessions() reads, for /api/export and /api/export/sessions."""
+        conn = get_read_connection()
+        if not conn:
+            self.send_json({
+                "schema_version": 1,
+                "host": {"hostname": _canonical_hostname()},
+                "user": {},
+                "exported_at": datetime.now().isoformat(),
+                "sessions": [],
+            })
+            return
+        try:
+            import platform as _platform
+            sessions = load_sessions(conn)
+            package = {
+                "schema_version": 1,
+                "host": {
+                    "hostname": _canonical_hostname(),
+                    "os_type": _platform.system(),
+                    "home_dir": str(Path.home()),
+                },
+                "user": {
+                    "username": getpass.getuser(),
+                },
+                "exported_at": datetime.now().isoformat(),
+                "sessions": sessions,
+            }
+            self.send_json(package)
+        except sqlite3.Error as e:
+            # An answer, not a dropped connection: the reconcile reads that as "unreachable".
+            self.send_error(500, f"Export error: {e}")
+        finally:
+            conn.close()
 
     def send_json(self, data):
         """Send JSON response."""

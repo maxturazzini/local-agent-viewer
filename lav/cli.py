@@ -1301,6 +1301,68 @@ def cmd_backfill_tool_outcomes(args):
         conn.close()
 
 
+# ── reconcile (LAV-98) ──────────────────────────────────────
+
+def cmd_reconcile(args):
+    """Compare with the remote agents and fetch what is missing.
+
+    Writes the local DB only (like `lav backfill`, no API key). Exit codes: 0 ok,
+    2 differences remain (or a dry run found some), 3 agent unreachable, 1 error.
+    """
+    from lav import reconcile as rec
+    from lav.config import load_runtime_config
+
+    if args.days is not None and args.since:
+        _die("--days and --since are alternatives: pass one.")
+    if args.scheduled and (args.days is not None or args.since or args.dry_run):
+        _die("--scheduled picks its own window and writes its state: "
+             "it takes neither --days, --since nor --dry-run.")
+
+    db_path = Path(args.db).expanduser() if args.db else UNIFIED_DB_PATH
+    if not db_path.exists():
+        _die(f"No database at {db_path}. Run lav-parse first.")
+
+    agents = load_runtime_config().get("agents", [])
+    if args.agent:
+        agents = [a for a in agents if a["name"] == args.agent]
+        if not agents:
+            _die(f"No agent named '{args.agent}' in config.json.")
+    if not agents:
+        _die("No agents in config.json: nothing to reconcile.")
+
+    conn = rec.open_db(db_path, busy_timeout=args.busy_timeout, read_only=args.dry_run)
+    try:
+        if args.scheduled:
+            summaries = rec.run_scheduled(conn, agents, settle_minutes=args.settle_minutes)
+            # A skipped tick stays silent: the LaunchAgent fires every hour.
+            summaries_to_show = [s for s in summaries if s["status"] != rec.STATUS_SKIPPED]
+        else:
+            try:
+                since, until = rec.window(days=args.days, since=args.since,
+                                          settle_minutes=args.settle_minutes)
+            except ValueError as e:
+                _die(str(e))
+            summaries = [
+                rec.reconcile_agent(conn, agent, since, until, dry_run=args.dry_run,
+                                    log=lambda message: print(f"[reconcile] {message}", file=sys.stderr))
+                for agent in agents
+            ]
+            summaries_to_show = summaries
+    finally:
+        conn.close()
+
+    if summaries_to_show:
+        if args.format == "brief":
+            for summary in summaries_to_show:
+                print(rec.format_brief(summary))
+        elif args.format == "table":
+            for summary in summaries_to_show:
+                _print_table(summary)
+        else:
+            _output(summaries_to_show, "json")
+    sys.exit(rec.exit_code(summaries))
+
+
 # ── Parser setup ────────────────────────────────────────────
 
 def _add_common_args(parser):
@@ -1574,6 +1636,36 @@ def build_parser():
     p_bf_cc.add_argument("--dry-run", action="store_true", help="Report only, write nothing")
     _add_format_arg(p_bf_cc)
     p_bf_cc.set_defaults(func=cmd_backfill)
+
+    # reconcile (LAV-98)
+    p_rec = sub.add_parser(
+        "reconcile",
+        help="LAV-98: compare with the remote agents and fetch what is missing",
+        description="Asks each agent in config.json for per-session row counts, compares them "
+                    "with the local DB and copies the sessions that differ, whole. Deterministic "
+                    "and idempotent. This replaces the pull cursor as the guarantee of completeness. "
+                    "Writes the local DB only. Exit codes: 0 ok, 2 differences remain (or a dry run "
+                    "found some), 3 agent unreachable, 1 error.",
+    )
+    p_rec.add_argument("--days", type=_nonneg_int,
+                       help="Sessions active in the last N days (default: 7)")
+    p_rec.add_argument("--since", help="Sessions active after this ISO date, instead of --days")
+    p_rec.add_argument("--dry-run", action="store_true",
+                       help="Compare only: opens the DB read-only, writes nothing")
+    p_rec.add_argument("--agent", help="Only this agent (name in config.json)")
+    p_rec.add_argument("--settle-minutes", dest="settle_minutes", type=_nonneg_int, default=60,
+                       help="Ignore rows newer than this on both sides, or every live session "
+                            "looks different (default: 60)")
+    p_rec.add_argument("--scheduled", action="store_true",
+                       help="For the hourly LaunchAgent: at most one completed run per day (from "
+                            "03:30), 30 days once a week (from Sunday 03:30), 7 otherwise, "
+                            "notifications through LAV_NOTIFY_CMD")
+    p_rec.add_argument("--db", help=f"SQLite DB path (default: {UNIFIED_DB_PATH})")
+    p_rec.add_argument("--busy-timeout", dest="busy_timeout", type=_nonneg_int, default=600,
+                       help="Seconds to wait for the DB write lock (default: 600, "
+                            "lav-parse can hold it for about 9 minutes)")
+    _add_format_arg(p_rec)
+    p_rec.set_defaults(func=cmd_reconcile)
 
     # entities (LAV-93)
     p_ent = sub.add_parser("entities", help="LAV-93: people/organizations graph with dated edges")
