@@ -94,14 +94,25 @@ DEFAULT_PRICING = [
     ("claude-sonnet-5", "anthropic", 2.00, 10.00, 2.50, 0.20, "2024-01-01", None,
      "Sonnet 5 standard 2/10. L'aumento a 3/15 del 2026-09-01 e' stato annullato "
      "da Anthropic: il prezzo intro e' diventato standard."),
+    # Sonnet 5.5: due righe, le release notes abbassano il cache read a 0.05x
+    # dell'input dal 2026-10-07. Il resto del listino non cambia.
+    ("claude-sonnet-5-5", "anthropic", 2.00, 10.00, 2.50, 0.20, "2026-09-29", "2026-10-07",
+     "Sonnet 5.5, platform.claude.com/docs pricing 2026-10-04. Cache write 1h "
+     "calcolato a 2x input; batch non modellato."),
+    ("claude-sonnet-5-5", "anthropic", 2.00, 10.00, 2.50, 0.10, "2026-10-07", None,
+     "Sonnet 5.5, cache read abbassato da 0.20 a 0.10 (0.05x input) il 2026-10-07, "
+     "platform.claude.com release notes. Cache write 1h calcolato a 2x input; batch "
+     "non modellato."),
     ("claude-sonnet-4-6", "anthropic", 3.00, 15.00, 3.75, 0.30, "2024-01-01"),
     ("claude-sonnet-4-5-20250929", "anthropic", 3.00, 15.00, 3.75, 0.30, "2024-01-01"),
     ("claude-haiku-4-5-20251001", "anthropic", 1.00, 5.00, 1.25, 0.10, "2024-01-01"),
-    # Haiku 5.5: due fasce per lunghezza del prompt, qui solo quella <=100K.
-    # Cache write 5m 1.25x, cache read 0.1x dell'input.
+    # Haiku 5.5: due fasce per lunghezza del prompt. Qui i prezzi base (<=100K),
+    # la fascia alta sta in LONG_CONTEXT_TIERS. Cache write 5m 1.25x, cache read
+    # 0.1x dell'input.
     ("claude-haiku-5-5", "anthropic", 0.10, 0.50, 0.125, 0.01, "2026-10-01", None,
-     "Haiku 5.5, prompt <=100K token. Oltre 100K 0.50/2.50, cache write 1h 2x: "
-     "non modellati."),
+     "Haiku 5.5, prompt <=100K token. Oltre 100K fascia alta 0.50/2.50, cache write "
+     "0.625, cache read 0.05 (LONG_CONTEXT_TIERS). Cache write 1h a 2x l'input della "
+     "fascia applicata."),
     # cache_read = official cached-input (10% of input) — LAV-74 alignment
     ("gpt-5.2", "openai", 1.75, 14.00, 0, 0.175, "2024-01-01"),
     ("gpt-5.1-codex-max", "openai", 1.25, 10.00, 0, 0.125, "2024-01-01"),
@@ -143,6 +154,9 @@ DEFAULT_PRICING = [
      "GPT-6.1 Sol (openai.com/index/introducing-gpt-6-1-sol). Cache write 2.50 "
      "non verificato sul listino ufficiale. >272K 2x input/cache 1.5x output, "
      "fast 2x, batch/flex 0.5x: non modellati."),
+    ("gpt-6.1-terra", "openai", 1.00, 5.00, 1.25, 0.05, "2026-10-26", None,
+     "GPT-6.1 Terra, developers.openai.com/api/docs/pricing, verificato 2026-11-02. "
+     "Sopra 272K token 2/7.50, cache write 12h 2.50, fast e batch non modellati."),
     ("gpt-6-luna", "openai", 0.10, 0.50, 0.125, 0.01, "2026-09-03", None,
      "GPT-6 Luna (developers.openai.com/api/docs/pricing). Long context >272K "
      "0.20/0.75, fast 2x, batch/flex 0.5x: non modellati."),
