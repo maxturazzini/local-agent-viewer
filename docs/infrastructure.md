@@ -38,6 +38,16 @@ Push-triggered pull, **not** periodic polling:
 2. The agent notifies the **collector** via `POST`.
 3. The collector pulls new rows via `/api/export`.
 
+That pull is for freshness during the day and can miss rows: it follows a time cursor,
+and a row the parser writes late ends up behind it. **Completeness comes from
+`lav reconcile`** (LAV-98), which compares per-session row counts with the agent and
+copies the sessions that differ. So the collector is consistent up to the reconcile
+window, not sooner. `--scheduled`, for an hourly LaunchAgent on the collector only: at
+most one completed run per day from 03:30 local (it retries every hour, since a laptop
+agent may be asleep), 30 days from Sunday 03:30, 7 days otherwise. Summary in
+`~/.local/logs/lav-reconcile.log`, notification through `LAV_NOTIFY_CMD` only when rows
+were missing, on errors, or after 48 hours with no completed run.
+
 Both machines share the same git repo path via editable install, so a `git pull`
 updates code on either side. See also [DATA_MODEL.md](DATA_MODEL.md) for the DB
 shape and [remote-mcp-server.md](remote-mcp-server.md) for exposing `lav-mcp` over
@@ -55,6 +65,8 @@ conditional step:
 | Any `lav/*.py` (server code) | Restart: `kill $(pgrep -f "python.*-m lav.server")` — KeepAlive auto-restarts. The wrapper bash + tee don't need killing. **Note**: `pgrep -f lav-server` matches only the wrapper; use `python.*lav.server`. |
 | `lav/mcp_server.py` | Also restart `lav-mcp` (`pgrep -f "lav-venv/bin/lav-mcp"`) — this drops live MCP client connections |
 | `pyproject.toml` version bump | Tag the release after push |
+| Endpoints the collector calls on the agent (`/api/manifest`, `/api/export*`) | Update and restart the **agent first**: a 404 on the manifest makes the reconcile report an error |
+| New wrapper or plist in `utils/services/` | Copy it and reload the LaunchAgent: `git pull` does not touch `~/.local/bin` or `~/Library/LaunchAgents` |
 
 ## Production deployment layout
 
@@ -62,11 +74,12 @@ On the `prod-host` machine:
 
 - **venv**: `~/.local/lav-venv/`
 - **LaunchAgents**: a KeepAlive server, a parser (every 15 min), a classifier
-  (hourly, incremental — the only automatic classification; LAV-73), and an MCP
+  (hourly, incremental — the only automatic classification; LAV-73), a reconcile
+  (hourly tick, at most one completed run per day; LAV-98), and an MCP
   server (if streamable-http is enabled). See
   [utils/services/README.md](../utils/services/README.md) for the plist templates.
 - **Wrapper scripts**: `~/.local/bin/lav-server.sh`, `~/.local/bin/lav-parser.sh`,
-  `~/.local/bin/lav-classify.sh`
+  `~/.local/bin/lav-classify.sh`, `~/.local/bin/lav-reconcile.sh`
 
 ## Canonical hostname
 

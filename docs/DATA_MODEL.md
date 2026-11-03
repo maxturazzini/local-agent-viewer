@@ -209,10 +209,26 @@ Returns `{ interactions, total, limit, offset }`. Each element of
 
 - `client_source` — the source (`claude_code`, `cowork_desktop`, `cowork_remote`, ...);
 - `cost_usd` — cost calculated at query-time via LEFT JOIN on
-  `model_pricing` (never materialized);
+  `model_pricing` (never materialized), including the long-context tier of each
+  request where the model has one; in grouped mode, already rolled up across the tree;
 - `total_tokens` — in grouped mode, already rolled up across the tree;
 - **`derived_count`** — how many subagents/descendants were summed
   (`0` in flat mode, or when the master has no children).
+
+### `get_session_cost_profile(conn, session_id, project_id=None)`
+
+The Cost tab of a session (LAV-98). It uses the walk and the rounding of the grouped
+list (`_descendant_closure`, `_round_cost`), so a master's page and its row show one
+total. Returns `None` when there is no token row at all, otherwise:
+
+- `total`, `own` — `{cost_usd, api_calls, models, tokens, cost}`; `subagents` — the same
+  plus `count`, the descendant sessions including those with no token rows;
+- `duration_minutes` — from the main session's rows only: subagents run in parallel;
+- `is_subagent` — true on a child's page, which counts only its own rows, by the same
+  rule that hides it from the grouped list;
+- `timeline` — one row per call in time order, with `session_id`, `agent_id`,
+  `is_subagent`, `agent_label`, `cumulative_cost`, `cumulative_own`,
+  `cumulative_subagents`; `phases` — cost by thirds of the timeline.
 
 ### `get_interaction_children(conn, session_id, project_id=None)`
 

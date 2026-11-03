@@ -193,6 +193,10 @@ lav sync --scope project --project miniMe --full
 lav pricing list
 lav pricing add --model gpt-5.4 --input 2.0 --output 8.0 --from-date 2026-04-01
 
+# Collector: compare with the agents and copy what the sync missed
+lav reconcile --days 7
+lav reconcile --days 30 --dry-run   # compare only; or --since 2026-08-01
+
 # Backfill tool outcomes (status / error / duration) on historical tool rows
 lav backfill tool-outcomes
 
@@ -490,6 +494,8 @@ Agent machine (every 15 min via LaunchAgent)
 
 Pull is **on-demand** (triggered by the agent after each parse), not periodic polling.
 
+The pull keeps the collector fresh during the day but can miss rows, because it follows a time cursor. `lav reconcile`, on the collector, compares per-session row counts with each agent and copies the sessions that differ: it is deterministic and safe to repeat. Schedule it with the `lav-reconcile` LaunchAgent (see [utils/services/README.md](utils/services/README.md)). The collector is complete up to the reconcile window (7 days every day, 30 days every week), not sooner.
+
 ### Setup
 
 **On the agent:**
@@ -570,6 +576,8 @@ launchctl load ~/Library/LaunchAgents/com.aimax.lav-server.plist
 | `/api/health` | GET | Status, hostname, role, uptime |
 | `/api/info` | GET | Sources, session count, DB size |
 | `/api/export?since=T&limit=N` | GET | Telemetry package for collector pull |
+| `/api/manifest?since=T&until=T` | GET | Per-session row counts and newest timestamp per table, for `lav reconcile` |
+| `/api/export/sessions?keys=[[id,project],...]` | GET | The same package as `/api/export` for these sessions, whole |
 
 ### Dashboard endpoints (role: both)
 

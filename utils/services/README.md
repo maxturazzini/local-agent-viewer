@@ -5,6 +5,7 @@ Deployment templates for LAV components. Currently:
 - **lav-mcp** — MCP server in `streamable-http` mode for remote consumption (port 8765 by default).
 - **lav-parser** — scheduled incremental parse (+ remote-agent pull trigger on collector hosts).
 - **lav-classify** — scheduled incremental classification (LAV-73). There is NO in-server auto-classification: this hourly job (or a manual `lav-classify`) is the only way rows get classified. Uses the backend configured in `.env` (`LAV_CLASSIFY_BACKEND` etc.); skips if another `lav-classify` is already running.
+- **lav-reconcile** — collector only (LAV-98). Fires every hour; `lav reconcile --scheduled` does at most one completed run per day from 03:30 local, comparing 30 days from Sunday 03:30 and 7 otherwise, and exits silently otherwise. This, not the pull, is what guarantees that the collector has every row of the agent.
 
 ## Files
 
@@ -16,7 +17,19 @@ Deployment templates for LAV components. Currently:
 | `lav-parser.sh` | Parse wrapper — incremental parse + agent-pull trigger, schedule every 15 min |
 | `lav-classify.sh` | Classify wrapper — incremental `lav-classify --min-messages 2`, concurrency guard |
 | `com.aimax.lav-classify.plist` | macOS LaunchAgent template for the classify job (hourly, placeholder `__HOME__`) |
+| `lav-reconcile.sh` | Reconcile wrapper — `lav reconcile --scheduled`, one log line per real run |
+| `com.aimax.lav-reconcile.plist` | macOS LaunchAgent template for the reconcile (hourly, placeholders `__HOME__` and `__NOTIFY_CMD__`) |
 | `install.sh` | Detects platform, copies wrapper + service file, prints activation commands |
+
+## lav-reconcile quick install (macOS, collector only)
+
+```bash
+cp utils/services/lav-reconcile.sh ~/.local/bin/lav-reconcile.sh && chmod +x ~/.local/bin/lav-reconcile.sh
+sed -e "s|__HOME__|$HOME|g" -e "s|__NOTIFY_CMD__|/path/to/notify-command|g" \
+  utils/services/com.aimax.lav-reconcile.plist > ~/Library/LaunchAgents/com.aimax.lav-reconcile.plist
+launchctl load ~/Library/LaunchAgents/com.aimax.lav-reconcile.plist
+# log: ~/.local/logs/lav-reconcile.log
+```
 
 ## lav-classify quick install (macOS)
 
