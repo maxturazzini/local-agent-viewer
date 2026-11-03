@@ -436,13 +436,56 @@ def _per_session_cost_subquery(tu="tu", mp="mp"):
     return f"COALESCE(ROUND({_session_cost_sum(tu, mp)}, 4), 0)"
 
 
-def _per_session_cost_unrounded_subquery(tu="tu", mp="mp"):
-    """Same as _per_session_cost_subquery(), unrounded.
+def _round_cost(usd):
+    """A sum of costs to 4 decimals, the same whatever order it was added up in.
 
-    The one to use when adding sessions together: summing rounded costs accumulates
-    the rounding.
+    The one rounding of everything that adds sessions or rows together: summing
+    rounded costs accumulates the rounding. Prices have few decimals, so exact ties
+    are common (at Opus 5.5 prices one session in 500 costs exactly x.xxxx5): there
+    float noise decides the last digit, and list and detail add the same rows in
+    different orders. The first round takes the noise away: no price has more than 4
+    decimals, so no cost has more than 10.
     """
-    return f"COALESCE({_session_cost_sum(tu, mp)}, 0)"
+    return round(round(usd, 10), 4)
+
+
+# Sessions in one IN list: an old SQLite takes 999 variables, project ids included.
+_MAX_IN_SESSIONS = 500
+
+
+def _in_chunks(values):
+    """A sorted list of values, in slices that fit an IN list."""
+    values = sorted(values)
+    return [values[i:i + _MAX_IN_SESSIONS] for i in range(0, len(values), _MAX_IN_SESSIONS)]
+
+
+def _sessions_cost(conn, keys, rounded=False):
+    """Cost of many sessions at once: {(session_id, project_id): USD}.
+
+    Every per-session subquery scans the rows of a project, so one per session is what
+    made the pages with many subagents slow: this is one scan for all of them. A session
+    with no token_usage row is missing from the result. Unrounded for adding sessions
+    together; rounded=True is the value of _per_session_cost_subquery().
+    """
+    keys = set(keys)
+    project_ids = sorted({project_id for _, project_id in keys})
+    cost_sql = f"ROUND(SUM({_COST.total}), 4)" if rounded else f"SUM({_COST.total})"
+    costs = {}
+    for session_ids in _in_chunks({session_id for session_id, _ in keys}):
+        rows = run_query(conn, f"""
+            SELECT tu.session_id, tu.project_id, {cost_sql} as cost_usd
+            FROM token_usage tu
+            {_PRICE_JOIN}
+            WHERE tu.project_id IN ({",".join("?" for _ in project_ids)})
+              AND tu.session_id IN ({",".join("?" for _ in session_ids)})
+            GROUP BY tu.session_id, tu.project_id
+        """, project_ids + session_ids)
+        for row in rows:
+            key = (row['session_id'], row['project_id'])
+            # The two IN lists cross: a copy of a session nobody asked for comes back too.
+            if key in keys:
+                costs[key] = row['cost_usd']
+    return costs
 
 
 # ===========================================================================
@@ -1726,6 +1769,28 @@ def get_date_range(conn, project_id=None, user_id=None, host_id=None, client_sou
 # INTERACTIONS
 # ===========================================================================
 
+# A row is a child (hidden from the grouped list, rolled up under its master) iff its
+# parent_session_id is set, differs from its own session_id (SELF-PARENT GUARD — some
+# masters point to themselves), AND a row with that parent session_id exists ANYWHERE.
+# NB: the parent lookup is intentionally project-AGNOSTIC. A Cowork conversation's
+# master lives in cowork_default while its slaves get scattered into per-event
+# inferred projects (outputs/miniMe/...), so a same-project EXISTS would leak those
+# slaves back into the list. session_id is a globally-unique UUID, so matching on
+# session_id alone is safe for both Cowork (cross-project tree) and Claude Code
+# (same-project subagents).
+# Otherwise the row is top-level: this covers real masters (NULL parent), self-parent
+# masters, and ORPHAN PROMOTION (parent does not resolve to any existing master, so
+# nothing disappears from the list).
+# The list filters on it and the cost profile of a session page reads it: a session
+# that is a master in one and a child in the other would show two totals.
+_TOP_LEVEL_SQL = """(c.parent_session_id IS NULL
+            OR c.parent_session_id = c.session_id
+            OR NOT EXISTS (
+                SELECT 1 FROM interactions m
+                WHERE m.session_id = c.parent_session_id
+            ))"""
+
+
 def get_interactions_list(conn, project_id=None, user_id=None, host_id=None,
                            search=None, start_date=None, end_date=None,
                            limit=50, offset=0, client_source=None,
@@ -1808,27 +1873,9 @@ def get_interactions_list(conn, project_id=None, user_id=None, host_id=None,
 
     # Grouped mode: only show top-level masters. Applied to BOTH the SELECT and the
     # COUNT WHERE so pagination/total stay consistent. The descendant rollup happens
-    # in Python below (correct for arbitrary nesting depth).
-    #
-    # A row is a child (hidden, rolled up under its master) iff its parent_session_id
-    # is set, differs from its own session_id (SELF-PARENT GUARD — some masters point
-    # to themselves), AND a row with that parent session_id exists ANYWHERE.
-    # NB: the parent lookup is intentionally project-AGNOSTIC. A Cowork conversation's
-    # master lives in cowork_default while its slaves get scattered into per-event
-    # inferred projects (outputs/miniMe/...), so a same-project EXISTS would leak those
-    # slaves back into the list. session_id is a globally-unique UUID, so matching on
-    # session_id alone is safe for both Cowork (cross-project tree) and Claude Code
-    # (same-project subagents).
-    # Otherwise the row is top-level: this covers real masters (NULL parent), self-parent
-    # masters, and ORPHAN PROMOTION (parent does not resolve to any existing master, so
-    # nothing disappears from the list).
+    # in Python below (correct for arbitrary nesting depth), which also fills cost_usd.
     if grouped:
-        extra = """(c.parent_session_id IS NULL
-            OR c.parent_session_id = c.session_id
-            OR NOT EXISTS (
-                SELECT 1 FROM interactions m
-                WHERE m.session_id = c.parent_session_id
-            ))"""
+        extra = _TOP_LEVEL_SQL
         if where:
             where += " AND " + extra
         else:
@@ -1859,7 +1906,7 @@ def get_interactions_list(conn, project_id=None, user_id=None, host_id=None,
             cm.classification as meta_classification,
             cm.data_sensitivity as meta_sensitivity,
             cm.summary as meta_summary,
-            {_per_session_cost_subquery()} as cost_usd
+            {"0" if grouped else _per_session_cost_subquery()} as cost_usd
         FROM interactions c
         {join}
         LEFT JOIN projects p ON p.id = c.project_id
@@ -1894,74 +1941,92 @@ def get_interactions_list(conn, project_id=None, user_id=None, host_id=None,
     }
 
 
-def _rollup_descendants(conn, masters):
-    """Roll up cost_usd/total_tokens of all transitive descendants onto each master.
+def _descendant_closure(conn, roots):
+    """All the transitive descendants of each root: {root: {(session_id, project_id): row}}.
 
-    Computes the descendant closure (via parent_session_id) with a breadth-first
-    walk so it is correct for arbitrary nesting depth (Claude Code nests; Cowork is
-    one level — same code path). Each master gains:
-      - cost_usd / total_tokens = own value + sum over all descendants
-      - derived_count = number of descendants
+    The one walk of the session tree: the grouped list and the cost profile of a session
+    page both go through here, or they would diverge again. `roots` are (session_id,
+    project_id) pairs; each row has session_id, project_id, parent_session_id and
+    total_tokens.
+
+    Breadth-first via parent_session_id, so it is correct for arbitrary nesting depth
+    (Claude Code nests; Cowork is one level — same code path).
 
     The walk is project-AGNOSTIC on the parent link: a Cowork conversation's master
     sits in cowork_default while its slaves get scattered into per-event inferred
     projects, so descendants can live in a different project than their master. We
     still key each node on (session_id, project_id) — the same session_id can be
     materialised under multiple projects (composite PK), and each such copy carries
-    its own tokens and must be rolled up exactly once.
+    its own tokens and must be counted exactly once per root. It follows that two
+    copies of a root have the same descendants.
+    """
+    children_of = {}    # parent session_id -> its child rows
+    expanded = set()    # session_ids already asked for: a cycle stops here
+    frontier = {session_id for session_id, _ in roots}
+    while frontier:
+        expanded |= frontier
+        next_frontier = set()
+        for session_ids in _in_chunks(frontier):
+            placeholders = ",".join("?" for _ in session_ids)
+            children = run_query(conn, f"""
+                SELECT
+                    c.session_id,
+                    c.project_id,
+                    c.parent_session_id,
+                    COALESCE(c.total_tokens, 0) as total_tokens
+                FROM interactions c
+                WHERE c.parent_session_id IN ({placeholders})
+                  AND c.session_id != c.parent_session_id
+            """, session_ids)
+            for child in children:
+                children_of.setdefault(child['parent_session_id'], []).append(child)
+                if child['session_id'] not in expanded:
+                    next_frontier.add(child['session_id'])
+        frontier = next_frontier
+
+    closure = {}
+    for root in roots:
+        descendants = {}
+        to_expand = [root[0]]
+        seen = {root[0]}
+        while to_expand:
+            for child in children_of.get(to_expand.pop(), ()):
+                key = (child['session_id'], child['project_id'])
+                if key == root or key in descendants:
+                    # Cycle guard / already-counted node.
+                    continue
+                descendants[key] = child
+                if child['session_id'] not in seen:
+                    seen.add(child['session_id'])
+                    to_expand.append(child['session_id'])
+        closure[root] = descendants
+    return closure
+
+
+def _rollup_descendants(conn, masters):
+    """Roll up cost_usd/total_tokens of all transitive descendants onto each master.
+
+    Each master gains:
+      - cost_usd = own cost + all descendants, added unrounded and rounded once at
+        the end, so that it is the total of the session's page
+      - total_tokens = own value + sum over all descendants
+      - derived_count = number of descendants
 
     Masters are mutated in place.
     """
     if not masters:
         return
 
-    cost_sql = _per_session_cost_subquery()
+    roots = [(m['session_id'], m['project_id']) for m in masters]
+    closure = _descendant_closure(conn, roots)
+    costs = _sessions_cost(conn, set(roots).union(*closure.values()))
 
-    # Breadth-first descendant walk keyed on session_id. owner maps a session_id to
-    # the master it rolls up into; visited is keyed on (session_id, project_id) so
-    # cross-project copies of the same session_id each get counted once.
-    owner = {}          # session_id -> master dict
-    visited = set()     # (session_id, project_id)
-    frontier = []       # session_ids to expand next
-    for m in masters:
-        m['derived_count'] = 0
-        owner.setdefault(m['session_id'], m)
-        visited.add((m['session_id'], m['project_id']))
-        frontier.append(m['session_id'])
-
-    while frontier:
-        placeholders = ",".join("?" for _ in frontier)
-        children = run_query(conn, f"""
-            SELECT
-                c.session_id,
-                c.project_id,
-                c.parent_session_id,
-                COALESCE(c.total_tokens, 0) as total_tokens,
-                {cost_sql} as cost_usd
-            FROM interactions c
-            WHERE c.parent_session_id IN ({placeholders})
-              AND c.session_id != c.parent_session_id
-        """, list(frontier))
-
-        next_frontier = []
-        for child in children:
-            sid = child['session_id']
-            key = (sid, child['project_id'])
-            if key in visited:
-                # Cycle guard / already-counted node.
-                continue
-            visited.add(key)
-            master = owner.get(child['parent_session_id'])
-            if master is None:
-                continue
-            owner.setdefault(sid, master)
-            master['cost_usd'] = round(
-                (master.get('cost_usd') or 0) + (child.get('cost_usd') or 0), 4)
-            master['total_tokens'] = (master.get('total_tokens') or 0) + child['total_tokens']
-            master['derived_count'] += 1
-            next_frontier.append(sid)
-
-        frontier = next_frontier
+    for master, root in zip(masters, roots):
+        descendants = closure[root]
+        master['cost_usd'] = _round_cost(sum(costs.get(key, 0) for key in (root, *descendants)))
+        master['total_tokens'] = (master.get('total_tokens') or 0) + sum(
+            child['total_tokens'] for child in descendants.values())
+        master['derived_count'] = len(descendants)
 
 
 def search_messages(conn, query: str, limit: int = 20,
@@ -2052,8 +2117,7 @@ def get_interaction_children(conn, session_id, project_id=None):
     inline subagent markers in the transcript (LAV-67). Both are additive and may
     be NULL for unclassified children; callers read them defensively.
     """
-    cost_sql = _per_session_cost_subquery()
-    return run_query(conn, f"""
+    children = run_query(conn, """
         SELECT
             c.session_id,
             c.project_id,
@@ -2064,14 +2128,36 @@ def get_interaction_children(conn, session_id, project_id=None):
             c.total_tokens,
             c.message_count,
             c.tools_used,
-            cm.summary as meta_summary,
-            {cost_sql} as cost_usd
+            cm.summary as meta_summary
         FROM interactions c
         LEFT JOIN interaction_metadata cm
             ON cm.session_id = c.session_id AND cm.project_id = c.project_id
         WHERE c.parent_session_id = ?
         ORDER BY c.timestamp ASC
     """, [session_id])
+    costs = _sessions_cost(
+        conn, [(child['session_id'], child['project_id']) for child in children], rounded=True)
+    for child in children:
+        child['cost_usd'] = costs.get((child['session_id'], child['project_id']), 0)
+    return children
+
+
+def get_parent_interaction(conn, interaction):
+    """The parent row for the link on a child session's page, None if it does not exist.
+
+    get_interaction_detail looks for the parent in the child's own project, so a child
+    scattered in another project gets none. Here the link is project-AGNOSTIC like the
+    rest of the tree, and project_id says which copy of the parent to open: the one in
+    the child's project when there is one.
+    """
+    parent = run_query(conn, """
+        SELECT session_id, project_id, summary, display, timestamp
+        FROM interactions
+        WHERE session_id = ?
+        ORDER BY project_id = ? DESC, project_id ASC
+        LIMIT 1
+    """, [interaction['parent_session_id'], interaction['project_id']])
+    return parent[0] if parent else None
 
 
 def get_interaction_detail(conn, session_id, project_id=None):
@@ -2451,55 +2537,214 @@ def get_tagcloud_data(conn, project_id=None, user_id=None, host_id=None,
 # COST INTELLIGENCE
 # ===========================================================================
 
+def _is_child_session(conn, session_id, project_id):
+    """True if the grouped list hides this session under a master.
+
+    Without project_id every copy of the session must be a child. A session with no
+    interactions row is not one.
+    """
+    where = "c.session_id = ?"
+    params = [session_id]
+    if project_id is not None:
+        where += " AND c.project_id = ?"
+        params.append(project_id)
+    row = run_query(conn, f"""
+        SELECT MAX({_TOP_LEVEL_SQL}) as top_level
+        FROM interactions c
+        WHERE {where}
+    """, params)
+    return row[0]['top_level'] == 0
+
+
+def _priced_token_rows(conn, session_id, project_id, descendants):
+    """Unrounded token_usage rows of a session and its descendants, in time order.
+
+    One scan for all of them, of the projects involved: a session without project_id
+    takes all its copies, so there the filter is on session_id only. A row of another
+    copy of a session that is not a node of the tree comes back too: the caller drops it.
+    """
+    project_ids = []
+    project_clause = ""
+    if project_id is not None:
+        project_ids = sorted({project_id, *(key[1] for key in descendants)})
+        project_clause = f"tu.project_id IN ({','.join('?' for _ in project_ids)}) AND"
+
+    rows = []
+    for session_ids in _in_chunks({session_id, *(key[0] for key in descendants)}):
+        rows += run_query(conn, f"""
+            SELECT
+                tu.id,
+                tu.session_id,
+                tu.project_id,
+                tu.timestamp,
+                tu.model,
+                COALESCE(tu.input_tokens, 0) as input_tokens,
+                COALESCE(tu.output_tokens, 0) as output_tokens,
+                COALESCE(tu.cache_creation_tokens, 0) as cache_creation_tokens,
+                COALESCE(tu.cache_read_tokens, 0) as cache_read_tokens,
+                COALESCE(tu.api_message_id, '') as api_message_id,
+                {_COST.total} as cost_usd,
+                {_COST.input} as cost_input,
+                {_COST.output} as cost_output,
+                {_COST.cache_write} as cost_cache_write,
+                {_COST.cache_read} as cost_cache_read
+            FROM token_usage tu
+            {_PRICE_JOIN}
+            WHERE {project_clause} tu.session_id IN ({",".join("?" for _ in session_ids)})
+        """, project_ids + session_ids)
+    rows.sort(key=lambda r: (r["timestamp"], r["id"]))
+    return rows
+
+
+_AGENT_LABEL_MAX_CHARS = 40
+_AGENT_LABEL_PROMPT_PREFIX = 80
+
+
+def _short_label(text):
+    """One line, cut to fit a table column."""
+    text = " ".join(text.split())
+    if len(text) <= _AGENT_LABEL_MAX_CHARS:
+        return text
+    return text[:_AGENT_LABEL_MAX_CHARS].rstrip() + "…"
+
+
+def _child_session_agents(conn, keys):
+    """agent_id and a short human label of child sessions: {(session_id, project_id): {...}}.
+
+    The label is the description the subagent was launched with, else its type, else
+    its summary or first message, else the start of its id. Nothing links a child to
+    the subagent_invocations row of its parent, but the child's first message
+    (`display`, cut at 200 chars) is the invocation's prompt, and invocations with the
+    same prompt are told apart by order of time. No match (workflow children, old
+    Warmup sessions) falls to the summary.
+    """
+    children = []
+    for session_ids in _in_chunks({session_id for session_id, _ in keys}):
+        children += run_query(conn, f"""
+            SELECT c.session_id, c.project_id, c.parent_session_id, c.agent_id,
+                   c.summary, c.display, c.timestamp
+            FROM interactions c
+            WHERE c.session_id IN ({",".join("?" for _ in session_ids)})
+        """, session_ids)
+    children.sort(key=lambda child: child['timestamp'] or '')
+
+    invocations = {}    # parent session_id -> invocations not paired yet, oldest first
+    parents = {child['parent_session_id'] for child in children if child['parent_session_id']}
+    for session_ids in _in_chunks(parents):
+        rows = run_query(conn, f"""
+            SELECT session_id, subagent_type, description,
+                   SUBSTR(prompt, 1, {_AGENT_LABEL_PROMPT_PREFIX}) as prompt
+            FROM subagent_invocations
+            WHERE session_id IN ({",".join("?" for _ in session_ids)})
+            ORDER BY timestamp ASC, id ASC
+        """, session_ids)
+        for row in rows:
+            invocations.setdefault(row['session_id'], []).append(row)
+
+    agents = {}
+    for child in children:
+        key = (child['session_id'], child['project_id'])
+        if key not in keys:
+            continue
+        prompt = (child['display'] or '')[:_AGENT_LABEL_PROMPT_PREFIX]
+        candidates = invocations.get(child['parent_session_id'], [])
+        invocation = next((i for i in candidates if prompt and (i['prompt'] or '').startswith(prompt)), {})
+        if invocation:
+            candidates.remove(invocation)
+        subagent_type = invocation.get('subagent_type')
+        summary = child['summary']
+        label = (invocation.get('description')
+                 or (subagent_type if subagent_type != '(unspecified)' else None)
+                 or (summary if summary != '(no title)' else None)
+                 or child['display']
+                 or (child['agent_id'] or child['session_id'])[:8])
+        agents[key] = {"agent_id": child['agent_id'], "label": _short_label(label)}
+    return agents
+
+
+_COST_GROUP_TOKENS = ("input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens")
+_COST_GROUP_COSTS = ("cost_usd", "cost_input", "cost_output", "cost_cache_write", "cost_cache_read")
+
+
+def _new_cost_group():
+    return {"api_calls": 0, "models": set(), **dict.fromkeys(_COST_GROUP_TOKENS, 0),
+            **dict.fromkeys(_COST_GROUP_COSTS, 0.0)}
+
+
+def _add_to_cost_group(group, row):
+    group["api_calls"] += 1
+    if row["model"]:
+        group["models"].add(row["model"])
+    for field in _COST_GROUP_TOKENS + _COST_GROUP_COSTS:
+        group[field] += row[field]
+
+
+def _cost_group_output(group):
+    """A cost group as the API shows it: its costs are rounded here and only here."""
+    return {
+        "cost_usd": _round_cost(group["cost_usd"]),
+        "api_calls": group["api_calls"],
+        "models": sorted(group["models"]),
+        "tokens": {
+            "input": group["input_tokens"],
+            "output": group["output_tokens"],
+            "cache_creation": group["cache_creation_tokens"],
+            "cache_read": group["cache_read_tokens"],
+            "total": sum(group[field] for field in _COST_GROUP_TOKENS),
+        },
+        "cost": {
+            "input": _round_cost(group["cost_input"]),
+            "output": _round_cost(group["cost_output"]),
+            "cache_write": _round_cost(group["cost_cache_write"]),
+            "cache_read": _round_cost(group["cost_cache_read"]),
+            "total": _round_cost(group["cost_usd"]),
+        },
+    }
+
+
 def get_session_cost_profile(conn, session_id, project_id=None):
-    """Per-session cost analysis: summary, timeline, and phases."""
-    pid_clause = "AND tu.project_id = ?" if project_id is not None else ""
-    pid_params = [session_id, project_id] if project_id is not None else [session_id]
+    """Cost of a session's page: totals, split main/subagents, timeline and phases.
 
-    rows = run_query(conn, f"""
-        SELECT
-            tu.timestamp,
-            tu.model,
-            COALESCE(tu.input_tokens, 0) as input_tokens,
-            COALESCE(tu.output_tokens, 0) as output_tokens,
-            COALESCE(tu.cache_creation_tokens, 0) as cache_creation_tokens,
-            COALESCE(tu.cache_read_tokens, 0) as cache_read_tokens,
-            COALESCE(tu.api_message_id, '') as api_message_id,
-            {_COST_EXPR} as cost_usd,
-            ROUND({_COST.input}, 6) as cost_input,
-            ROUND({_COST.output}, 6) as cost_output,
-            ROUND({_COST.cache_write}, 6) as cost_cache_write,
-            ROUND({_COST.cache_read}, 6) as cost_cache_read
-        FROM token_usage tu
-        {_PRICE_JOIN}
-        WHERE tu.session_id = ? {pid_clause}
-        ORDER BY tu.timestamp ASC
-    """, pid_params)
+    A master counts its own rows and those of its whole descendant closure, the walk
+    and the rounding of the grouped list, so list and page show one total. A child
+    session (the list's rule: _TOP_LEVEL_SQL) counts only its own rows and is_subagent
+    is true, even if it has children of its own. None when there is no row at all.
 
+    total, own, subagents: {cost_usd, api_calls, models, tokens, cost}; subagents also
+    has count, the descendant sessions including those with no token rows.
+    duration_minutes is from the main session's rows only: subagents run in parallel,
+    adding them would falsify it. Each timeline row says whose it is (session_id,
+    agent_id, is_subagent, agent_label) and where the running total stands.
+    """
+    is_subagent = _is_child_session(conn, session_id, project_id)
+    root = (session_id, project_id)
+    descendants = {} if is_subagent else _descendant_closure(conn, [root])[root]
+
+    def is_own(row):
+        return row["session_id"] == session_id and project_id in (None, row["project_id"])
+
+    rows = [r for r in _priced_token_rows(conn, session_id, project_id, descendants)
+            if is_own(r) or (r["session_id"], r["project_id"]) in descendants]
     if not rows:
         return None
 
-    # Build timeline with cumulative cost
-    cumulative = 0.0
-    timeline = []
-    total_input = total_output = total_cache_write = total_cache_read = 0
-    total_cost = 0.0
-    cost_input = cost_output = cost_cache_write = cost_cache_read = 0.0
-    models = set()
+    # On a child's page every row is that subagent's.
+    agents = _child_session_agents(conn, {
+        (r["session_id"], r["project_id"]) for r in rows if is_subagent or not is_own(r)})
 
+    total = _new_cost_group()
+    own = _new_cost_group()
+    subagents = _new_cost_group()
+    own_rows = []
+    timeline = []
     for r in rows:
-        cost = r["cost_usd"] or 0.0
-        cumulative += cost
-        total_cost += cost
-        total_input += r["input_tokens"]
-        total_output += r["output_tokens"]
-        total_cache_write += r["cache_creation_tokens"]
-        total_cache_read += r["cache_read_tokens"]
-        cost_input += r["cost_input"] or 0.0
-        cost_output += r["cost_output"] or 0.0
-        cost_cache_write += r["cost_cache_write"] or 0.0
-        cost_cache_read += r["cost_cache_read"] or 0.0
-        models.add(r["model"])
+        _add_to_cost_group(total, r)
+        if is_own(r):
+            _add_to_cost_group(own, r)
+            own_rows.append(r)
+        else:
+            _add_to_cost_group(subagents, r)
+        agent = agents.get((r["session_id"], r["project_id"])) or {}
         timeline.append({
             "timestamp": r["timestamp"],
             "model": r["model"],
@@ -2508,15 +2753,21 @@ def get_session_cost_profile(conn, session_id, project_id=None):
             "cache_creation_tokens": r["cache_creation_tokens"],
             "cache_read_tokens": r["cache_read_tokens"],
             "api_message_id": r["api_message_id"],
-            "cost_usd": round(cost, 6),
-            "cumulative_cost": round(cumulative, 4),
+            "session_id": r["session_id"],
+            "agent_id": agent.get("agent_id"),
+            "is_subagent": is_subagent or not is_own(r),
+            "agent_label": agent.get("label"),
+            "cost_usd": round(r["cost_usd"], 6),
+            "cumulative_cost": _round_cost(total["cost_usd"]),
+            "cumulative_own": _round_cost(own["cost_usd"]),
+            "cumulative_subagents": _round_cost(subagents["cost_usd"]),
         })
 
     # Duration
-    first_ts = rows[0]["timestamp"] or ""
-    last_ts = rows[-1]["timestamp"] or ""
+    first_ts = own_rows[0]["timestamp"] if own_rows else ""
+    last_ts = own_rows[-1]["timestamp"] if own_rows else ""
     duration_minutes = 0
-    if first_ts and last_ts and len(rows) > 1:
+    if first_ts and last_ts and len(own_rows) > 1:
         from datetime import datetime
         try:
             fmt = "%Y-%m-%dT%H:%M:%S" if "T" in first_ts else "%Y-%m-%d %H:%M:%S"
@@ -2527,39 +2778,24 @@ def get_session_cost_profile(conn, session_id, project_id=None):
             pass
 
     # Phases: split into thirds
-    n = len(timeline)
+    n = len(rows)
     third = max(n // 3, 1)
-    slices = [timeline[:third], timeline[third:2*third], timeline[2*third:]]
+    slices = [rows[:third], rows[third:2*third], rows[2*third:]]
     phase_names = ["early", "mid", "late"]
     phases = {}
     for name, sl in zip(phase_names, slices):
-        phase_cost = sum(t["cost_usd"] for t in sl)
+        phase_cost = sum(r["cost_usd"] for r in sl)
         phases[name] = {
-            "cost": round(phase_cost, 4),
-            "pct": round(phase_cost / total_cost * 100, 1) if total_cost > 0 else 0,
+            "cost": _round_cost(phase_cost),
+            "pct": round(phase_cost / total["cost_usd"] * 100, 1) if total["cost_usd"] > 0 else 0,
         }
 
     return {
-        "summary": {
-            "cost_usd": round(total_cost, 4),
-            "duration_minutes": duration_minutes,
-            "api_calls": len(rows),
-            "models": sorted(models),
-            "tokens": {
-                "input": total_input,
-                "output": total_output,
-                "cache_creation": total_cache_write,
-                "cache_read": total_cache_read,
-                "total": total_input + total_output + total_cache_write + total_cache_read,
-            },
-            "cost": {
-                "input": round(cost_input, 4),
-                "output": round(cost_output, 4),
-                "cache_write": round(cost_cache_write, 4),
-                "cache_read": round(cost_cache_read, 4),
-                "total": round(total_cost, 4),
-            },
-        },
+        "total": _cost_group_output(total),
+        "own": _cost_group_output(own),
+        "subagents": {**_cost_group_output(subagents), "count": len(descendants)},
+        "duration_minutes": duration_minutes,
+        "is_subagent": is_subagent,
         "timeline": timeline,
         "phases": phases,
     }

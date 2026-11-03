@@ -89,6 +89,7 @@ from lav.queries import (
     get_interactions_list,
     search_messages,
     get_interaction_detail,
+    get_parent_interaction,
     get_users_list,
     get_hosts_list,
     get_projects_list,
@@ -989,8 +990,13 @@ class APIHandler(SimpleHTTPRequestHandler):
                 if not data:
                     self.send_error(404, f"Interaction '{session_id}' not found")
                     return
+                interaction = data["interaction"]
+                if interaction.get("parent_session_id"):
+                    interaction["parent_interaction"] = get_parent_interaction(conn, interaction)
+                # The copy of the session shown above: without ?project_id a session
+                # under two projects would add up both, unlike its row in the list.
                 data["cost_profile"] = get_session_cost_profile(
-                    conn, session_id, project_id=ids.get("project_id"))
+                    conn, session_id, project_id=interaction["project_id"])
                 self.send_json(data)
             finally:
                 conn.close()
