@@ -1031,7 +1031,7 @@ def cmd_backfill_codex_titles(args):
         rows = conn.execute("""
             SELECT i.session_id, i.project_id, i.user_id, i.host_id,
                    COALESCE(NULLIF(i.project, ''), p.name, '') AS project_name,
-                   i.display, i.summary
+                   i.display, i.summary, i.parent_session_id, i.agent_id
             FROM interactions i
             LEFT JOIN projects p ON p.id = i.project_id
             WHERE i.session_id LIKE 'codex:%'
@@ -1042,7 +1042,8 @@ def cmd_backfill_codex_titles(args):
         before_broken = 0
         samples = []
 
-        for session_id, project_id, user_id, host_id, project_name, old_display, old_summary in rows:
+        for (session_id, project_id, user_id, host_id, project_name, old_display, old_summary,
+             parent_session_id, agent_id) in rows:
             stats["scanned"] += 1
             if _bf_looks_injected(old_summary) or _bf_looks_injected(old_display):
                 before_broken += 1
@@ -1050,8 +1051,11 @@ def cmd_backfill_codex_titles(args):
             if title:
                 stats["titled_from_codex"] += 1
             try:
+                # LAV-99: update_interaction() rewrites the whole row, so a Codex
+                # subagent would lose its parent link, and its label, here.
                 update_interaction(session_id, project_name, conn, project_id,
-                                   user_id, host_id, summary=title)
+                                   user_id, host_id, summary=title or agent_id,
+                                   parent_session_id=parent_session_id, agent_id=agent_id)
             except Exception as e:  # noqa: BLE001 - one bad row must not stop the pass
                 stats["failed"] += 1
                 print(f"[backfill] {session_id} failed: {e}", file=sys.stderr)

@@ -1561,6 +1561,74 @@ def _normalize_since(raw: str) -> tuple:
     return (dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z", dt, dt.timestamp())
 
 
+# LAV-99: parse_state key of the moment this DB began giving a Codex rollout its
+# own identity. Scoped with the repo's sentinels (project_id=-1, source='', host_id=-1):
+# parse_state does not travel between nodes, and with a host_id a machine whose hostname
+# changed would take a new, later stamp: see the commit in _codex_own_identity_since().
+_CODEX_OWN_IDENTITY_SINCE = "codex:own_identity_since"
+
+
+def _codex_own_identity_since(conn: sqlite3.Connection) -> str:
+    """LAV-99: rollouts that began from this moment on are their own session.
+
+    The rows of an old subagent rollout sit under its parent's id. Re-reading that
+    file under its own id would insert them a second time, so a rollout that began
+    before the stamp keeps the old rule (see parse_codex_sessions). Written once, by
+    the first parse that runs this code on this DB, and never moved, not even by
+    --full: the nodes are deployed at different moments, so no fixed date would do.
+
+    A DB holding no Codex session has no past to protect: the stamp goes to the epoch
+    and every rollout gets the new rule. session_sources is the widest check there is,
+    every session_meta ever read wrote a row, and pulled Codex rows count too: at worst
+    the local rollouts of such a node stay on the old identity, never counted twice.
+
+    Same 24-char shape as Codex's timestamps, compared as a string in
+    _fill_codex_rows_without_model().
+    """
+    stamp = get_parse_state(conn, _CODEX_OWN_IDENTITY_SINCE)
+    if stamp:
+        return stamp
+    has_past = conn.execute(
+        "SELECT 1 FROM session_sources WHERE session_id >= 'codex:' AND session_id < 'codex;' LIMIT 1"
+    ).fetchone()
+    moment = datetime.now(timezone.utc) if has_past else datetime.fromtimestamp(0, timezone.utc)
+    stamp = _normalize_since(moment.isoformat())[0]
+    set_parse_state(conn, _CODEX_OWN_IDENTITY_SINCE, stamp)
+    # At once: lost in a crash, the next run would take a later stamp and move rollouts
+    # already parsed under their own id back to the old rule, counting them twice.
+    conn.commit()
+    print(f"  Codex rollouts that began from {stamp} on get their own session (LAV-99)")
+    return stamp
+
+
+def _codex_line_in_history(event: dict, line_no: int, history_end: int) -> bool:
+    """LAV-99: is this rollout line inherited, by payload.subagent_history_start_ordinal?
+
+    Every line carries its own `ordinal`, the number that field counts in. It equals the
+    position in the file except after a fork, where it goes on from the parent's (a real
+    rollout starts at 1718), so the position is only the fallback.
+    """
+    ordinal = event.get("ordinal")
+    return (ordinal if isinstance(ordinal, int) else line_no) < history_end
+
+
+def _codex_subagent_link(payload: dict) -> tuple:
+    """LAV-99: (parent_session_id, agent_id) of a spawned subagent's rollout, else Nones.
+
+    Only `source.subagent.thread_spawn`: a guardian review ({"other": "guardian"}) has
+    a top-level parent_thread_id but stays a session of its own, and a fork
+    (forked_from_id) is a conversation the user branched, not a subagent. agent_id is
+    agent_path (/root/config_time), unique in a tree; the nickname repeats.
+    """
+    source = payload.get("source")
+    subagent = source.get("subagent") if isinstance(source, dict) else None
+    spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None
+    parent = spawn.get("parent_thread_id") if isinstance(spawn, dict) else None
+    if not parent:
+        return None, None
+    return format_codex_session_id(parent), spawn.get("agent_path") or None
+
+
 def format_cowork_session_id(session_id: str) -> str:
     """Prefix Cowork/Claude Desktop session IDs to avoid collisions."""
     if not session_id:
@@ -2475,35 +2543,77 @@ def process_codex_patch(patch_text: str, timestamp: str, session_ctx: dict,
             print(f"DB error (codex patch): {e}")
 
 
-def process_codex_token_count(event: dict, session_ctx: dict, conn: sqlite3.Connection,
-                              project_id: int, user_id: int, host_id: int):
-    """Process Codex token_count events into token_usage."""
-    payload = event.get("payload", {})
-    info = payload.get("info") or {}
+# LAV-99: the fields of a token_count usage a request is billed on. A report with
+# only total_tokens above zero (seen right after a compaction) is not a request.
+_CODEX_BILLED_USAGE_FIELDS = ("input_tokens", "cached_input_tokens", "output_tokens")
+
+
+def _codex_request_usage(event: dict, session_ctx: dict) -> dict:
+    """LAV-99: the tokens of the one request a token_count event reports, {} if none.
+
+    `last_token_usage` is the request; `total_token_usage` is the thread's running
+    total, and in a fork it already includes the parent's (45M on the first event of
+    a real rollout), so it never becomes a row: with no last_token_usage only a
+    non-negative delta counts. An unchanged total is no new request, even though
+    last_token_usage is above zero on all such events (37 of 2,491).
+
+    Keeps the running total in session_ctx, so the caller runs it on EVERY token
+    event of the file, also those it will not write: if the first one past the
+    watermark had no previous total, a repeat could not be told from a request.
+    """
+    info = event.get("payload", {}).get("info") or {}
     total = info.get("total_token_usage") or {}
     last = info.get("last_token_usage") or {}
 
-    usage = {}
+    delta = None
     if total:
         prev_total = session_ctx.get("last_total")
+        session_ctx["last_total"] = total
         if prev_total:
             delta = {k: total.get(k, 0) - prev_total.get(k, 0) for k in total.keys()}
-            if any(v < 0 for v in delta.values()):
-                usage = total
-            else:
-                usage = delta
-        else:
-            usage = total
-        session_ctx["last_total"] = total
-        if not any(v > 0 for v in usage.values()):
-            return
+            if not any(delta.values()):
+                return {}
     elif last:
-        prev_last = session_ctx.get("last_usage")
-        if prev_last == last:
-            return
-        usage = last
+        if session_ctx.get("last_usage") == last:
+            return {}
         session_ctx["last_usage"] = last
+
+    if last:
+        usage = last
+    elif delta and not any(v < 0 for v in delta.values()):
+        usage = delta
     else:
+        return {}
+    if not any(usage.get(k, 0) > 0 for k in _CODEX_BILLED_USAGE_FIELDS):
+        return {}
+    return usage
+
+
+def _fill_codex_rows_without_model(conn: sqlite3.Connection, model: str, session_id: str,
+                                   project_id: int, own_identity_since: str):
+    """LAV-99: give a model to the rows written before the file named one.
+
+    A token event can precede the file's first turn_context. Runs when the turn_context
+    comes, also when it comes in a later pass. Rows older than the stamp stay as they
+    are: the past is not rewritten, here or on a re-read of an old file.
+    """
+    try:
+        conn.execute(
+            """UPDATE token_usage
+               SET model = ?
+               WHERE session_id = ? AND project_id = ? AND timestamp >= ?
+               AND (model IS NULL OR model = '')""",
+            (model, session_id, project_id, own_identity_since)
+        )
+    except sqlite3.Error as e:
+        print(f"DB error (codex tokens): {e}")
+
+
+def process_codex_token_count(event: dict, session_ctx: dict, conn: sqlite3.Connection,
+                              project_id: int, user_id: int, host_id: int):
+    """Process a Codex token_count event into one token_usage row per request (LAV-99)."""
+    usage = _codex_request_usage(event, session_ctx)
+    if not usage:
         return
 
     timestamp = event.get("timestamp", "")
@@ -2513,6 +2623,8 @@ def process_codex_token_count(event: dict, session_ctx: dict, conn: sqlite3.Conn
         return
 
     model = session_ctx.get("model", "")
+    if not model:
+        session_ctx["rows_without_model"] = True
     input_tokens = usage.get("input_tokens", 0)
     cache_read_tokens = usage.get("cached_input_tokens", 0)
     net_input_tokens = max(0, input_tokens - cache_read_tokens)
@@ -2526,14 +2638,6 @@ def process_codex_token_count(event: dict, session_ctx: dict, conn: sqlite3.Conn
             (timestamp, session_id, project_id, user_id, host_id,
              model, net_input_tokens, usage.get("output_tokens", 0), 0, cache_read_tokens, cwd)
         )
-        if model:
-            conn.execute(
-                """UPDATE token_usage
-                   SET model = ?
-                   WHERE timestamp = ? AND session_id = ? AND project_id = ?
-                   AND (model IS NULL OR model = '')""",
-                (model, timestamp, session_id, project_id)
-            )
     except sqlite3.Error as e:
         print(f"DB error (codex tokens): {e}")
 
@@ -3192,6 +3296,14 @@ def parse_codex_sessions(
     LAV-79 `since`: the ``(str_z, dt_utc, epoch)`` tuple from _normalize_since(),
     or None. Codex compares aware UTC datetimes (31 production watermarks are
     legacy NAIVE local-time strings), so only ``dt_utc`` is used here.
+
+    LAV-99: the first session_meta of a file is its identity. A forked subagent's
+    rollout continues with a second session_meta, its parent's, and with the parent's
+    history replayed up to payload.subagent_history_start_ordinal, timestamps rewritten
+    to the moment of the fork; that history is not the child's. A rollout that began
+    before _codex_own_identity_since() keeps the old rule (the LAST session_meta wins,
+    no parent link) because its rows are already in the DB under that id: only its
+    token rows change, from then on, as they do for every rollout.
     """
     since_dt = since[1] if since else None
     dirs = codex_sessions_dirs or get_codex_sessions_dirs()
@@ -3230,6 +3342,8 @@ def parse_codex_sessions(
     print(f"  Codex thread titles available: {len(codex_titles)}")
     if full_reparse:
         print("  Full reparse: ignoring watermark, wiping reparsed Codex rows")
+    own_identity_since = _codex_own_identity_since(conn)
+    own_identity_since_dt = _parse_codex_event_ts(own_identity_since)
 
     all_stats = []
 
@@ -3291,6 +3405,7 @@ def parse_codex_sessions(
             "model": "",
             "last_total": None,
             "last_usage": None,
+            "rows_without_model": False,
         }
         project_name = "codex_default"
         project_id = None
@@ -3298,12 +3413,28 @@ def parse_codex_sessions(
         messages_processed = 0
         tool_calls_processed = 0
         sessions_updated = set()
+        # LAV-99: all set by the first session_meta of the file.
+        own_identity = None        # None = no session_meta yet
+        history_end = 0            # ordinals below this one are inherited history
+        parent_session_id = None
+        agent_id = None
 
-        for event in parse_jsonl_file(jsonl_file):
+        for line_no, event in enumerate(parse_jsonl_file(jsonl_file)):
             event_type = event.get("type", "")
+            in_history = _codex_line_in_history(event, line_no, history_end)
 
             if event_type == "session_meta":
                 payload = event.get("payload", {})
+                if own_identity is None:
+                    began = _parse_codex_event_ts(event.get("timestamp", "")
+                                                  or payload.get("timestamp", ""))
+                    own_identity = began is not None and began >= own_identity_since_dt
+                    ordinal = payload.get("subagent_history_start_ordinal")
+                    history_end = ordinal if isinstance(ordinal, int) else 0
+                    if own_identity:
+                        parent_session_id, agent_id = _codex_subagent_link(payload)
+                elif own_identity:
+                    continue
                 session_ctx["session_id"] = format_codex_session_id(
                     payload.get("id", "") or payload.get("session_id", ""))
                 session_ctx["cwd"] = payload.get("cwd", "")
@@ -3341,9 +3472,16 @@ def parse_codex_sessions(
                 continue
 
             elif event_type == "turn_context":
+                if own_identity and in_history:
+                    continue
                 payload = event.get("payload", {})
                 model = payload.get("model", "")
                 if model:
+                    # Before the cwd below: the rows are in the project they were written to.
+                    if session_ctx["rows_without_model"]:
+                        session_ctx["rows_without_model"] = False
+                        _fill_codex_rows_without_model(conn, model, session_ctx["session_id"],
+                                                       project_id, own_identity_since)
                     session_ctx["model"] = model
                 cwd = payload.get("cwd", "")
                 if cwd:
@@ -3358,6 +3496,18 @@ def parse_codex_sessions(
             if project_id is None:
                 continue
 
+            # LAV-99: inherited history is not this session's, whatever the rule: a
+            # token event there is a request of another thread (a guardian resumes with
+            # the last one of the previous review), but its total still counts, because
+            # the first event of the file's own can repeat it. Under the old rule the
+            # rest stays as it always was: those lines are in the DB under the parent.
+            is_token_event = (event_type == "event_msg"
+                              and event.get("payload", {}).get("type") == "token_count")
+            if in_history and (own_identity or is_token_event):
+                if is_token_event:
+                    _codex_request_usage(event, session_ctx)
+                continue
+
             msg_timestamp = event.get("timestamp", "")
             if not msg_timestamp:
                 continue
@@ -3370,6 +3520,10 @@ def parse_codex_sessions(
             # watermark. full_reparse imports everything (wipe handled above).
             watermark = _watermark_for(project_id)
             if not full_reparse and watermark is not None and event_dt <= watermark:
+                if (is_token_event and _codex_request_usage(event, session_ctx)
+                        and not session_ctx["model"]):
+                    # Its row, if a previous pass wrote one, is still waiting for a model.
+                    session_ctx["rows_without_model"] = True
                 continue
 
             cur_max = project_max_ts.get(project_id)
@@ -3467,10 +3621,8 @@ def parse_codex_sessions(
                             print(f"DB error (codex mcp): {e}")
                         tool_calls_processed += 1
 
-            elif event_type == "event_msg":
-                payload = event.get("payload", {})
-                if payload.get("type") == "token_count":
-                    process_codex_token_count(event, session_ctx, conn, project_id, user_id, host_id)
+            elif is_token_event:
+                process_codex_token_count(event, session_ctx, conn, project_id, user_id, host_id)
 
         # Update interactions for this file
         if project_id is not None:
@@ -3479,8 +3631,11 @@ def parse_codex_sessions(
                 if sid:
                     # LAV-91: `summary=None` means "derive it from the messages";
                     # a real string wins over that derivation.
+                    # LAV-99: Codex has no title for a subagent, and its first message
+                    # is a system prompt, the same for all of them: agent_id says who it is.
                     update_interaction(sid, project_name, conn, project_id, user_id, host_id,
-                                       summary=codex_title_for(codex_titles, sid))
+                                       summary=codex_title_for(codex_titles, sid) or agent_id,
+                                       parent_session_id=parent_session_id, agent_id=agent_id)
             conn.commit()
 
             all_stats.append({
