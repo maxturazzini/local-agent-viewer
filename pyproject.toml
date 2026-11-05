@@ -4,7 +4,7 @@ version = "0.2.0"
 description = "Analytics tool for monitoring AI coding agents across multiple users, hosts, and projects"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 
 [project.optional-dependencies]
 qdrant = ["qdrant-client", "openai", "anthropic"]

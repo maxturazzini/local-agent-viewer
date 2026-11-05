@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+LAV-101: Python 3.12 is the minimum, and CI tests 3.12 only.
+- **Why**: CI failed on every push from 2026-11-03. GitHub moved `ubuntu-latest` to Ubuntu 26.04, which has no Python 3.9, and that one job cancelled the other three: the LAV-98 and LAV-99 commits were never tested on GitHub. Locally the same steps pass on 3.9 and 3.12.
+- **Change**: `requires-python = ">=3.12"` (Python 3.9 is past end of life; both nodes run 3.12); CI matrix 3.12 on `ubuntu-latest` and `macos-latest`, with `fail-fast: false` so a job that cannot start no longer hides the others.
+
 LAV-99: Codex costs were inflated about 6 times: the parser recorded cumulative totals as single calls and put subagents on their parent's id. Fixed for the future only.
 - **Symptom**: on the 95 sessions with a rollout on the dev node, $538.53 in the DB against $84.34 recomputed from the transcripts. One row held 149M of cache read, against a context window of 828,400.
 - **Fix**: one row per request from `last_token_usage`; a cumulative total never becomes a row. A rollout's first `session_meta` is its identity, so a spawned subagent has its own session linked to its parent, and the grouped list and the detail add it up. The parent's history replayed at the start of a forked subagent's file is skipped. Rows with no model yet get it when the file names it.

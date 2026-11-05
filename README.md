@@ -10,7 +10,7 @@
 <p align="center">
   <a href="https://github.com/maxturazzini/local-agent-viewer/actions/workflows/ci.yml"><img src="https://github.com/maxturazzini/local-agent-viewer/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <img src="https://img.shields.io/badge/python-3.9+-3776AB.svg?logo=python&logoColor=white" alt="Python 3.9+" />
+  <img src="https://img.shields.io/badge/python-3.12+-3776AB.svg?logo=python&logoColor=white" alt="Python 3.12+" />
   <img src="https://img.shields.io/badge/dependencies-zero_(stdlib_only)-brightgreen.svg" alt="Zero dependencies" />
   <img src="https://img.shields.io/badge/database-SQLite-003B57.svg?logo=sqlite&logoColor=white" alt="SQLite" />
 </p>
@@ -690,7 +690,7 @@ local-agent-viewer/
 
 ## Requirements
 
-- **Python 3.9+** — core functionality uses stdlib only
+- **Python 3.12+** — core functionality uses stdlib only
 - **Optional:** `openai` for AI classification
 - **Optional:** `qdrant-client` for semantic search
 - **Optional:** `fastmcp` for MCP server

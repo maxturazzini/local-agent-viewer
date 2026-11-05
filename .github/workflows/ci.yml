@@ -10,9 +10,12 @@ jobs:
   test:
     runs-on: ${{ matrix.os }}
     strategy:
+      # One job that cannot start (a runner image without the interpreter) must not
+      # cancel the others: from 2026-11-03 to LAV-101 that left the code untested.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python-version: ["3.9", "3.12"]
+        python-version: ["3.12"]
 
     steps:
       - uses: actions/checkout@v4
