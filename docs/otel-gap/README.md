@@ -23,6 +23,7 @@ le decisioni prese e quelle aperte.
 | [05-censimento.md](05-censimento.md) | Censimento empirico: presenza campi per grain e annata |
 | [06-findings-operativi.md](06-findings-operativi.md) | Bug, vulnerabilità e debiti **aggredibili da soli** |
 | **[07-numeri-e-insidie.md](07-numeri-e-insidie.md)** | ⚠️ Numeri misurati e proposte smentite — **leggere prima di implementare** |
+| **[08-delta-otel-nativo.md](08-delta-otel-nativo.md)** | Delta 29/10/2026: OTel nativo di Claude Code × file × LAV, campo per campo |
 | [schema-current.html](schema-current.html) · [schema-before-after.html](schema-before-after.html) | Diagrammi navigabili in browser |
 
 ## La domanda a cui risponde
