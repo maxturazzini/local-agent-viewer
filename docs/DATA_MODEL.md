@@ -89,7 +89,7 @@ LAV reconciles them with **two strategies**:
 | Model | Typical source | Relationship | `parent_session_id` |
 |---|---|---|---|
 | **MERGED** | `cowork_desktop`, `cowork_remote` | one conversation = one row | always `NULL` |
-| **MASTER / DERIVED** | `claude_code` | one master + N subagents | children point to the master |
+| **MASTER / DERIVED** | `claude_code`; Codex rollouts begun after the node's `codex:own_identity_since` (LAV-99) | one master + N subagents | children point to the master |
 
 ### 2.1 MERGED model — Cowork
 
