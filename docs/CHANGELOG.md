@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+LAV-102: the scheduled incremental parse took 9-14 minutes per run for 20-30 new messages; now a few seconds.
+- **Symptom**: on the dev node `lav-parse` held one core at 100% for 9-14 min every ~25 min, night included. "Total messages: ~266k" in the log was the count re-processed per run, not the DB total (~1.06M).
+- **Cause** (cProfile, 547 s): `update_interaction` 420 s, 9,893 calls at 42 ms: no (session_id, project_id) index on `token_usage` (206k miniMe rows scanned per session), `file_operations`, `skill_invocations`, `subagent_invocations`. `resolve_agent_parents` 80 s: two `LIKE` scans over every message of every project. The multiplier: all 9,577 `agent-*.jsonl` files (2.2 GB) were re-read every run, because they bypass the watermark, so ~9.9k sessions were re-aggregated each time. Reading the files was only ~16 s.
+- **Fix**: four indexes `idx_token_session`, `idx_fileops_session`, `idx_skill_session`, `idx_subagent_session` on (session_id, project_id), created by `init_db()` on every node (~2 s once, +20 MB); `resolve_agent_parents` returns early when the project has no agent row without a parent (the final UPDATE could change nothing); each agent file's (mtime_ns, size) is stored in `parse_state` (key `agent_file_sig`) and an unchanged file is skipped, a changed one re-read whole. `--full` and `--since` still re-read every agent file.
+- **Measured** on a copy of the dev DB: indexes only 77.5 s; plus early return 21.8 s; plus signature ~2 s steady state (first run 22.6 s). After a patched pass, the old parser re-reading every file inserted 0 rows and changed 0 of 18,630 interactions.
+- **Behavior change**: a later parser fix no longer reaches old agent sessions by itself on the next scheduled run; use `--since`, `--full` or `lav backfill`, as for regular session files.
+
 LAV-101: Python 3.12 is the minimum, and CI tests 3.12 only.
 - **Why**: CI failed on every push from 2026-11-03. GitHub moved `ubuntu-latest` to Ubuntu 26.04, which has no Python 3.9, and that one job cancelled the other three: the LAV-98 and LAV-99 commits were never tested on GitHub. Locally the same steps pass on 3.9 and 3.12.
 - **Change**: `requires-python = ">=3.12"` (Python 3.9 is past end of life; both nodes run 3.12); CI matrix 3.12 on `ubuntu-latest` and `macos-latest`, with `fail-fast: false` so a job that cannot start no longer hides the others.

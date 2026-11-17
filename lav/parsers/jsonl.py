@@ -382,6 +382,12 @@ CREATE INDEX IF NOT EXISTS idx_int_timestamp ON interactions(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_msg_session ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_msg_timestamp ON messages(timestamp);
 CREATE INDEX IF NOT EXISTS idx_session_sources_source ON session_sources(source);
+-- update_interaction() reads these four tables by (session_id, project_id) for
+-- every session it touches; without these it scanned the whole project each time.
+CREATE INDEX IF NOT EXISTS idx_token_session ON token_usage(session_id, project_id);
+CREATE INDEX IF NOT EXISTS idx_fileops_session ON file_operations(session_id, project_id);
+CREATE INDEX IF NOT EXISTS idx_skill_session ON skill_invocations(session_id, project_id);
+CREATE INDEX IF NOT EXISTS idx_subagent_session ON subagent_invocations(session_id, project_id);
 
 -- LAV-85: idx_mcp_kind is created in _migrate_add_tool_kind, NOT here — same
 -- reason as idx_bash_cmd_name immediately below.
@@ -2839,6 +2845,15 @@ def purge_meta_children(conn: sqlite3.Connection, project_id: int) -> int:
 
 def resolve_agent_parents(conn: sqlite3.Connection, project_id: int):
     """Post-process to find real parent_session_id for agent interactions."""
+    # The UPDATE at the end can only touch agent rows with no parent (same WHERE
+    # as below). None in this project -> skip the two LIKE scans over every message.
+    if conn.execute("""
+        SELECT 1 FROM interactions
+        WHERE project_id = ? AND agent_id IS NOT NULL
+          AND (parent_session_id IS NULL OR parent_session_id = session_id)
+        LIMIT 1
+    """, (project_id,)).fetchone() is None:
+        return 0
     parent_mapping = {}
 
     cursor = conn.execute("""
@@ -3079,9 +3094,12 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
         # session's watermark (last_parsed) therefore sits AFTER these timestamps,
         # so both the file-mtime skip and the per-message timestamp skip below
         # would drop every subagent message on incremental runs (only --full
-        # recovered them). Agent files are small and write-once, and all inserts
-        # are INSERT OR IGNORE (idempotent), so we always process them fully and
-        # let dedup handle re-runs. See UNIQUE(session_id, project_id, uuid).
+        # recovered them). So an agent file is always read WHOLE (all inserts are
+        # duplicate-guarded), but only when it changed: its own gate is the
+        # (mtime_ns, size) it had when last read, taken BEFORE reading, so an
+        # append landing during or after the read changes it and the next run
+        # re-reads the file. Written in the same transaction as the rows.
+        # --full and --since still re-read every agent file.
         if not is_agent_file and last_ts_epoch is not None:
             try:
                 if jsonl_file.stat().st_mtime <= last_ts_epoch:
@@ -3089,6 +3107,18 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
                     continue
             except OSError:
                 pass  # file disappeared, let downstream handle it
+        agent_sig = None
+        if is_agent_file:
+            try:
+                st = jsonl_file.stat()
+                agent_sig = f"{st.st_mtime_ns}:{st.st_size}"
+            except OSError:
+                pass
+            if (agent_sig and not full_reparse and since is None
+                    and get_parse_state(conn, "agent_file_sig", project_id,
+                                        str(jsonl_file), host_id) == agent_sig):
+                files_skipped_mtime += 1
+                continue
 
         files_processed += 1
 
@@ -3206,6 +3236,9 @@ def parse_project(project_dir: Path, conn: sqlite3.Connection, full_reparse: boo
         # row, so the results parked above can be applied. Still-unmatched ones
         # are dropped silently (their call wrote no row at all).
         flush_pending_tool_results(conn, pending_tool_results)
+        if agent_sig:
+            set_parse_state(conn, "agent_file_sig", agent_sig, project_id,
+                            str(jsonl_file), host_id)
 
     for session_id in sessions_updated:
         summary_entry = session_summaries.get(session_id)
