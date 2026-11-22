@@ -2,8 +2,10 @@
 """
 sql_classifier.py - Batch classifier for interaction metadata (SQLite-based).
 
-Uses gpt-4o-mini via OpenAI Structured Outputs to classify interactions
-and store metadata in the interaction_metadata table.
+Classifies interactions with the model in LAV_CLASSIFY_MODEL (default
+gpt-4.1-mini) on the LAV_CLASSIFY_BACKEND backend (openai, ollama, or foundry
+for Azure AI Foundry) via Structured Outputs,
+and stores the metadata in the interaction_metadata table.
 
 Independent from Qdrant — same schema for 1:1 comparison.
 
