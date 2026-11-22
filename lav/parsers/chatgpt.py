@@ -2,11 +2,16 @@
 """
 ChatGPT Export Parser for LocalAgentViewer.
 
-Parses OpenAI's conversations.json export (monolithic JSON array) into the
-unified SQLite database as source "chatgpt", host "cloud".
+Parses OpenAI's conversations export into the unified SQLite database as
+source "chatgpt", host "cloud". Accepts either the legacy monolithic
+conversations.json or an export folder: exports with more than 100 chats
+split the array into numbered shards (conversations-000.json, -001, ...).
 
 Key differences from JSONL parsers:
-  - Single JSON file (~634MB, 6k+ interactions)
+  - JSON array, one file or numbered shards (7k+ interactions)
+  - Exports from late 2026 keep only user/assistant messages: no tool or
+    system nodes, so tool_calls stay empty. Never re-run with --full on such
+    an export: it wipes the chatgpt tool rows imported from older exports.
   - Messages stored as a DAG tree (parent/children), not a flat list
   - Timestamps are Unix epoch floats (not ISO 8601)
   - No token usage data in export
@@ -206,6 +211,32 @@ def epoch_to_iso(epoch: Optional[float]) -> str:
 # MAIN PARSE FUNCTION
 # ===========================================================================
 
+def resolve_export_files(path: Path) -> list[Path]:
+    """Return the JSON files holding the conversations array.
+
+    A file is returned as-is. A folder yields its numbered shards
+    (conversations-NNN.json) in order, falling back to conversations.json.
+    """
+    if path.is_file():
+        return [path]
+    if path.is_dir():
+        shards = sorted(path.glob("conversations-[0-9][0-9][0-9].json"))
+        if shards:
+            return shards
+        legacy = path / "conversations.json"
+        if legacy.is_file():
+            return [legacy]
+    return []
+
+
+def load_export(path: Path) -> list[dict]:
+    interactions: list[dict] = []
+    for f in resolve_export_files(path):
+        with open(f, "r", encoding="utf-8") as fh:
+            interactions.extend(json.load(fh))
+    return interactions
+
+
 def parse_chatgpt_export(
     filepath: Path,
     conn: sqlite3.Connection,
@@ -213,10 +244,10 @@ def parse_chatgpt_export(
     user: str = None,
     host: str = "cloud",
 ) -> dict:
-    """Parse ChatGPT conversations.json into the unified DB.
+    """Parse a ChatGPT export into the unified DB.
 
     Args:
-        filepath: Path to conversations.json
+        filepath: Path to conversations.json or to an export folder
         conn: SQLite connection (write)
         full: Force full reparse (ignore incremental state)
         user: Username to assign (default: current OS user)
@@ -228,7 +259,8 @@ def parse_chatgpt_export(
     # NOTE: "conversation_id", "conversations.json" are OpenAI's external
     # schema keys and must not be renamed.
     user = user or getpass.getuser()
-    if not filepath.exists():
+    export_files = resolve_export_files(filepath)
+    if not export_files:
         print(f"ChatGPT export not found: {filepath}")
         return {"error": f"File not found: {filepath}"}
 
@@ -261,9 +293,8 @@ def parse_chatgpt_export(
             print(f"  DB warning (cleanup mcp_tool_calls): {e}")
 
     # Load JSON
-    print("  Loading JSON...")
-    with open(filepath, "r", encoding="utf-8") as f:
-        interactions = json.load(f)
+    print(f"  Loading JSON ({len(export_files)} file)...")
+    interactions = load_export(filepath)
     print(f"  Loaded {len(interactions)} interactions")
 
     max_update_time = last_update_float
@@ -462,10 +493,10 @@ def parse_chatgpt_export(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Parse ChatGPT export (conversations.json) into LocalAgentViewer DB"
+        description="Parse ChatGPT export (conversations.json or export folder) into LocalAgentViewer DB"
     )
     parser.add_argument("--full", "-f", action="store_true", help="Force full reparse")
-    parser.add_argument("--file", type=str, help="Path to conversations.json (overrides config)")
+    parser.add_argument("--file", type=str, help="Path to conversations.json or export folder (overrides config)")
     parser.add_argument("--user", type=str, default=None, help="Username (default: current OS user)")
     parser.add_argument("--host", type=str, default="cloud", help="Host name (default: cloud)")
     args = parser.parse_args()
